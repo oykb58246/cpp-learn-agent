@@ -4,7 +4,7 @@ import type { AppBootstrap, AppError, AppSettings, MockDashboard, Workspace } fr
 export const useAppStore = defineStore('app', {
   state: () => ({ bootstrap: null as AppBootstrap | null, dashboard: null as MockDashboard | null, loading: true, error: null as AppError | null }),
   getters: {
-    settings: state => state.bootstrap?.settings ?? ({ theme: 'system', sidebarWidth: 260 } as AppSettings),
+    settings: state => state.bootstrap?.settings ?? ({ theme: 'system', sidebarWidth: 260, onboardingCompleted: false, onboardingStatus: 'pending', onboardingReminderDismissed: false } as AppSettings),
     projects: state => state.bootstrap?.recentProjects ?? [],
     workspaces: state => state.bootstrap?.workspaces ?? []
   },

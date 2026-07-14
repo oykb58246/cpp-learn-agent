@@ -105,7 +105,20 @@ export class AppDatabase {
 
   getSettings(): AppSettings {
     const row = this.db.prepare('SELECT value_json FROM settings WHERE key = ?').get('app') as { value_json: string } | undefined
-    return row ? JSON.parse(row.value_json) as AppSettings : { theme: 'system', sidebarWidth: 260 }
+    if (!row) return { theme: 'system', sidebarWidth: 260, onboardingCompleted: false, onboardingStatus: 'pending', onboardingReminderDismissed: false }
+    const saved = JSON.parse(row.value_json) as Partial<AppSettings>
+    const onboardingCompleted = typeof saved.onboardingCompleted === 'boolean' ? saved.onboardingCompleted : true
+    const onboardingStatus = saved.onboardingStatus === 'pending' || saved.onboardingStatus === 'completed' || saved.onboardingStatus === 'skipped'
+      ? saved.onboardingStatus
+      : onboardingCompleted ? 'completed' : 'pending'
+    return {
+      theme: 'system',
+      sidebarWidth: 260,
+      onboardingCompleted,
+      onboardingReminderDismissed: false,
+      ...saved,
+      onboardingStatus
+    }
   }
   updateSettings(patch: Partial<AppSettings>): AppSettings {
     this.ensureWritable()

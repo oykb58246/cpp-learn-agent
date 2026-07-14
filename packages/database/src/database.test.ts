@@ -7,11 +7,20 @@ import { AppDatabase } from './index'
 const dirs: string[] = []
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
 describe('AppDatabase', () => {
+  it('starts onboarding for new users and persists a skipped reminder', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppet-db-')); dirs.push(dir); const file = join(dir, 'app.sqlite')
+    let db = new AppDatabase(file)
+    expect(db.getSettings()).toMatchObject({ onboardingCompleted: false, onboardingStatus: 'pending', onboardingReminderDismissed: false })
+    db.updateSettings({ onboardingCompleted: true, onboardingStatus: 'skipped', onboardingReminderDismissed: false }); db.close()
+    db = new AppDatabase(file)
+    expect(db.getSettings()).toMatchObject({ onboardingCompleted: true, onboardingStatus: 'skipped', onboardingReminderDismissed: false })
+    db.close()
+  })
   it('persists settings and workspaces across restarts', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppet-db-')); dirs.push(dir); const file = join(dir, 'app.sqlite')
     const id = crypto.randomUUID(); let db = new AppDatabase(file)
-    db.updateSettings({ theme: 'dark' }); db.upsertWorkspace({ id, name: 'Lab', rootPath: dir, trustState: 'inspection', createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString() }); db.close()
-    db = new AppDatabase(file); expect(db.getSettings().theme).toBe('dark'); expect(db.listWorkspaces()[0]?.id).toBe(id); db.close()
+    db.updateSettings({ theme: 'dark', onboardingCompleted: true }); db.upsertWorkspace({ id, name: 'Lab', rootPath: dir, trustState: 'inspection', createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString() }); db.close()
+    db = new AppDatabase(file); expect(db.getSettings()).toMatchObject({ theme: 'dark', onboardingCompleted: true }); expect(db.listWorkspaces()[0]?.id).toBe(id); db.close()
   })
   it('keeps the previous schema readable when a later migration fails', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppet-db-')); dirs.push(dir); const file = join(dir, 'data', 'app.sqlite')

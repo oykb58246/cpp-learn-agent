@@ -3,8 +3,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import {
   AlertCircle,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Boxes,
+  Bug,
   Camera,
+  CheckCheck,
+  CornerDownRight,
   Copy,
+  ExternalLink,
   FilePlus2,
   FolderPlus,
   Hammer,
@@ -17,13 +24,25 @@ import {
   RotateCcw,
   Save,
   Search,
+  ScanSearch,
   Square,
+  StepForward,
   Terminal,
   Trash2,
   X
 } from 'lucide-vue-next'
 import { ElMessageBox } from 'element-plus'
-import type { BuildResult, Diagnostic, FileTreeNode, ProgramRunResult } from '@cpp-pet/contracts'
+import type {
+  BuildResult,
+  CmakeBuildResult,
+  CtestRunResult,
+  DebugCommand,
+  DebugSessionState,
+  Diagnostic,
+  FileTreeNode,
+  ProgramRunResult,
+  StaticAnalysisResult
+} from '@cpp-pet/contracts'
 import DiffEditorHost from '../components/DiffEditorHost.vue'
 import EditorHost from '../components/EditorHost.vue'
 import FileTree from '../components/FileTree.vue'
@@ -43,15 +62,25 @@ const active = computed(() => store.activeTab)
 const editorHost = ref<InstanceType<typeof EditorHost> | null>(null)
 const diffOpen = ref(false)
 const panelOpen = ref(true)
-const panelTab = ref<'output' | 'problems'>('output')
+const panelTab = ref<'output' | 'problems' | 'debug'>('output')
 const standard = ref<'c++17' | 'c++20' | 'c++23'>('c++17')
 const standardInput = ref('')
-const executing = ref<'build' | 'run' | null>(null)
+const executing = ref<'build' | 'run' | 'cmake' | 'ctest' | 'analysis' | null>(null)
 const currentRunId = ref('')
 const buildResult = ref<BuildResult | null>(null)
 const runResult = ref<ProgramRunResult | null>(null)
+const cmakeResult = ref<CmakeBuildResult | null>(null)
+const ctestResult = ref<CtestRunResult | null>(null)
+const analysisResult = ref<StaticAnalysisResult | null>(null)
 const diagnostics = ref<Diagnostic[]>([])
+const languageDiagnostics = ref<Record<string, Diagnostic[]>>({})
+const languageAvailable = ref(false)
+const languageStatusText = ref('正在检测 clangd…')
+const breakpoints = ref<Record<string, number[]>>({})
+const debugState = ref<DebugSessionState | null>(null)
+const debuggerBusy = ref(false)
 let autoSaveTimer: ReturnType<typeof setTimeout> | undefined
+let stopLanguageDiagnostics: (() => void) | undefined
 
 const entryDialog = reactive({
   visible: false,
@@ -61,6 +90,21 @@ const entryDialog = reactive({
   value: ''
 })
 const canBuild = computed(() => Boolean(active.value && /\.(?:cpp|cc|cxx)$/i.test(active.value.relativePath) && !executing.value))
+const canAnalyze = computed(() => Boolean(active.value && /\.(?:cpp|cc|cxx|h|hpp)$/i.test(active.value.relativePath) && !executing.value))
+const canCmake = computed(() => Boolean(store.currentProject?.type === 'cmake' && !executing.value))
+const canTest = computed(() => Boolean(cmakeResult.value?.success && !executing.value))
+const canDebug = computed(() => Boolean(active.value && /\.(?:cpp|cc|cxx)$/i.test(active.value.relativePath) && !executing.value && !debuggerBusy.value && !active.value.conflicted))
+const canControlDebug = computed(() => debugState.value?.status === 'stopped' && !debuggerBusy.value)
+const currentBreakpoints = computed(() => active.value ? breakpoints.value[active.value.relativePath] ?? [] : [])
+const currentDebugLine = computed(() => {
+  const location = debugState.value?.location
+  if (!location || normalizePath(location.relativePath) !== normalizePath(active.value?.relativePath ?? '')) return undefined
+  return location.line
+})
+const allDiagnostics = computed(() => [
+  ...diagnostics.value,
+  ...Object.values(languageDiagnostics.value).flat()
+])
 const outputText = computed(() => {
   const chunks: string[] = []
   if (buildResult.value) {
@@ -77,10 +121,40 @@ const outputText = computed(() => {
     if (item.process.stderr.trim()) chunks.push(item.process.stderr.trimEnd())
     if (item.process.outputTruncated) chunks.push('[输出已达到 512 KiB 上限，后续内容被截断]')
   }
-  return chunks.join('\n\n') || '尚未执行编译或运行。'
+  if (cmakeResult.value) {
+    const item = cmakeResult.value
+    chunks.push(`[CMake 配置] ${item.configure.exitCode === 0 ? '成功' : item.configure.cancelled ? '已停止' : '失败'} · ${item.configure.durationMs} ms`)
+    if (item.configure.stdout.trim()) chunks.push(item.configure.stdout.trimEnd())
+    if (item.configure.stderr.trim()) chunks.push(item.configure.stderr.trimEnd())
+    if (item.build) {
+      chunks.push(`[CMake 构建] ${item.success ? '成功' : item.build.cancelled ? '已停止' : '失败'} · ${item.build.durationMs} ms · compile_commands.json ${item.compileCommandsGenerated ? '已生成' : '未生成'}`)
+      if (item.build.stdout.trim()) chunks.push(item.build.stdout.trimEnd())
+      if (item.build.stderr.trim()) chunks.push(item.build.stderr.trimEnd())
+    }
+  }
+  if (ctestResult.value) {
+    const item = ctestResult.value
+    chunks.push(`[CTest] ${item.success ? '通过' : item.process.cancelled ? '已停止' : item.process.timedOut ? '超时' : '失败'} · ${item.passed}/${item.total} 通过 · ${item.process.durationMs} ms`)
+    if (item.process.stdout.trim()) chunks.push(item.process.stdout.trimEnd())
+    if (item.process.stderr.trim()) chunks.push(item.process.stderr.trimEnd())
+  }
+  if (analysisResult.value) {
+    const item = analysisResult.value
+    chunks.push(`[clang-tidy] ${item.success ? '完成' : item.process.cancelled ? '已停止' : '发现问题'} · ${item.diagnostics.length} 条诊断 · ${item.process.durationMs} ms`)
+    if (item.process.stdout.trim()) chunks.push(item.process.stdout.trimEnd())
+    if (item.process.stderr.trim()) chunks.push(item.process.stderr.trimEnd())
+  }
+  return chunks.join('\n\n') || '尚未执行编译、运行、测试或静态分析。'
 })
 
 onMounted(async () => {
+  stopLanguageDiagnostics = window.cppPet.language.onDiagnostics(event => {
+    if (event.projectId !== store.currentProject?.id) return
+    languageDiagnostics.value = {
+      ...languageDiagnostics.value,
+      [normalizePath(event.relativePath)]: event.diagnostics
+    }
+  })
   await store.loadProjects()
   const id = route.params.projectId as string | undefined
   if (id) await store.openProject(id)
@@ -89,18 +163,65 @@ onMounted(async () => {
     await router.replace(`/workspace/${store.projects[0].id}`)
   }
 })
-onBeforeUnmount(() => clearTimeout(autoSaveTimer))
+onBeforeUnmount(() => {
+  clearTimeout(autoSaveTimer)
+  stopLanguageDiagnostics?.()
+  if (debugState.value && !['exited', 'error'].includes(debugState.value.status)) {
+    void window.cppPet.debug.command({ sessionId: debugState.value.sessionId, command: 'stop' })
+  }
+})
 watch(() => route.params.projectId, async id => {
   if (typeof id === 'string' && id !== store.currentProject?.id) await store.openProject(id)
 })
 watch(() => active.value?.relativePath, () => { diffOpen.value = false })
+watch(() => store.currentProject?.id, async id => {
+  languageDiagnostics.value = {}
+  languageAvailable.value = false
+  languageStatusText.value = id ? '正在检测 clangd…' : ''
+  if (!id) return
+  const result = await window.cppPet.language.status({ projectId: id })
+  if (!result.ok) {
+    languageStatusText.value = result.error.message
+    return
+  }
+  languageAvailable.value = result.data.available
+  languageStatusText.value = result.data.available ? 'clangd 已连接' : (result.data.reason ?? 'clangd 不可用')
+})
 
 async function switchProject(id: string) {
+  if (debugState.value && !['exited', 'error'].includes(debugState.value.status)) await debugCommand('stop')
   await store.openProject(id)
   buildResult.value = null
   runResult.value = null
+  cmakeResult.value = null
+  ctestResult.value = null
+  analysisResult.value = null
   diagnostics.value = []
+  breakpoints.value = {}
+  debugState.value = null
   await router.push(`/workspace/${id}`)
+}
+function normalizePath(path: string) {
+  return path.replaceAll('\\', '/').toLowerCase()
+}
+function toggleBreakpoint(line: number) {
+  if (!active.value) return
+  const path = active.value.relativePath
+  const current = breakpoints.value[path] ?? []
+  breakpoints.value = {
+    ...breakpoints.value,
+    [path]: current.includes(line) ? current.filter(item => item !== line) : [...current, line].sort((a, b) => a - b)
+  }
+}
+async function showLocation(location: { relativePath: string; line: number; column: number }) {
+  if (normalizePath(location.relativePath) !== normalizePath(active.value?.relativePath ?? '')) await store.openFile(location.relativePath)
+  diffOpen.value = false
+  await nextTick()
+  editorHost.value?.reveal(location.line, location.column)
+}
+function languageFailed(reason: string) {
+  languageAvailable.value = false
+  languageStatusText.value = reason
 }
 async function runSearch() { await store.search(search.value) }
 function create(kind: 'file' | 'directory') { Object.assign(entryDialog, { visible: true, mode: 'create', kind, source: '', value: '' }) }
@@ -206,16 +327,138 @@ async function runProgram(buildId: string) {
   diagnostics.value = [...(buildResult.value?.diagnostics ?? []), ...result.data.diagnostics]
   panelTab.value = result.data.diagnostics.length ? 'problems' : 'output'
 }
+async function buildCmake() {
+  const project = store.currentProject
+  if (!project || !canCmake.value) return
+  await saveActive()
+  if (active.value?.dirty || active.value?.conflicted) return
+  cmakeResult.value = null
+  ctestResult.value = null
+  diagnostics.value = []
+  panelOpen.value = true
+  panelTab.value = 'output'
+  executing.value = 'cmake'
+  currentRunId.value = crypto.randomUUID()
+  const result = await window.cppPet.cmake.build({
+    runId: currentRunId.value,
+    projectId: project.id,
+    standard: standard.value,
+    configuration: 'Debug'
+  })
+  executing.value = null
+  currentRunId.value = ''
+  if (!result.ok) { store.error = result.error; return }
+  cmakeResult.value = result.data
+  diagnostics.value = result.data.diagnostics
+  if (!result.data.success && result.data.diagnostics.length) panelTab.value = 'problems'
+}
+async function runTests() {
+  if (!cmakeResult.value?.success || !canTest.value) return
+  ctestResult.value = null
+  panelOpen.value = true
+  panelTab.value = 'output'
+  executing.value = 'ctest'
+  currentRunId.value = crypto.randomUUID()
+  const result = await window.cppPet.ctest.run({
+    runId: currentRunId.value,
+    buildId: cmakeResult.value.buildId,
+    timeoutMs: 30_000
+  })
+  executing.value = null
+  currentRunId.value = ''
+  if (!result.ok) { store.error = result.error; return }
+  ctestResult.value = result.data
+  diagnostics.value = [...cmakeResult.value.diagnostics, ...result.data.diagnostics]
+  if (result.data.diagnostics.length) panelTab.value = 'problems'
+}
+async function analyze() {
+  const tab = active.value
+  const project = store.currentProject
+  if (!tab || !project || !canAnalyze.value) return
+  await saveActive()
+  if (tab.dirty || tab.conflicted) return
+  analysisResult.value = null
+  panelOpen.value = true
+  panelTab.value = 'output'
+  executing.value = 'analysis'
+  currentRunId.value = crypto.randomUUID()
+  const result = await window.cppPet.analysis.clangTidy({
+    runId: currentRunId.value,
+    projectId: project.id,
+    relativePath: tab.relativePath,
+    standard: standard.value
+  })
+  executing.value = null
+  currentRunId.value = ''
+  if (!result.ok) { store.error = result.error; return }
+  analysisResult.value = result.data
+  diagnostics.value = result.data.diagnostics
+  if (result.data.diagnostics.length) panelTab.value = 'problems'
+}
+async function openVsCode() {
+  const project = store.currentProject
+  if (!project) return
+  const cursor = editorHost.value?.position()
+  const result = await window.cppPet.vscode.open({
+    projectId: project.id,
+    ...(active.value ? { relativePath: active.value.relativePath, line: cursor?.line ?? 1, column: cursor?.column ?? 1 } : {})
+  })
+  if (!result.ok) store.error = result.error
+  else if (!result.data.success) store.error = { code: 'VSCODE_OPEN_FAILED', message: result.data.process.stderr || 'VS Code 未能打开项目。', retryable: true, userAction: '检查 VS Code 的 code 命令是否可用。' }
+}
 async function stop() {
   if (!currentRunId.value) return
   const result = await window.cppPet.program.stop({ runId: currentRunId.value })
   if (!result.ok) store.error = result.error
 }
+async function startDebug() {
+  const tab = active.value
+  const project = store.currentProject
+  if (!tab || !project || !canDebug.value) return
+  await saveActive()
+  if (tab.dirty || tab.conflicted) return
+  const activeLines = breakpoints.value[tab.relativePath] ?? []
+  const activeBreakpoints = activeLines.map(line => ({ relativePath: tab.relativePath, line }))
+  if (!activeBreakpoints.length) {
+    const line = editorHost.value?.position().line ?? 1
+    toggleBreakpoint(line)
+    activeBreakpoints.push({ relativePath: tab.relativePath, line })
+  }
+  debuggerBusy.value = true
+  panelOpen.value = true
+  panelTab.value = 'debug'
+  const result = await window.cppPet.debug.start({
+    projectId: project.id,
+    relativePath: tab.relativePath,
+    standard: standard.value,
+    breakpoints: activeBreakpoints
+  })
+  debuggerBusy.value = false
+  if (!result.ok) {
+    store.error = result.error
+    return
+  }
+  debugState.value = result.data
+  diagnostics.value = result.data.diagnostics
+  if (result.data.status === 'error' && result.data.diagnostics.length) panelTab.value = 'problems'
+  if (result.data.location) await showLocation(result.data.location)
+}
+async function debugCommand(command: DebugCommand) {
+  const session = debugState.value
+  if (!session || debuggerBusy.value) return
+  debuggerBusy.value = true
+  const result = await window.cppPet.debug.command({ sessionId: session.sessionId, command })
+  debuggerBusy.value = false
+  if (!result.ok) {
+    store.error = result.error
+    return
+  }
+  debugState.value = result.data
+  diagnostics.value = result.data.diagnostics
+  if (result.data.location) await showLocation(result.data.location)
+}
 async function showDiagnostic(item: Diagnostic) {
-  if (item.file && item.file !== active.value?.relativePath) await store.openFile(item.file)
-  diffOpen.value = false
-  await nextTick()
-  if (item.line) editorHost.value?.reveal(item.line, item.column)
+  if (item.file && item.line) await showLocation({ relativePath: item.file, line: item.line, column: item.column ?? 1 })
 }
 async function overwriteDisk() {
   if (!active.value) return
@@ -271,8 +514,22 @@ async function overwriteDisk() {
         <button class="tool-command" :disabled="!canBuild" title="编译当前 C++ 文件" @click="build(false)"><Hammer :size="15" />编译</button>
         <button class="tool-command run" :disabled="!canBuild" title="编译并运行当前 C++ 文件" @click="build(true)"><Play :size="15" />运行</button>
         <button class="tool-command stop" :disabled="!executing" title="停止当前任务" @click="stop"><Square :size="14" />停止</button>
+        <span class="toolbar-separator" />
+        <button class="tool-command" :disabled="!canCmake" title="配置并构建 CMake 项目" @click="buildCmake"><Boxes :size="15" />工程构建</button>
+        <button class="tool-command" :disabled="!canTest" title="运行最近一次 CMake 构建中的 CTest" @click="runTests"><CheckCheck :size="15" />测试</button>
+        <button class="tool-command" :disabled="!canAnalyze" title="使用 clang-tidy 分析当前文件" @click="analyze"><ScanSearch :size="15" />分析</button>
+        <button class="icon-command external-editor-command" :disabled="!store.currentProject" title="在新的 VS Code 窗口中打开当前文件和光标位置" @click="openVsCode"><ExternalLink :size="15" /></button>
+        <span class="toolbar-separator" />
+        <button v-if="!debugState || ['exited', 'error'].includes(debugState.status)" class="tool-command debug" :disabled="!canDebug" title="使用 GDB 调试当前 C++ 文件" @click="startDebug"><Bug :size="15" />调试</button>
+        <template v-else>
+          <button class="tool-command debug" :disabled="!canControlDebug" title="继续运行到下一个断点" @click="debugCommand('continue')"><Play :size="14" />继续</button>
+          <button class="tool-command" :disabled="!canControlDebug" title="单步跨过" @click="debugCommand('next')"><StepForward :size="14" />跨过</button>
+          <button class="tool-command" :disabled="!canControlDebug" title="单步进入函数" @click="debugCommand('step-in')"><ArrowDownToLine :size="14" />进入</button>
+          <button class="tool-command" :disabled="!canControlDebug" title="跳出当前函数" @click="debugCommand('step-out')"><ArrowUpFromLine :size="14" />跳出</button>
+          <button class="tool-command stop" :disabled="debuggerBusy" title="停止调试" @click="debugCommand('stop')"><Square :size="14" />停止调试</button>
+        </template>
         <select v-model="standard" class="standard-select" title="C++ 标准"><option value="c++17">C++17</option><option value="c++20">C++20</option><option value="c++23">C++23</option></select>
-        <span class="toolbar-status">{{ executing === 'build' ? '正在编译…' : executing === 'run' ? '程序正在运行…' : active?.dirty ? '等待自动保存' : active ? '已保存' : '' }}</span>
+        <span class="toolbar-status" :title="languageStatusText">{{ debuggerBusy ? '调试器正在执行…' : debugState?.status === 'stopped' ? `调试暂停：${debugState.reason ?? '断点'}` : executing === 'build' ? '正在编译…' : executing === 'run' ? '程序正在运行…' : executing === 'cmake' ? '正在构建工程…' : executing === 'ctest' ? '正在运行测试…' : executing === 'analysis' ? '正在静态分析…' : active?.dirty ? '等待自动保存' : active ? `${languageAvailable ? 'clangd 已连接' : '基础编辑模式'} · 已保存` : '' }}</span>
         <button class="panel-toggle" @click="panelOpen = !panelOpen"><Terminal :size="15" />{{ panelOpen ? '隐藏面板' : '显示面板' }}</button>
       </div>
 
@@ -295,12 +552,19 @@ async function overwriteDisk() {
           v-else-if="active"
           ref="editorHost"
           :document-key="`${active.projectId}:${active.relativePath}`"
+          :project-id="active.projectId"
           :relative-path="active.relativePath"
           :value="active.draft"
           :read-only="active.readOnly"
-          :diagnostics="diagnostics"
+          :diagnostics="allDiagnostics"
+          :language-enabled="languageAvailable"
+          :breakpoints="currentBreakpoints"
+          :debug-line="currentDebugLine"
           @change="edit"
           @save="saveActive"
+          @definition="showLocation"
+          @toggle-breakpoint="toggleBreakpoint"
+          @language-failed="languageFailed"
         />
         <div v-else class="editor-empty">
           <div class="cpp-glyph">C++</div>
@@ -313,18 +577,48 @@ async function overwriteDisk() {
       <section v-if="panelOpen" class="bottom-panel">
         <header>
           <button :class="{ active: panelTab === 'output' }" @click="panelTab = 'output'">输出</button>
-          <button :class="{ active: panelTab === 'problems' }" @click="panelTab = 'problems'">问题 <span v-if="diagnostics.length">{{ diagnostics.length }}</span></button>
+          <button :class="{ active: panelTab === 'problems' }" @click="panelTab = 'problems'">问题 <span v-if="allDiagnostics.length">{{ allDiagnostics.length }}</span></button>
+          <button :class="{ active: panelTab === 'debug' }" @click="panelTab = 'debug'">调试</button>
           <div class="run-input"><label for="program-input">程序输入</label><textarea id="program-input" v-model="standardInput" rows="1" placeholder="可选标准输入" /></div>
           <button class="icon-command" title="关闭面板" @click="panelOpen = false"><X :size="14" /></button>
         </header>
         <pre v-if="panelTab === 'output'" class="process-output">{{ outputText }}</pre>
-        <div v-else class="diagnostic-list">
-          <button v-for="(item, index) in diagnostics" :key="`${item.source}:${item.file}:${item.line}:${index}`" @click="showDiagnostic(item)">
+        <div v-else-if="panelTab === 'problems'" class="diagnostic-list">
+          <button v-for="(item, index) in allDiagnostics" :key="`${item.source}:${item.file}:${item.line}:${index}`" @click="showDiagnostic(item)">
             <AlertCircle :size="14" :class="item.severity" />
             <span>{{ item.normalizedMessage }}</span>
             <small>{{ item.file || item.source }}<template v-if="item.line">:{{ item.line }}<template v-if="item.column">:{{ item.column }}</template></template></small>
           </button>
-          <div v-if="!diagnostics.length" class="panel-empty">没有编译或运行问题。</div>
+          <div v-if="!allDiagnostics.length" class="panel-empty">没有编译、运行或语言服务问题。</div>
+        </div>
+        <div v-else class="debug-panel">
+          <div class="debug-summary">
+            <Bug :size="15" />
+            <strong>{{ !debugState ? '尚未启动调试' : debugState.status === 'stopped' ? '已暂停' : debugState.status === 'exited' ? '已结束' : debugState.status === 'error' ? '调试失败' : '正在运行' }}</strong>
+            <span>{{ debugState?.reason ?? '点击编辑器左侧槽位设置断点，然后启动调试。' }}</span>
+          </div>
+          <section>
+            <h3>局部变量</h3>
+            <div class="debug-table">
+              <div v-for="item in debugState?.variables ?? []" :key="item.name"><strong>{{ item.name }}</strong><code>{{ item.value }}</code><small>{{ item.type ?? '' }}</small></div>
+              <p v-if="!debugState?.variables.length">当前没有可显示的局部变量。</p>
+            </div>
+          </section>
+          <section>
+            <h3>调用栈</h3>
+            <div class="debug-stack">
+              <button
+                v-for="frame in debugState?.frames ?? []"
+                :key="`${frame.level}:${frame.functionName}:${frame.line}`"
+                :disabled="!frame.relativePath || !frame.line"
+                @click="frame.relativePath && frame.line && showLocation({ relativePath: frame.relativePath, line: frame.line, column: 1 })"
+              >
+                <CornerDownRight :size="13" /><strong>#{{ frame.level }} {{ frame.functionName }}</strong><span>{{ frame.relativePath }}<template v-if="frame.line">:{{ frame.line }}</template></span>
+              </button>
+              <p v-if="!debugState?.frames.length">调试暂停后会显示调用栈。</p>
+            </div>
+          </section>
+          <pre class="debug-output">{{ debugState?.output || '暂无调试器输出。' }}</pre>
         </div>
       </section>
     </section>

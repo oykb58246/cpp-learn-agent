@@ -31,6 +31,31 @@ const api: CppPetApi = {
     unbind: input => invoke(ipc.toolchainUnbind, input), health: input => invoke(ipc.toolchainHealth, input)
   },
   compiler: { build: input => invoke(ipc.compilerBuild, input) },
+  cmake: { build: input => invoke(ipc.cmakeBuild, input) },
+  ctest: { run: input => invoke(ipc.ctestRun, input) },
+  analysis: { clangTidy: input => invoke(ipc.analysisClangTidy, input) },
+  vscode: { open: input => invoke(ipc.vscodeOpen, input) },
+  environment: {
+    openDownload: input => invoke(ipc.environmentOpenDownload, input),
+    installerStatus: () => invoke(ipc.environmentInstallerStatus),
+    install: input => invoke(ipc.environmentInstall, input)
+  },
+  language: {
+    status: input => invoke(ipc.languageStatus, input),
+    sync: input => invoke(ipc.languageSync, input),
+    completion: input => invoke(ipc.languageCompletion, input),
+    hover: input => invoke(ipc.languageHover, input),
+    definition: input => invoke(ipc.languageDefinition, input),
+    onDiagnostics: listener => {
+      const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
+      ipcRenderer.on(ipc.languageDiagnostics, wrapped)
+      return () => ipcRenderer.removeListener(ipc.languageDiagnostics, wrapped)
+    }
+  },
+  debug: {
+    start: input => invoke(ipc.debugStart, input),
+    command: input => invoke(ipc.debugCommand, input)
+  },
   program: {
     run: input => invoke(ipc.programRun, input),
     stop: input => invoke(ipc.programStop, input)

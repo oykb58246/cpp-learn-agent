@@ -1,19 +1,33 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
+import { spawn } from 'node:child_process'
 import { basename, join } from 'node:path'
-import { existsSync, mkdirSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { AppDatabase } from '@cpp-pet/database'
 import { runProcess, runtimeDiagnostics, ToolchainService, ToolExecutionError } from '@cpp-pet/cpp-local-tools'
+import { ClangdSession } from '@cpp-pet/cpp-local-tools/language-server'
+import { GdbMiSession } from '@cpp-pet/cpp-local-tools/debugger'
 import { DomainError, safePath, WorkspaceService } from '@cpp-pet/workspace-core'
 import {
   buildRequestSchema,
+  cmakeBuildRequestSchema,
+  ctestRunRequestSchema,
+  debugCommandRequestSchema,
+  debugStartRequestSchema,
+  environmentInstallRequestSchema,
+  environmentOpenDownloadRequestSchema,
   failure,
   fileRevisionSchema,
   ipc,
+  languageDocumentSyncSchema,
+  languagePositionRequestSchema,
+  languageStatusRequestSchema,
   programRunRequestSchema,
   programStopRequestSchema,
   projectDraftInputSchema,
+  staticAnalysisRequestSchema,
   success,
+  vscodeOpenRequestSchema,
   type ApiResult,
   type AppError,
   type AppSettings
@@ -26,6 +40,9 @@ let workspaceService: WorkspaceService | null = null
 const toolchainService = new ToolchainService()
 const activeRuns = new Map<string, AbortController>()
 const buildArtifacts = new Map<string, { path: string; projectId: string; projectRoot: string; artifactName: string }>()
+const cmakeBuilds = new Map<string, { directory: string; sourceDirectory: string; projectId: string; configuration: 'Debug' | 'Release' }>()
+const languageSessions = new Map<string, ClangdSession>()
+const debugSessions = new Map<string, GdbMiSession>()
 let stopWatching: (() => void) | null = null
 if (process.env.CPP_PET_USER_DATA) app.setPath('userData', process.env.CPP_PET_USER_DATA)
 
@@ -65,7 +82,14 @@ function registerIpc(): void {
   handle(ipc.appBootstrap, empty, () => { const { database } = requiredServices(); return { version: app.getVersion(), platform: process.platform, recoveryMode: database.recoveryMode, settings: database.getSettings(), recentProjects: database.listProjects().slice(0, 8), workspaces: database.listWorkspaces(), recentEvents: database.listEvents(12) } })
   handle(ipc.appVersion, empty, () => app.getVersion())
   handle(ipc.settingsGet, empty, () => requiredServices().database.getSettings())
-  handle(ipc.settingsUpdate, z.object({ theme: z.enum(['system', 'light', 'dark']).optional(), lastProjectId: z.string().optional(), sidebarWidth: z.number().min(220).max(360).optional() }), input => { const { database } = requiredServices(); const settings = database.updateSettings(input as Partial<AppSettings>); nativeTheme.themeSource = settings.theme; return settings })
+  handle(ipc.settingsUpdate, z.object({
+    theme: z.enum(['system', 'light', 'dark']).optional(),
+    lastProjectId: z.string().optional(),
+    sidebarWidth: z.number().min(220).max(360).optional(),
+    onboardingCompleted: z.boolean().optional(),
+    onboardingStatus: z.enum(['pending', 'completed', 'skipped']).optional(),
+    onboardingReminderDismissed: z.boolean().optional()
+  }), input => { const { database } = requiredServices(); const settings = database.updateSettings(input as Partial<AppSettings>); nativeTheme.themeSource = settings.theme; return settings })
   handle(ipc.workspaceSelect, empty, async () => { const result = await dialog.showOpenDialog({ title: '选择学习工作区', properties: ['openDirectory', 'createDirectory'] }); if (result.canceled || !result.filePaths[0]) return null; return requiredServices().workspaceService.registerWorkspace(result.filePaths[0]) })
   handle(ipc.workspaceList, empty, () => requiredServices().database.listWorkspaces())
   handle(ipc.workspaceOpen, z.object({ workspaceId: z.string().uuid() }), input => requiredServices().database.touchWorkspace(input.workspaceId))
@@ -167,6 +191,299 @@ function registerIpc(): void {
       activeRuns.delete(input.runId)
     }
   })
+  handle(ipc.cmakeBuild, cmakeBuildRequestSchema, async input => {
+    const { database, workspaceService } = requiredServices()
+    const { root, workspace } = workspaceService.projectRoot(input.projectId)
+    if (workspace.trustState !== 'trusted') throw new DomainError('POLICY_WORKSPACE_READ_ONLY', '工作区当前为只读，不能构建项目。', '信任工作区后再构建。')
+    if (!existsSync(join(root, 'CMakeLists.txt'))) throw new ToolExecutionError('CMAKE_PROJECT_REQUIRED', '当前项目根目录没有 CMakeLists.txt。', '选择 CMake 项目，或先创建 CMakeLists.txt。')
+    const cmakePath = toolchainService.resolveToolPath('cmake')
+    if (!cmakePath) throw new ToolExecutionError('CMAKE_NOT_FOUND', '未找到 CMake。', '安装 CMake 并将其加入 PATH，然后在设置页重新检测环境。')
+    const profile = activeToolchain()
+    const buildId = randomUUID()
+    const buildDirectory = join(app.getPath('userData'), 'builds', input.projectId, buildId, 'cmake')
+    const controller = startRun(input.runId)
+    try {
+      const result = await toolchainService.buildCmakeProject({
+        profile,
+        cmakePath,
+        projectRoot: root,
+        buildDirectory,
+        standard: input.standard,
+        configuration: input.configuration,
+        signal: controller.signal
+      })
+      if (result.success) cmakeBuilds.set(buildId, { directory: buildDirectory, sourceDirectory: result.sourceDirectory, projectId: input.projectId, configuration: input.configuration })
+      database.addEvent({
+        eventId: randomUUID(),
+        type: result.success ? 'cmake.build.succeeded' : 'cmake.build.failed',
+        version: 1,
+        occurredAt: new Date().toISOString(),
+        actor: 'tool',
+        projectId: input.projectId,
+        payload: { runId: input.runId, buildId, profileId: profile.id, configuration: input.configuration, diagnostics: result.diagnostics.length }
+      })
+      return {
+        runId: input.runId,
+        buildId,
+        projectId: input.projectId,
+        profileId: profile.id,
+        configuration: input.configuration,
+        success: result.success,
+        configure: result.configure,
+        ...(result.build ? { build: result.build } : {}),
+        diagnostics: result.diagnostics,
+        compileCommandsGenerated: result.compileCommandsGenerated,
+        builtAt: new Date().toISOString()
+      }
+    } finally {
+      activeRuns.delete(input.runId)
+    }
+  })
+  handle(ipc.ctestRun, ctestRunRequestSchema, async input => {
+    const { database, workspaceService } = requiredServices()
+    const build = cmakeBuilds.get(input.buildId)
+    if (!build || !existsSync(build.directory)) throw new ToolExecutionError('CTEST_BUILD_NOT_FOUND', 'CMake 构建目录已失效或不存在。', '重新构建 CMake 项目后再运行测试。', true)
+    const { workspace } = workspaceService.projectRoot(build.projectId)
+    if (workspace.trustState !== 'trusted') throw new DomainError('POLICY_WORKSPACE_READ_ONLY', '工作区当前为只读，不能运行测试。', '信任工作区后再运行测试。')
+    const ctestPath = toolchainService.resolveToolPath('ctest')
+    if (!ctestPath) throw new ToolExecutionError('CTEST_NOT_FOUND', '未找到 CTest。', '安装完整 CMake 工具并将其加入 PATH。')
+    const controller = startRun(input.runId)
+    try {
+      const result = await toolchainService.runCtest({
+        ctestPath,
+        buildDirectory: build.directory,
+        configuration: build.configuration,
+        timeoutMs: input.timeoutMs,
+        signal: controller.signal
+      })
+      database.addEvent({
+        eventId: randomUUID(),
+        type: result.success ? 'ctest.run.succeeded' : result.process.cancelled ? 'ctest.run.cancelled' : 'ctest.run.failed',
+        version: 1,
+        occurredAt: new Date().toISOString(),
+        actor: 'tool',
+        projectId: build.projectId,
+        payload: { runId: input.runId, buildId: input.buildId, total: result.total, passed: result.passed, failed: result.failed }
+      })
+      return { runId: input.runId, buildId: input.buildId, ...result }
+    } finally {
+      activeRuns.delete(input.runId)
+    }
+  })
+  handle(ipc.analysisClangTidy, staticAnalysisRequestSchema, async input => {
+    const { database, workspaceService } = requiredServices()
+    const { root, workspace } = workspaceService.projectRoot(input.projectId)
+    if (workspace.trustState !== 'trusted') throw new DomainError('POLICY_WORKSPACE_READ_ONLY', '工作区当前为只读，不能执行静态分析。', '信任工作区后再分析。')
+    if (!/\.(?:cpp|cc|cxx|h|hpp)$/i.test(input.relativePath)) throw new ToolExecutionError('ANALYSIS_SOURCE_UNSUPPORTED', '当前文件不是可分析的 C++ 文件。', '请选择 C++ 源文件或头文件。')
+    const originalSourcePath = safePath(root, input.relativePath, false)
+    const clangTidyPath = toolchainService.resolveToolPath('clang-tidy')
+    if (!clangTidyPath) throw new ToolExecutionError('CLANG_TIDY_NOT_FOUND', '未找到 clang-tidy。', '安装 LLVM 工具链并将 clang-tidy 加入 PATH。')
+    const profile = activeToolchain()
+    const latestBuild = [...cmakeBuilds.values()].reverse().find(item => item.projectId === input.projectId && existsSync(join(item.directory, 'compile_commands.json')))
+    const sourcePath = latestBuild ? safePath(latestBuild.sourceDirectory, input.relativePath, false) : originalSourcePath
+    const controller = startRun(input.runId)
+    try {
+      const result = await toolchainService.analyzeWithClangTidy({
+        clangTidyPath,
+        profile,
+        projectRoot: latestBuild?.sourceDirectory ?? root,
+        sourcePath,
+        standard: input.standard,
+        ...(latestBuild ? { compileCommandsDirectory: latestBuild.directory } : {}),
+        signal: controller.signal
+      })
+      database.addEvent({
+        eventId: randomUUID(),
+        type: result.success ? 'analysis.clang-tidy.succeeded' : 'analysis.clang-tidy.failed',
+        version: 1,
+        occurredAt: new Date().toISOString(),
+        actor: 'tool',
+        projectId: input.projectId,
+        payload: { runId: input.runId, relativePath: input.relativePath, diagnostics: result.diagnostics.length }
+      })
+      return {
+        runId: input.runId,
+        projectId: input.projectId,
+        relativePath: input.relativePath,
+        success: result.success,
+        process: result.process,
+        diagnostics: result.diagnostics,
+        analyzedAt: new Date().toISOString()
+      }
+    } finally {
+      activeRuns.delete(input.runId)
+    }
+  })
+  handle(ipc.vscodeOpen, vscodeOpenRequestSchema, async input => {
+    const { root } = requiredServices().workspaceService.projectRoot(input.projectId)
+    const vscodePath = toolchainService.resolveToolPath('vscode')
+    if (!vscodePath) throw new ToolExecutionError('VSCODE_NOT_FOUND', '未找到 VS Code 命令行工具。', '安装 VS Code，并确保 code 命令可用。')
+    const targetPath = input.relativePath ? safePath(root, input.relativePath, false) : undefined
+    const process = await toolchainService.openInVsCode(vscodePath, root, targetPath ? { path: targetPath, ...(input.line ? { line: input.line } : {}), ...(input.column ? { column: input.column } : {}) } : undefined)
+    return { success: process.exitCode === 0 && !process.timedOut && !process.cancelled, process }
+  })
+  handle(ipc.environmentOpenDownload, environmentOpenDownloadRequestSchema, async input => {
+    const urls = {
+      msys2: 'https://www.msys2.org/',
+      llvm: 'https://llvm.org/',
+      cmake: 'https://cmake.org/download/',
+      vscode: 'https://code.visualstudio.com/download',
+      'visual-studio': 'https://visualstudio.microsoft.com/downloads/'
+    } as const
+    await shell.openExternal(urls[input.target])
+  })
+  handle(ipc.environmentInstallerStatus, empty, async () => {
+    if (process.platform !== 'win32') return { available: false, manager: 'winget' as const, reason: '当前自动安装引导仅支持 Windows。' }
+    const result = await runProcess('winget.exe', ['--version'], { timeoutMs: 5_000, maxOutputBytes: 16 * 1024 })
+    const version = `${result.stdout}\n${result.stderr}`.split(/\r?\n/).map(line => line.trim()).find(Boolean)
+    return result.exitCode === 0
+      ? { available: true, manager: 'winget' as const, ...(version ? { version } : {}) }
+      : { available: false, manager: 'winget' as const, reason: '未找到可运行的 WinGet，请使用官方下载入口。' }
+  })
+  handle(ipc.environmentInstall, environmentInstallRequestSchema, async input => {
+    const packages = {
+      msys2: { label: 'MSYS2', packageId: 'MSYS2.MSYS2' },
+      llvm: { label: 'LLVM', packageId: 'LLVM.LLVM' },
+      cmake: { label: 'CMake', packageId: 'Kitware.CMake' },
+      vscode: { label: 'Visual Studio Code', packageId: 'Microsoft.VisualStudioCode' }
+    } as const
+    const target = packages[input.target]
+    const status = await runProcess('winget.exe', ['--version'], { timeoutMs: 5_000, maxOutputBytes: 16 * 1024 })
+    if (status.exitCode !== 0) throw new ToolExecutionError('WINGET_NOT_AVAILABLE', '当前系统无法运行 WinGet。', '使用“官方下载”安装，完成后返回向导重新检测。')
+    const confirmation = await dialog.showMessageBox(mainWindow!, {
+      type: 'info',
+      buttons: ['取消', '打开安装终端'],
+      defaultId: 1,
+      cancelId: 0,
+      title: `安装 ${target.label}`,
+      message: `准备通过 WinGet 安装 ${target.label}`,
+      detail: `应用将打开一个可见的 PowerShell 窗口并运行固定软件包 ${target.packageId}。你可以查看安装过程、处理系统授权或随时关闭终端。`
+    })
+    if (confirmation.response !== 1) return { launched: false, target: input.target, packageId: target.packageId }
+    const command = [
+      `Write-Host 'CppPet 正在启动 ${target.label} 安装...' -ForegroundColor Cyan`,
+      `winget install --id '${target.packageId}' --exact --source winget --interactive --accept-source-agreements --accept-package-agreements`,
+      `Write-Host '安装命令已结束。请回到宠码学伴并点击重新检测。' -ForegroundColor Green`
+    ].join('; ')
+    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NoExit', '-Command', command], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false
+    })
+    child.once('error', () => undefined)
+    child.unref()
+    return { launched: true, target: input.target, packageId: target.packageId }
+  })
+  handle(ipc.languageStatus, languageStatusRequestSchema, input => {
+    requiredServices().workspaceService.projectRoot(input.projectId)
+    const profile = activeToolchain()
+    const serverPath = profile.languageServerPath ?? toolchainService.resolveToolPath('clangd')
+    return serverPath
+      ? { available: true, serverPath }
+      : { available: false, reason: '未找到 clangd。安装 LLVM 并重新绑定工具链后可启用语义补全、悬停和定义跳转。' }
+  })
+  handle(ipc.languageSync, languageDocumentSyncSchema, async input => {
+    const { root } = requiredServices().workspaceService.projectRoot(input.projectId)
+    const absolutePath = safePath(root, input.relativePath, false)
+    const profile = activeToolchain()
+    const serverPath = profile.languageServerPath ?? toolchainService.resolveToolPath('clangd')
+    if (!serverPath) throw new ToolExecutionError('CLANGD_NOT_FOUND', '未找到 clangd 语言服务。', '安装 LLVM 并重新检测、绑定工具链。')
+    let session = languageSessions.get(input.projectId)
+    if (!session) {
+      const latestBuild = [...cmakeBuilds.values()].reverse().find(item => item.projectId === input.projectId && existsSync(join(item.directory, 'compile_commands.json')))
+      session = new ClangdSession(serverPath, input.projectId, root, latestBuild?.directory, (relativePath, diagnostics) => {
+        mainWindow?.webContents.send(ipc.languageDiagnostics, { projectId: input.projectId, relativePath, diagnostics })
+      })
+      languageSessions.set(input.projectId, session)
+    }
+    await session.sync(input.relativePath, absolutePath, input.content, input.version)
+  })
+  handle(ipc.languageCompletion, languagePositionRequestSchema, async input => {
+    const { root } = requiredServices().workspaceService.projectRoot(input.projectId)
+    const path = safePath(root, input.relativePath, false)
+    const session = languageSessions.get(input.projectId)
+    if (!session) throw new ToolExecutionError('LANGUAGE_SESSION_NOT_READY', '当前文件尚未连接 clangd。', '等待语言服务初始化后重试。', true)
+    return session.completion(path, { line: input.line - 1, character: input.column - 1 })
+  })
+  handle(ipc.languageHover, languagePositionRequestSchema, async input => {
+    const { root } = requiredServices().workspaceService.projectRoot(input.projectId)
+    const path = safePath(root, input.relativePath, false)
+    const session = languageSessions.get(input.projectId)
+    if (!session) return null
+    return session.hover(path, { line: input.line - 1, character: input.column - 1 })
+  })
+  handle(ipc.languageDefinition, languagePositionRequestSchema, async input => {
+    const { root } = requiredServices().workspaceService.projectRoot(input.projectId)
+    const path = safePath(root, input.relativePath, false)
+    const session = languageSessions.get(input.projectId)
+    if (!session) return null
+    return session.definition(path, { line: input.line - 1, character: input.column - 1 })
+  })
+  handle(ipc.debugStart, debugStartRequestSchema, async input => {
+    const { database, workspaceService } = requiredServices()
+    const { root, workspace } = workspaceService.projectRoot(input.projectId)
+    if (workspace.trustState !== 'trusted') throw new DomainError('POLICY_WORKSPACE_READ_ONLY', '工作区当前为只读，不能启动调试。', '信任工作区后再调试。')
+    if (!/\.(?:cpp|cc|cxx)$/i.test(input.relativePath)) throw new ToolExecutionError('DEBUG_SOURCE_UNSUPPORTED', '当前文件不是可调试的 C++ 源文件。', '请选择 .cpp、.cc 或 .cxx 文件。')
+    const profile = activeToolchain()
+    const debuggerPath = profile.debuggerPath
+    if (!debuggerPath || !existsSync(debuggerPath)) throw new ToolExecutionError('DEBUGGER_NOT_FOUND', '当前工具链没有可用调试器。', '安装 GDB 或 LLDB，并重新绑定工具链。')
+    if (profile.family === 'msvc') throw new ToolExecutionError('DEBUGGER_BACKEND_UNSUPPORTED', '当前版本尚未接入 MSVC 调试后端。', '选择带 GDB 的 GCC 或带 LLDB 的 Clang 工具链。')
+    const sourcePath = safePath(root, input.relativePath, false)
+    const sessionId = randomUUID()
+    const outputDirectory = join(app.getPath('userData'), 'builds', input.projectId, sessionId, 'debug')
+    const stagedSourcePath = join(outputDirectory, 'debug-source.cpp')
+    mkdirSync(outputDirectory, { recursive: true })
+    copyFileSync(sourcePath, stagedSourcePath)
+    const build = await toolchainService.buildSingleFile({
+      profile,
+      projectRoot: root,
+      sourcePath: stagedSourcePath,
+      sourceRelativePath: input.relativePath,
+      outputDirectory,
+      standard: input.standard,
+      debugSymbols: true,
+      includeDirectories: [root]
+    })
+    if (!build.success) return {
+      sessionId,
+      projectId: input.projectId,
+      status: 'error' as const,
+      reason: '调试构建失败。',
+      frames: [],
+      variables: [],
+      output: `${build.process.stdout}\n${build.process.stderr}`.trim(),
+      diagnostics: build.diagnostics
+    }
+    const session = new GdbMiSession(
+      sessionId,
+      debuggerPath,
+      build.artifactPath,
+      input.projectId,
+      root,
+      new Map([[stagedSourcePath, input.relativePath]])
+    )
+    debugSessions.set(sessionId, session)
+    try {
+      const state = await session.initialize(input.breakpoints
+        .filter(item => item.relativePath.replaceAll('\\', '/').toLowerCase() === input.relativePath.replaceAll('\\', '/').toLowerCase())
+        .map(item => ({ path: stagedSourcePath.replaceAll('\\', '/'), line: item.line })))
+      database.addEvent({ eventId: randomUUID(), type: 'debug.session.started', version: 1, occurredAt: new Date().toISOString(), actor: 'tool', projectId: input.projectId, payload: { sessionId, relativePath: input.relativePath, breakpoints: input.breakpoints.length } })
+      return state
+    } catch (error) {
+      debugSessions.delete(sessionId)
+      throw error
+    }
+  })
+  handle(ipc.debugCommand, debugCommandRequestSchema, async input => {
+    const session = debugSessions.get(input.sessionId)
+    if (!session) throw new ToolExecutionError('DEBUG_SESSION_NOT_FOUND', '调试会话不存在或已结束。', '重新启动调试。', true)
+    const state = await session.execute(input.command)
+    if (state.status === 'exited' || state.status === 'error') {
+      await session.dispose()
+      debugSessions.delete(input.sessionId)
+    }
+    return state
+  })
   handle(ipc.programRun, programRunRequestSchema, async input => {
     const { database, workspaceService } = requiredServices()
     const artifact = buildArtifacts.get(input.buildId)
@@ -243,4 +560,10 @@ app.whenReady().then(() => {
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('before-quit', () => { for (const controller of activeRuns.values()) controller.abort(); stopWatching?.(); database?.close() })
+app.on('before-quit', () => {
+  for (const controller of activeRuns.values()) controller.abort()
+  for (const session of languageSessions.values()) void session.dispose()
+  for (const session of debugSessions.values()) void session.dispose()
+  stopWatching?.()
+  database?.close()
+})

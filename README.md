@@ -85,14 +85,22 @@ flowchart TB
 - SQLite WAL、Schema Migration、迁移备份和只读恢复模式。
 - Vitest 契约/单元测试与 Playwright Electron E2E 测试框架。
 - GCC、Clang、MSVC、CMake、调试器和 VS Code 的本机候选探测。
+- 首次启动环境初始化向导，分步完成自动检测、工具链验证绑定、工作区授权和结果确认。
+- 缺失工具提供固定官方入口；WinGet 可用时，经用户确认后可打开可见安装终端，应用不接受任意软件包或命令，也不会静默修改系统 PATH。
 - GCC 与 MSVC Hello World 编译运行烟雾验证。
 - 工具链绑定、SQLite 持久化、健康检查和设置页环境面板。
 - 受限子进程的超时、取消、输出上限、标准输入和 Windows 进程树回收。
 - 当前 C++ 文件的真实编译、运行和停止，支持 C++17、C++20 与 C++23 选择。
 - GCC、Clang、MSVC 编译/链接诊断标准化，以及输出面板、问题面板和行内标记。
-- 成功、语法错误、链接错误、死循环、崩溃和逻辑错误固定 C++ 样例库。
+- CMake 配置与多文件构建、CTest、`compile_commands.json` 生成和中文路径兼容构建。
+- clang-tidy 静态分析接口、诊断面板与缺失工具降级。
+- VS Code 新窗口打开项目和当前文件行列定位。
+- 标准 clangd/LSP 客户端、Monaco 补全、悬停、定义跳转、实时诊断与缺失工具降级。
+- GDB/MI 单文件调试、编辑器断点、继续/单步/跳出、暂停行、局部变量、调用栈和调试输出。
+- 中文项目路径的调试源码暂存与源位置回映射。
+- 成功、语法错误、链接错误、死循环、崩溃、逻辑错误和 CMake 工程固定 C++ 样例库。
 
-clangd/LSP、clang-tidy、DAP、CMake/CTest 工作流、VS Code 定位、Agent/MCP、知识树、成长系统和桌面宠物仍属于后续工作。
+DAP/LLDB/MSVC 调试、Agent/MCP、知识树、成长系统和桌面宠物仍属于后续工作。本机未安装 clangd 和 clang-tidy，因此两者的真实工具执行仍需在 LLVM 环境补充验收。
 
 ## 技术栈
 
@@ -101,8 +109,8 @@ clangd/LSP、clang-tidy、DAP、CMake/CTest 工作流、VS Code 定位、Agent/M
 | 桌面端 | Electron、electron-vite、electron-builder |
 | 前端 | Vue 3、TypeScript、Vite、Pinia |
 | UI | Element Plus、Lucide、Design Tokens |
-| 编辑器 | Monaco Editor；clangd / LSP 待接入 |
-| C++ 工具 | GCC / Clang / MSVC 单文件编译运行；CMake、CTest、clang-tidy、GDB / LLDB、DAP 待接入 |
+| 编辑器 | Monaco Editor；标准 clangd / LSP 客户端与 Provider |
+| C++ 工具 | GCC / Clang / MSVC 编译运行；CMake、CTest、clang-tidy、VS Code；GDB/MI 单文件调试 |
 | Agent（规划） | MCP SDK、可配置文本/多模态模型 Gateway |
 | 数据 | SQLite、better-sqlite3、WAL |
 | 校验 | Zod、Vitest、Playwright |
@@ -122,6 +130,8 @@ pnpm dev
 ```
 
 首次启动开发环境时，项目会为 Electron 重建 `better-sqlite3` 等原生依赖。
+
+应用首次使用会自动进入环境初始化向导。选择“稍后配置”时会提示找回路径，首页也会保留可关闭的环境提醒；可在“设置 → C++ 工具链 → 环境向导”再次打开。已经使用过旧版本的本地数据不会被强制重新引导。
 
 ## 常用命令
 
@@ -171,5 +181,10 @@ cpp-learn-agent/
 - [H1 接收清单](./docs/handoff-a/h1-acceptance.md)：成员 B 在独立环境执行的验收步骤。
 - [成员 B 工作计划](./docs/handoff-b/work-plan.md)：H2 分批实现范围与当前进度。
 - [成员 B 第 2 批测试报告](./docs/handoff-b/batch-2-test-report.md)：Monaco、编译运行、诊断和 Electron E2E 验证结果。
+- [成员 B 第 3 批工程工具测试报告](./docs/handoff-b/batch-3-engineering-test-report.md)：CMake、CTest、clang-tidy、VS Code 与中文路径构建验证结果。
+- [H2 接收清单](./docs/handoff-b/h2-acceptance.md)：成员 C 独立验收 H2 开发能力的步骤。
+- [H2 运行手册](./docs/handoff-b/runbook.md)：工具链、clangd、断点调试和原生 ABI 操作。
+- [H2 契约说明](./docs/handoff-b/contracts.md)：编译、语言服务、调试与外部编辑器 IPC。
+- [H2 已知问题](./docs/handoff-b/known-issues.md)：本机工具缺失和当前后端范围。
 
 本项目为软件工程课程大作业，计划由 4 人在 16 周内协作完成。

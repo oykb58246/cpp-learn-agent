@@ -10,3 +10,4 @@
 | `infinite-loop` | 运行超时并回收进程 |
 | `runtime-crash` | 非零退出或访问冲突 |
 | `logic-error` | 编译运行成功，但固定测试用例失败 |
+| `cmake-project` | 多文件 CMake 构建、编译数据库生成与 CTest 成功 |

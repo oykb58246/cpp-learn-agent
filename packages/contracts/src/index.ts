@@ -2,15 +2,38 @@ import { z } from 'zod'
 import type {
   BuildRequest,
   BuildResult,
+  CmakeBuildRequest,
+  CmakeBuildResult,
+  CtestRunRequest,
+  CtestRunResult,
+  DebugCommandRequest,
+  DebugSessionState,
+  DebugStartRequest,
+  EnvironmentInstallRequest,
+  EnvironmentInstallResult,
+  EnvironmentInstallerStatus,
+  EnvironmentOpenDownloadRequest,
+  LanguageCompletion,
+  LanguageDefinition,
+  LanguageDiagnosticsEvent,
+  LanguageDocumentSync,
+  LanguageHover,
+  LanguagePositionRequest,
+  LanguageStatus,
+  LanguageStatusRequest,
   ProgramRunRequest,
   ProgramRunResult,
   ProgramStopRequest,
   ProgramStopResult,
+  StaticAnalysisRequest,
+  StaticAnalysisResult,
   ToolchainBindingState,
   ToolchainDetectionResult,
   ToolchainHealthResult,
   ToolchainProbeResult,
-  ToolchainProfile
+  ToolchainProfile,
+  VscodeOpenRequest,
+  VscodeOpenResult
 } from './future'
 export { ipc } from './ipc'
 export * from './future'
@@ -130,7 +153,15 @@ export interface DomainEvent<T = unknown> {
   eventId: string; type: string; version: 1; occurredAt: string
   actor: 'user' | 'system' | 'agent' | 'tool'; projectId?: string; payload: T
 }
-export interface AppSettings { theme: ThemePreference; lastProjectId?: string; activeToolchainId?: string; sidebarWidth: number }
+export interface AppSettings {
+  theme: ThemePreference
+  lastProjectId?: string
+  activeToolchainId?: string
+  sidebarWidth: number
+  onboardingCompleted: boolean
+  onboardingStatus: 'pending' | 'completed' | 'skipped'
+  onboardingReminderDismissed: boolean
+}
 export interface AppBootstrap {
   version: string; platform: string; recoveryMode: boolean; settings: AppSettings
   recentProjects: Project[]; workspaces: Workspace[]; recentEvents: DomainEvent[]
@@ -189,6 +220,35 @@ export interface CppPetApi {
   }
   compiler: {
     build(input: BuildRequest): Promise<ApiResult<BuildResult>>
+  }
+  cmake: {
+    build(input: CmakeBuildRequest): Promise<ApiResult<CmakeBuildResult>>
+  }
+  ctest: {
+    run(input: CtestRunRequest): Promise<ApiResult<CtestRunResult>>
+  }
+  analysis: {
+    clangTidy(input: StaticAnalysisRequest): Promise<ApiResult<StaticAnalysisResult>>
+  }
+  vscode: {
+    open(input: VscodeOpenRequest): Promise<ApiResult<VscodeOpenResult>>
+  }
+  environment: {
+    openDownload(input: EnvironmentOpenDownloadRequest): Promise<ApiResult<void>>
+    installerStatus(): Promise<ApiResult<EnvironmentInstallerStatus>>
+    install(input: EnvironmentInstallRequest): Promise<ApiResult<EnvironmentInstallResult>>
+  }
+  language: {
+    status(input: LanguageStatusRequest): Promise<ApiResult<LanguageStatus>>
+    sync(input: LanguageDocumentSync): Promise<ApiResult<void>>
+    completion(input: LanguagePositionRequest): Promise<ApiResult<LanguageCompletion[]>>
+    hover(input: LanguagePositionRequest): Promise<ApiResult<LanguageHover | null>>
+    definition(input: LanguagePositionRequest): Promise<ApiResult<LanguageDefinition | null>>
+    onDiagnostics(listener: (event: LanguageDiagnosticsEvent) => void): () => void
+  }
+  debug: {
+    start(input: DebugStartRequest): Promise<ApiResult<DebugSessionState>>
+    command(input: DebugCommandRequest): Promise<ApiResult<DebugSessionState>>
   }
   program: {
     run(input: ProgramRunRequest): Promise<ApiResult<ProgramRunResult>>

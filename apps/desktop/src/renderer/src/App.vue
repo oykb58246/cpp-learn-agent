@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { BookOpen, Bot, ChartNoAxesCombined, Code2, GraduationCap, Home, Settings, Workflow } from 'lucide-vue-next'
 import { useAppStore } from './stores/app'
 import { useWorkspaceStore } from './stores/workspace'
@@ -8,9 +8,11 @@ import { useWorkspaceStore } from './stores/workspace'
 const appStore = useAppStore()
 const workspace = useWorkspaceStore()
 const route = useRoute()
+const router = useRouter()
 let unlisten: (() => void) | undefined
 onMounted(async () => {
   await appStore.init()
+  if ((!appStore.settings.onboardingCompleted || appStore.settings.onboardingStatus === 'pending') && route.path !== '/onboarding') await router.replace('/onboarding')
   await workspace.loadProjects()
   unlisten = window.cppPet.workspace.onChanged(event => workspace.handleExternal(event))
 })
@@ -28,13 +30,13 @@ const projectName = computed(() => workspace.currentProject?.name ?? '宠码学�
 </script>
 
 <template>
-  <div class="app-shell">
+  <div :class="['app-shell', { 'onboarding-shell': route.path === '/onboarding' }]">
     <header class="titlebar">
       <div class="brand-mark"><Bot :size="17" /></div>
       <span class="title-project">{{ projectName }}</span>
       <span class="title-context">C++ 学习工作台</span>
     </header>
-    <aside class="activity-rail">
+    <aside v-if="route.path !== '/onboarding'" class="activity-rail">
       <router-link v-for="item in nav" :key="item.to" :to="item.to" :class="['rail-button', { active: route.path.startsWith(item.to) }]" :title="item.label">
         <component :is="item.icon" :size="19" /><span>{{ item.label }}</span>
       </router-link>

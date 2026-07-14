@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, normalize, relative } from 'node:path'
 import { spawn } from 'node:child_process'
 import type {
+  CmakeConfiguration,
   CppStandard,
   Diagnostic,
   DevelopmentTool,
@@ -37,6 +38,8 @@ export interface SingleFileBuildOptions {
   sourceRelativePath: string
   outputDirectory: string
   standard?: CppStandard
+  debugSymbols?: boolean
+  includeDirectories?: string[]
   signal?: AbortSignal
 }
 
@@ -45,6 +48,52 @@ export interface SingleFileBuildResult {
   process: ProcessResult
   diagnostics: Diagnostic[]
   success: boolean
+}
+
+export interface CmakeBuildOptions {
+  profile: ToolchainProfile
+  cmakePath: string
+  projectRoot: string
+  buildDirectory: string
+  standard?: CppStandard
+  configuration?: CmakeConfiguration
+  signal?: AbortSignal
+}
+
+export interface CmakeBuildOutput {
+  configure: ProcessResult
+  build?: ProcessResult
+  diagnostics: Diagnostic[]
+  compileCommandsGenerated: boolean
+  sourceDirectory: string
+  success: boolean
+}
+
+export interface CtestOptions {
+  ctestPath: string
+  buildDirectory: string
+  configuration?: CmakeConfiguration
+  timeoutMs?: number
+  signal?: AbortSignal
+}
+
+export interface CtestOutput {
+  process: ProcessResult
+  diagnostics: Diagnostic[]
+  total: number
+  passed: number
+  failed: number
+  success: boolean
+}
+
+export interface StaticAnalysisOptions {
+  clangTidyPath: string
+  profile: ToolchainProfile
+  projectRoot: string
+  sourcePath: string
+  standard?: CppStandard
+  compileCommandsDirectory?: string
+  signal?: AbortSignal
 }
 
 export function runProcess(command: string, args: string[] = [], options: ProcessOptions = {}): Promise<ProcessResult> {
@@ -177,6 +226,48 @@ const pathKey = (value: string) => normalize(value).replaceAll('\\', '/').toLowe
 const firstLine = (value: string) => value.split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? ''
 const candidateId = (family: string, compilerPath: string) => `${family}:${createHash('sha256').update(pathKey(compilerPath)).digest('hex').slice(0, 16)}`
 const cmdQuote = (value: string) => `"${value.replaceAll('"', '""')}"`
+const buildIgnoredDirectories = new Set(['.git', 'node_modules', 'build', 'dist', 'out'])
+
+function stageProjectSource(source: string, destination: string): void {
+  rmSync(destination, { recursive: true, force: true })
+  mkdirSync(destination, { recursive: true })
+  const copyDirectory = (from: string, to: string) => {
+    for (const entry of readdirSync(from, { withFileTypes: true })) {
+      if (entry.isSymbolicLink() || buildIgnoredDirectories.has(entry.name) || entry.name.startsWith('.cpppet-')) continue
+      const sourcePath = join(from, entry.name)
+      const destinationPath = join(to, entry.name)
+      if (entry.isDirectory()) {
+        mkdirSync(destinationPath, { recursive: true })
+        copyDirectory(sourcePath, destinationPath)
+      } else if (entry.isFile()) {
+        copyFileSync(sourcePath, destinationPath)
+      }
+    }
+  }
+  copyDirectory(source, destination)
+}
+
+function remapStagedPaths(output: string, stagedRoot: string, projectRoot: string): string {
+  const mappings = [
+    [stagedRoot, projectRoot],
+    [stagedRoot.replaceAll('\\', '/'), projectRoot.replaceAll('\\', '/')]
+  ] as const
+  return mappings.reduce((value, [from, to]) => value.replaceAll(from, to), output)
+}
+
+function remapCompileCommands(filePath: string, stagedRoot: string, projectRoot: string): void {
+  if (!existsSync(filePath)) return
+  const replace = (value: unknown): unknown => {
+    if (typeof value === 'string') return remapStagedPaths(value, stagedRoot, projectRoot)
+    if (Array.isArray(value)) return value.map(replace)
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, replace(item)]))
+    }
+    return value
+  }
+  const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as unknown
+  writeFileSync(filePath, `${JSON.stringify(replace(parsed), null, 2)}\n`, 'utf8')
+}
 
 function conceptIds(message: string, source: Diagnostic['source']): string[] {
   const ids = new Set<string>()
@@ -249,6 +340,60 @@ export function parseCompilerDiagnostics(output: string, family: ToolchainProfil
     }
   }
   return diagnostics
+}
+
+export function parseClangTidyDiagnostics(output: string, projectRoot: string): Diagnostic[] {
+  const diagnostics: Diagnostic[] = []
+  const seen = new Set<string>()
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    const match = line.match(/^(.+?):(\d+):(\d+):\s*(warning|error|note):\s*(.+?)(?:\s+\[([^\]]+)])?$/i)
+    if (!match) continue
+    const message = match[5] ?? line
+    const key = `${match[1]}:${match[2]}:${match[3]}:${message}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    diagnostics.push({
+      source: 'clang-tidy',
+      severity: /error/i.test(match[4] ?? '') ? 'error' : /warning/i.test(match[4] ?? '') ? 'warning' : 'info',
+      ...(match[6] ? { code: match[6] } : {}),
+      ...(match[1] ? { file: normalizedFile(match[1], projectRoot) } : {}),
+      ...(match[2] ? { line: Number(match[2]) } : {}),
+      ...(match[3] ? { column: Number(match[3]) } : {}),
+      rawMessage: message,
+      normalizedMessage: message,
+      relatedConceptIds: conceptIds(message, 'clang-tidy')
+    })
+  }
+  return diagnostics
+}
+
+export function parseCtestSummary(output: string): { total: number; passed: number; failed: number } {
+  const summary = output.match(/(\d+)% tests passed,\s*(\d+) tests failed out of\s*(\d+)/i)
+  if (summary) {
+    const failed = Number(summary[2] ?? 0)
+    const total = Number(summary[3] ?? 0)
+    return { total, failed, passed: Math.max(0, total - failed) }
+  }
+  const noTests = /No tests were found/i.test(output)
+  return noTests ? { total: 0, passed: 0, failed: 0 } : { total: 0, passed: 0, failed: 0 }
+}
+
+export function vscodeOpenArgs(projectRoot: string, target?: { path: string; line?: number; column?: number }): string[] {
+  return target
+    ? ['-n', projectRoot, '-g', `${target.path}:${target.line ?? 1}:${target.column ?? 1}`]
+    : ['-n', projectRoot]
+}
+
+function ctestDiagnostics(result: ProcessResult, summary: { total: number; passed: number; failed: number }): Diagnostic[] {
+  if (result.cancelled) return [{ source: 'judge', severity: 'info', rawMessage: '测试运行已取消。', normalizedMessage: '测试运行已取消。', relatedConceptIds: ['testing.execution'] }]
+  if (result.timedOut) return [{ source: 'judge', severity: 'error', code: 'CTEST_TIMEOUT', rawMessage: 'CTest 运行超时。', normalizedMessage: '测试运行时间过长，已终止测试进程。', relatedConceptIds: ['testing.execution'] }]
+  if (summary.failed > 0 || result.exitCode !== 0) {
+    const failedNames = [...result.stdout.matchAll(/\d+\/\d+\s+Test\s+#\d+:\s+(.+?)\s+\.*\*\*\*Failed/gi)].map(match => match[1]?.trim()).filter(Boolean)
+    const message = failedNames.length ? `失败测试：${failedNames.join('、')}` : 'CTest 报告测试失败。'
+    return [{ source: 'judge', severity: 'error', code: 'CTEST_FAILED', rawMessage: message, normalizedMessage: message, relatedConceptIds: ['testing.execution'] }]
+  }
+  return []
 }
 
 export function runtimeDiagnostics(result: ProcessResult): Diagnostic[] {
@@ -462,13 +607,15 @@ export class ToolchainService {
     const artifactPath = join(options.outputDirectory, artifactName)
     rmSync(artifactPath, { force: true })
     const process = options.profile.family === 'msvc'
-      ? await this.compileProfileWithMsvc(options.profile, options.sourcePath, artifactPath, options.projectRoot, standard, options.signal)
+      ? await this.compileProfileWithMsvc(options.profile, options.sourcePath, artifactPath, options.projectRoot, standard, options.signal, options.debugSymbols)
       : await runProcess(options.profile.compilerPath, [
         options.sourcePath,
         `-std=${standard}`,
         '-Wall',
         '-Wextra',
         '-pedantic',
+        ...(options.debugSymbols ? ['-g', '-O0'] : []),
+        ...(options.includeDirectories ?? []).flatMap(directory => ['-I', directory]),
         '-o',
         artifactPath
       ], {
@@ -483,6 +630,148 @@ export class ToolchainService {
       diagnostics: parseCompilerDiagnostics(`${process.stderr}\n${process.stdout}`, options.profile.family, options.projectRoot),
       success: process.exitCode === 0 && !process.timedOut && !process.cancelled && existsSync(artifactPath)
     }
+  }
+
+  resolveToolPath(kind: DevelopmentTool['kind']): string | undefined {
+    const item = toolNames.find(tool => tool.kind === kind)
+    if (!item) return undefined
+    const extras = item.names.flatMap(name => commonExecutables[name as keyof typeof commonExecutables] ?? [])
+    return findExecutables(item.names, process.env, extras)[0]
+  }
+
+  async buildCmakeProject(options: CmakeBuildOptions): Promise<CmakeBuildOutput> {
+    const standard = options.standard ?? 'c++17'
+    const configuration = options.configuration ?? 'Debug'
+    const sourceDirectory = join(dirname(options.buildDirectory), 'source')
+    stageProjectSource(options.projectRoot, sourceDirectory)
+    mkdirSync(options.buildDirectory, { recursive: true })
+    const configureArgs = [
+      '-S', sourceDirectory,
+      '-B', options.buildDirectory,
+      '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
+      `-DCMAKE_BUILD_TYPE=${configuration}`,
+      `-DCMAKE_CXX_STANDARD=${standard.slice(3)}`
+    ]
+    if (options.profile.cmakeGenerator) configureArgs.push('-G', options.profile.cmakeGenerator)
+    if (options.profile.family !== 'msvc') configureArgs.push(`-DCMAKE_CXX_COMPILER=${options.profile.compilerPath}`)
+
+    const buildEnvironment = options.profile.family === 'msvc'
+      ? process.env
+      : { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' }
+    const configure = await this.runWithProfile(options.profile, options.cmakePath, configureArgs, {
+      cwd: options.projectRoot,
+      env: buildEnvironment,
+      timeoutMs: 60_000,
+      maxOutputBytes: 512 * 1024,
+      ...(options.signal ? { signal: options.signal } : {})
+    })
+    const configureResult = {
+      ...configure,
+      stdout: remapStagedPaths(configure.stdout, sourceDirectory, options.projectRoot),
+      stderr: remapStagedPaths(configure.stderr, sourceDirectory, options.projectRoot)
+    }
+    const configureDiagnostics = parseCompilerDiagnostics(
+      `${configureResult.stderr}\n${configureResult.stdout}`,
+      options.profile.family,
+      options.projectRoot
+    )
+    if (configure.exitCode !== 0 || configure.timedOut || configure.cancelled) {
+      return {
+        configure: configureResult,
+        diagnostics: configureDiagnostics,
+        compileCommandsGenerated: existsSync(join(options.buildDirectory, 'compile_commands.json')),
+        sourceDirectory,
+        success: false
+      }
+    }
+
+    const build = await this.runWithProfile(options.profile, options.cmakePath, [
+      '--build', options.buildDirectory,
+      '--config', configuration,
+      '--parallel'
+    ], {
+      cwd: options.projectRoot,
+      env: buildEnvironment,
+      timeoutMs: 120_000,
+      maxOutputBytes: 512 * 1024,
+      ...(options.signal ? { signal: options.signal } : {})
+    })
+    const buildResult = {
+      ...build,
+      stdout: remapStagedPaths(build.stdout, sourceDirectory, options.projectRoot),
+      stderr: remapStagedPaths(build.stderr, sourceDirectory, options.projectRoot)
+    }
+    remapCompileCommands(join(options.buildDirectory, 'compile_commands.json'), sourceDirectory, options.projectRoot)
+    const buildDiagnostics = parseCompilerDiagnostics(
+      `${buildResult.stderr}\n${buildResult.stdout}`,
+      options.profile.family,
+      options.projectRoot
+    )
+    return {
+      configure: configureResult,
+      build: buildResult,
+      diagnostics: [...configureDiagnostics, ...buildDiagnostics],
+      compileCommandsGenerated: existsSync(join(options.buildDirectory, 'compile_commands.json')),
+      sourceDirectory,
+      success: build.exitCode === 0 && !build.timedOut && !build.cancelled
+    }
+  }
+
+  async runCtest(options: CtestOptions): Promise<CtestOutput> {
+    const configuration = options.configuration ?? 'Debug'
+    const process = await runProcess(options.ctestPath, [
+      '--test-dir', options.buildDirectory,
+      '--build-config', configuration,
+      '--output-on-failure',
+      '--no-tests=error'
+    ], {
+      cwd: options.buildDirectory,
+      timeoutMs: options.timeoutMs ?? 30_000,
+      maxOutputBytes: 512 * 1024,
+      ...(options.signal ? { signal: options.signal } : {})
+    })
+    const summary = parseCtestSummary(`${process.stdout}\n${process.stderr}`)
+    const diagnostics = ctestDiagnostics(process, summary)
+    return {
+      process,
+      diagnostics,
+      ...summary,
+      success: process.exitCode === 0 && !process.timedOut && !process.cancelled && summary.failed === 0
+    }
+  }
+
+  async analyzeWithClangTidy(options: StaticAnalysisOptions): Promise<{ process: ProcessResult; diagnostics: Diagnostic[]; success: boolean }> {
+    const args = [options.sourcePath]
+    if (options.compileCommandsDirectory && existsSync(join(options.compileCommandsDirectory, 'compile_commands.json'))) {
+      args.push('-p', options.compileCommandsDirectory)
+    } else {
+      args.push('--', `-std=${options.standard ?? 'c++17'}`)
+      if (options.profile.family !== 'msvc') args.push(`--gcc-toolchain=${dirname(dirname(options.profile.compilerPath))}`)
+    }
+    const process = await runProcess(options.clangTidyPath, args, {
+      cwd: options.projectRoot,
+      timeoutMs: 60_000,
+      maxOutputBytes: 512 * 1024,
+      ...(options.signal ? { signal: options.signal } : {})
+    })
+    const diagnostics = parseClangTidyDiagnostics(`${process.stdout}\n${process.stderr}`, options.projectRoot)
+    return {
+      process,
+      diagnostics,
+      success: process.exitCode === 0 && !process.timedOut && !process.cancelled && !diagnostics.some(item => item.severity === 'error')
+    }
+  }
+
+  async openInVsCode(vscodePath: string, projectRoot: string, target?: { path: string; line?: number; column?: number }): Promise<ProcessResult> {
+    const args = vscodeOpenArgs(projectRoot, target)
+    if (extname(vscodePath).toLowerCase() === '.cmd') {
+      return runProcess(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', 'call', vscodePath, ...args], {
+        cwd: projectRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 64 * 1024
+      })
+    }
+    return runProcess(vscodePath, args, { cwd: projectRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 })
   }
 
   private profileFromCandidate(candidate: ToolchainCandidate): ToolchainProfile {
@@ -515,12 +804,12 @@ export class ToolchainService {
     }, sourcePath, executablePath, cwd, 'c++17')
   }
 
-  private async compileProfileWithMsvc(profile: ToolchainProfile, sourcePath: string, executablePath: string, cwd: string, standard: CppStandard, signal?: AbortSignal): Promise<ProcessResult> {
+  private async compileProfileWithMsvc(profile: ToolchainProfile, sourcePath: string, executablePath: string, cwd: string, standard: CppStandard, signal?: AbortSignal, debugSymbols = false): Promise<ProcessResult> {
     if (!profile.environmentScript) throw new ToolExecutionError('TOOLCHAIN_MSVC_ENV_MISSING', 'MSVC 环境初始化脚本不存在。', '通过 Visual Studio Installer 安装 C++ 生成工具。')
     const msvcStandard = standard === 'c++23' ? 'c++latest' : standard
     const command = [
       `call ${cmdQuote(profile.environmentScript)} -no_logo -arch=x64 -host_arch=x64`,
-      `${cmdQuote(profile.compilerPath)} /nologo /EHsc /std:${msvcStandard} ${cmdQuote(sourcePath)} /Fe:${cmdQuote(executablePath)}`
+      `${cmdQuote(profile.compilerPath)} /nologo /EHsc /std:${msvcStandard}${debugSymbols ? ' /Zi /Od' : ''} ${cmdQuote(sourcePath)} /Fe:${cmdQuote(executablePath)}`
     ].join(' && ')
     return runProcess(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', command], {
       cwd,
@@ -528,6 +817,16 @@ export class ToolchainService {
       maxOutputBytes: 512 * 1024,
       ...(signal ? { signal } : {})
     })
+  }
+
+  private async runWithProfile(profile: ToolchainProfile, commandPath: string, args: string[], options: ProcessOptions): Promise<ProcessResult> {
+    if (profile.family !== 'msvc') return runProcess(commandPath, args, options)
+    if (!profile.environmentScript) throw new ToolExecutionError('TOOLCHAIN_MSVC_ENV_MISSING', 'MSVC 环境初始化脚本不存在。', '通过 Visual Studio Installer 安装 C++ 生成工具。')
+    const command = [
+      `call ${cmdQuote(profile.environmentScript)} -no_logo -arch=x64 -host_arch=x64`,
+      [cmdQuote(commandPath), ...args.map(cmdQuote)].join(' ')
+    ].join(' && ')
+    return runProcess(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', command], options)
   }
 
   private async detectTools(): Promise<DevelopmentTool[]> {

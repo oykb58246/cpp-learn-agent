@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { CheckCircle2, Database, FolderRoot, MonitorCog, Moon, Play, RefreshCw, Sun, Trash2, Wrench } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
+import { CheckCircle2, Database, FolderRoot, MonitorCog, Moon, Play, RefreshCw, Sparkles, Sun, Trash2, Wrench } from 'lucide-vue-next'
 import type {
   ToolchainBindingState,
   ToolchainCandidate,
@@ -10,6 +11,7 @@ import type {
 import { useAppStore } from '../stores/app'
 
 const app = useAppStore()
+const router = useRouter()
 const detection = ref<ToolchainDetectionResult | null>(null)
 const bindings = ref<ToolchainBindingState>({ profiles: [] })
 const probes = ref<Record<string, ToolchainProbeResult>>({})
@@ -103,9 +105,14 @@ function familyName(family: ToolchainCandidate['family']) {
           <header>
             <Wrench :size="18" />
             <div><h2>C++ 工具链</h2><p>候选项必须通过 Hello World 编译与运行后才能绑定。</p></div>
-            <button class="secondary-command section-action" :disabled="detecting" @click="detectToolchains">
-              <RefreshCw :size="15" :class="{ spinning: detecting }" />{{ detecting ? '检测中' : '重新检测' }}
-            </button>
+            <div class="section-actions">
+              <button class="secondary-command" @click="router.push('/onboarding')">
+                <Sparkles :size="15" />环境向导
+              </button>
+              <button class="secondary-command" :disabled="detecting" @click="detectToolchains">
+                <RefreshCw :size="15" :class="{ spinning: detecting }" />{{ detecting ? '检测中' : '重新检测' }}
+              </button>
+            </div>
           </header>
 
           <div v-if="activeProfile" class="active-toolchain-line">

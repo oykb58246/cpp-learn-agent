@@ -12,6 +12,16 @@ export const ipc = {
   toolchainDetect: 'toolchain:detect', toolchainProbe: 'toolchain:probe', toolchainList: 'toolchain:list',
   toolchainBind: 'toolchain:bind', toolchainUnbind: 'toolchain:unbind', toolchainHealth: 'toolchain:health',
   compilerBuild: 'compiler:build',
+  cmakeBuild: 'cmake:build', ctestRun: 'ctest:run',
+  analysisClangTidy: 'analysis:clang-tidy',
+  vscodeOpen: 'vscode:open',
+  environmentOpenDownload: 'environment:open-download',
+  environmentInstallerStatus: 'environment:installer-status',
+  environmentInstall: 'environment:install',
+  languageStatus: 'language:status', languageSync: 'language:sync',
+  languageCompletion: 'language:completion', languageHover: 'language:hover',
+  languageDefinition: 'language:definition', languageDiagnostics: 'language:diagnostics',
+  debugStart: 'debug:start', debugCommand: 'debug:command',
   programRun: 'program:run', programStop: 'program:stop',
   mockDashboard: 'mocks:get-dashboard'
 } as const
