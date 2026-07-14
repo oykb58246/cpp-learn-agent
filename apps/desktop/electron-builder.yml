@@ -1,0 +1,10 @@
+appId: com.cpppet.agent
+productName: 宠码学伴
+directories:
+  output: ../../release
+files:
+  - out/**
+asarUnpack:
+  - node_modules/better-sqlite3/**
+win:
+  target: dir

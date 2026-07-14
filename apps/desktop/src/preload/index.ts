@@ -1,0 +1,30 @@
+import { contextBridge, ipcRenderer } from 'electron'
+import type { CppPetApi, WorkspaceChangedEvent } from '@cpp-pet/contracts'
+import { ipc } from '@cpp-pet/contracts/ipc'
+
+const invoke = <T>(channel: string, input?: unknown) => ipcRenderer.invoke(channel, input) as Promise<T>
+const api: CppPetApi = {
+  app: { getBootstrap: () => invoke(ipc.appBootstrap) },
+  settings: { update: input => invoke(ipc.settingsUpdate, input) },
+  workspace: {
+    selectRoot: () => invoke(ipc.workspaceSelect), list: () => invoke(ipc.workspaceList),
+    setTrust: input => invoke(ipc.workspaceTrust, input), remove: input => invoke(ipc.workspaceRemove, input),
+    onChanged: listener => { const wrapped = (_: unknown, event: WorkspaceChangedEvent) => listener(event); ipcRenderer.on(ipc.workspaceChanged, wrapped); return () => ipcRenderer.removeListener(ipc.workspaceChanged, wrapped) }
+  },
+  project: {
+    preview: input => invoke(ipc.projectPreview, input), create: input => invoke(ipc.projectCreate, input),
+    previewImport: () => invoke(ipc.projectImportPreview), import: input => invoke(ipc.projectImport, input),
+    list: input => invoke(ipc.projectList, input), open: input => invoke(ipc.projectOpen, input), remove: input => invoke(ipc.projectRemove, input)
+  },
+  files: {
+    listTree: input => invoke(ipc.filesTree, input), read: input => invoke(ipc.filesRead, input), write: input => invoke(ipc.filesWrite, input),
+    create: input => invoke(ipc.filesCreate, input), copy: input => invoke(ipc.filesCopy, input), move: input => invoke(ipc.filesMove, input),
+    rename: input => invoke(ipc.filesRename, input), remove: input => invoke(ipc.filesRemove, input), search: input => invoke(ipc.filesSearch, input)
+  },
+  snapshots: {
+    create: input => invoke(ipc.snapshotCreate, input), list: input => invoke(ipc.snapshotList, input),
+    previewRestore: input => invoke(ipc.snapshotPreview, input), restore: input => invoke(ipc.snapshotRestore, input), remove: input => invoke(ipc.snapshotRemove, input)
+  },
+  mocks: { getDashboard: () => invoke(ipc.mockDashboard) }
+}
+contextBridge.exposeInMainWorld('cppPet', api)
