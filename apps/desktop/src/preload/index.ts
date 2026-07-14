@@ -4,10 +4,10 @@ import { ipc } from '@cpp-pet/contracts/ipc'
 
 const invoke = <T>(channel: string, input?: unknown) => ipcRenderer.invoke(channel, input) as Promise<T>
 const api: CppPetApi = {
-  app: { getBootstrap: () => invoke(ipc.appBootstrap) },
-  settings: { update: input => invoke(ipc.settingsUpdate, input) },
+  app: { getBootstrap: () => invoke(ipc.appBootstrap), getVersion: () => invoke(ipc.appVersion) },
+  settings: { get: () => invoke(ipc.settingsGet), update: input => invoke(ipc.settingsUpdate, input) },
   workspace: {
-    selectRoot: () => invoke(ipc.workspaceSelect), list: () => invoke(ipc.workspaceList),
+    selectRoot: () => invoke(ipc.workspaceSelect), list: () => invoke(ipc.workspaceList), open: input => invoke(ipc.workspaceOpen, input),
     setTrust: input => invoke(ipc.workspaceTrust, input), remove: input => invoke(ipc.workspaceRemove, input),
     onChanged: listener => { const wrapped = (_: unknown, event: WorkspaceChangedEvent) => listener(event); ipcRenderer.on(ipc.workspaceChanged, wrapped); return () => ipcRenderer.removeListener(ipc.workspaceChanged, wrapped) }
   },

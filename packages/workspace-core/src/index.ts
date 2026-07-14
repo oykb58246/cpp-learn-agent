@@ -45,7 +45,7 @@ export class WorkspaceService {
     const workspace = this.requiredWorkspace(input.workspaceId)
     const cleanName = input.name.trim().replace(/[<>:"/\\|?*]/g, '-'); if (!cleanName) throw new DomainError('PROJECT_NAME_INVALID', '项目名称无效。', '请输入有效的项目名称。')
     const files = projectFiles(input.type, input.mode, input.statement, input.description, input.samples)
-    const draft: ProjectDraft = { draftId: randomUUID(), mode: input.mode, workspaceId: workspace.id, name: cleanName, type: input.type, relativeRoot: cleanName, proposedFiles: files, warnings: [] }
+    const draft: ProjectDraft = { draftId: randomUUID(), mode: input.mode, workspaceId: workspace.id, name: cleanName, type: input.type, relativeRoot: cleanName, proposedFiles: files, ...(input.mode === 'problem' ? { problem: { statement: input.statement ?? '', constraints: input.constraints ?? [], samples: input.samples ?? [] } } : {}), warnings: [] }
     const destination = safePath(workspace.rootPath, cleanName)
     if (existsSync(destination)) draft.warnings.push('目标目录已存在，创建操作将被拒绝；请修改项目名。')
     this.drafts.set(draft.draftId, draft); return draft
@@ -69,8 +69,9 @@ export class WorkspaceService {
       try { for (const file of draft.proposedFiles) { const path = safePath(projectRoot, file.relativePath); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, file.content, 'utf8') } }
       catch (error) { rmSync(projectRoot, { recursive: true, force: true }); throw error }
     }
-    const now = new Date().toISOString(); const project: Project = { id: randomUUID(), workspaceId: workspace.id, name: draft.name, type: draft.type, creationMode: draft.mode, relativeRoot: draft.relativeRoot, createdAt: now, updatedAt: now, lastOpenedAt: now }
-    this.db.saveProject(project); this.event('project.created', project.id, { name: project.name, mode: project.creationMode }); this.drafts.delete(draftId); return project
+    const now = new Date().toISOString(); const problem = draft.problem ? { id: randomUUID(), ...draft.problem, createdAt: now } : undefined
+    const project: Project = { id: randomUUID(), workspaceId: workspace.id, name: draft.name, type: draft.type, creationMode: draft.mode, relativeRoot: draft.relativeRoot, ...(problem ? { problemId: problem.id } : {}), createdAt: now, updatedAt: now, lastOpenedAt: now }
+    this.db.saveProject(project, problem); this.event('project.created', project.id, { name: project.name, mode: project.creationMode }); this.drafts.delete(draftId); return project
   }
 
   projectRoot(projectId: string): { project: Project; workspace: Workspace; root: string } {

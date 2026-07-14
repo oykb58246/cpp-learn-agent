@@ -30,10 +30,13 @@ const handle = <TInput, TOutput>(channel: string, schema: z.ZodType<TInput>, act
 
 function registerIpc(): void {
   const empty = z.undefined().or(z.null())
-  handle(ipc.appBootstrap, empty, () => { const { database } = requiredServices(); return { version: app.getVersion(), platform: process.platform, recoveryMode: database.recoveryMode, settings: database.getSettings(), recentProjects: database.listProjects().slice(0, 8), workspaces: database.listWorkspaces() } })
+  handle(ipc.appBootstrap, empty, () => { const { database } = requiredServices(); return { version: app.getVersion(), platform: process.platform, recoveryMode: database.recoveryMode, settings: database.getSettings(), recentProjects: database.listProjects().slice(0, 8), workspaces: database.listWorkspaces(), recentEvents: database.listEvents(12) } })
+  handle(ipc.appVersion, empty, () => app.getVersion())
+  handle(ipc.settingsGet, empty, () => requiredServices().database.getSettings())
   handle(ipc.settingsUpdate, z.object({ theme: z.enum(['system', 'light', 'dark']).optional(), lastProjectId: z.string().optional(), sidebarWidth: z.number().min(220).max(360).optional() }), input => { const { database } = requiredServices(); const settings = database.updateSettings(input as Partial<AppSettings>); nativeTheme.themeSource = settings.theme; return settings })
   handle(ipc.workspaceSelect, empty, async () => { const result = await dialog.showOpenDialog({ title: '选择学习工作区', properties: ['openDirectory', 'createDirectory'] }); if (result.canceled || !result.filePaths[0]) return null; return requiredServices().workspaceService.registerWorkspace(result.filePaths[0]) })
   handle(ipc.workspaceList, empty, () => requiredServices().database.listWorkspaces())
+  handle(ipc.workspaceOpen, z.object({ workspaceId: z.string().uuid() }), input => requiredServices().database.touchWorkspace(input.workspaceId))
   handle(ipc.workspaceTrust, z.object({ workspaceId: z.string().uuid(), trusted: z.boolean() }), input => requiredServices().workspaceService.setTrust(input.workspaceId, input.trusted))
   handle(ipc.workspaceRemove, z.object({ workspaceId: z.string().uuid() }), input => { requiredServices().database.removeWorkspace(input.workspaceId) })
   handle(ipc.projectPreview, projectDraftInputSchema, input => requiredServices().workspaceService.previewProject(input))

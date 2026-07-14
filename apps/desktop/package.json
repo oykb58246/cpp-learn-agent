@@ -1,6 +1,8 @@
 {
   "name": "@cpp-pet/desktop",
   "version": "0.1.0",
+  "description": "宠码学伴 C++ 新手学习桌面工作台",
+  "author": "CppPet Team",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",

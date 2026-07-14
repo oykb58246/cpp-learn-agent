@@ -65,6 +65,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-row div span { color: var(--text-secondary); font-size: 11px; }
 .project-row time { display: flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 11px; }
 .project-icon { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--accent); font: 650 10px var(--font-code); background: var(--panel); }
+.activity-block { margin-top: 22px; border-top: 1px solid var(--border); }.activity-block h3 { margin: 14px 0 7px; font-size: 12px; }.activity-row { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 32px; border-top: 1px solid var(--border); }.activity-row strong { font-weight: 500; }.activity-row span { color: var(--text-secondary); font-size: 11px; }
 .home-aside { display: grid; align-content: start; gap: 20px; }
 .learning-section, .task-section { padding-bottom: 12px; }
 .concept-line { display: flex; justify-content: space-between; align-items: flex-end; padding: 8px 0 10px; }

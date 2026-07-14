@@ -1,6 +1,6 @@
 export const ipc = {
-  appBootstrap: 'app:get-bootstrap', settingsUpdate: 'settings:update',
-  workspaceSelect: 'workspace:select-root', workspaceList: 'workspace:list',
+  appBootstrap: 'app:get-bootstrap', appVersion: 'app:get-version', settingsGet: 'settings:get', settingsUpdate: 'settings:update',
+  workspaceSelect: 'workspace:select-root', workspaceList: 'workspace:list', workspaceOpen: 'workspace:open',
   workspaceTrust: 'workspace:set-trust', workspaceRemove: 'workspace:remove', workspaceChanged: 'workspace:changed',
   projectPreview: 'project:preview', projectCreate: 'project:create', projectImportPreview: 'project:preview-import',
   projectImport: 'project:import', projectList: 'project:list', projectOpen: 'project:open', projectRemove: 'project:remove',

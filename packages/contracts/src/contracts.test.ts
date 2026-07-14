@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fileRevisionSchema, projectDraftInputSchema, workspaceSchema } from './index'
+import { agentRequestSchema, fileRevisionSchema, projectDraftInputSchema, toolchainProfileSchema, workspaceSchema } from './index'
 
 describe('contracts', () => {
   it('rejects malformed workspaces', () => {
@@ -12,5 +12,9 @@ describe('contracts', () => {
   it('limits editor payload size', () => {
     const value = { projectId: crypto.randomUUID(), relativePath: 'main.cpp', content: 'x'.repeat(2_097_153), expectedHash: '', createSnapshot: true }
     expect(fileRevisionSchema.safeParse(value).success).toBe(false)
+  })
+  it('reserves validated contracts for later stages', () => {
+    expect(agentRequestSchema.safeParse({ requestId: crypto.randomUUID(), source: 'editor', mode: 'diagnose', message: '解释错误' }).success).toBe(true)
+    expect(toolchainProfileSchema.safeParse({ id: crypto.randomUUID(), family: 'gcc', version: '14', targetArch: 'x64', compilerPath: 'C:/mingw/bin/g++.exe', capabilities: { compile: true, debug: false, compileDatabase: true }, verifiedAt: new Date().toISOString() }).success).toBe(true)
   })
 })

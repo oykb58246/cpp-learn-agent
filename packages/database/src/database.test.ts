@@ -17,7 +17,7 @@ describe('AppDatabase', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppet-db-')); dirs.push(dir); const file = join(dir, 'data', 'app.sqlite')
     const id = crypto.randomUUID(); let db = new AppDatabase(file)
     db.upsertWorkspace({ id, name: 'Safe', rootPath: dir, trustState: 'trusted', createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString() }); db.close()
-    db = new AppDatabase(file, [{ version: 2, name: 'intentional-failure', sql: 'THIS IS NOT SQL' }])
+    db = new AppDatabase(file, [{ version: 3, name: 'intentional-failure', sql: 'THIS IS NOT SQL' }])
     expect(db.recoveryMode).toBe(true)
     expect(db.listWorkspaces()[0]?.id).toBe(id)
     expect(() => db.updateSettings({ theme: 'dark' })).toThrow('read-only recovery mode')

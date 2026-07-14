@@ -36,6 +36,13 @@ CREATE INDEX IF NOT EXISTS idx_events_time ON domain_events(occurred_at DESC);
 
 export interface Migration { version: number; name: string; sql: string }
 const foundationMigration: Migration = { version: 1, name: 'h1-foundation', sql: foundationSql }
+const projectMetadataMigration: Migration = { version: 2, name: 'h1-user-problem-metadata', sql: `
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, nickname TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS problems (
+  id TEXT PRIMARY KEY, statement TEXT NOT NULL, constraints_json TEXT NOT NULL, samples_json TEXT NOT NULL, created_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO users(id, nickname, created_at, updated_at) VALUES('local-user', 'C++ 学习者', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+` }
 const migrationHash = (migration: Migration) => createHash('sha256').update(`${migration.version}:${migration.name}:${migration.sql}`).digest('hex')
 
 export interface SnapshotRecord extends SnapshotManifest { manifestPath: string; blobHashes: Record<string, string> }
@@ -45,7 +52,7 @@ export class AppDatabase {
   readonly recoveryMode: boolean
 
   constructor(readonly filePath: string, additionalMigrations: Migration[] = []) {
-    const migrations = [foundationMigration, ...additionalMigrations]
+    const migrations = [foundationMigration, projectMetadataMigration, ...additionalMigrations]
     mkdirSync(dirname(filePath), { recursive: true })
     this.db = new Database(filePath)
     this.db.pragma('foreign_keys = ON')
@@ -117,6 +124,7 @@ export class AppDatabase {
     this.db.prepare('UPDATE workspaces SET trust_state = ? WHERE id = ?').run(state, id)
     const item = this.getWorkspace(id); if (!item) throw new Error('Workspace not found'); return item
   }
+  touchWorkspace(id: string): Workspace { if (!this.recoveryMode) this.db.prepare('UPDATE workspaces SET last_opened_at = ? WHERE id = ?').run(new Date().toISOString(), id); const item = this.getWorkspace(id); if (!item) throw new Error('Workspace not found'); return item }
   removeWorkspace(id: string): void { this.ensureWritable(); this.db.prepare('UPDATE workspaces SET removed_at = ? WHERE id = ?').run(new Date().toISOString(), id) }
 
   listProjects(workspaceId?: string): Project[] {
@@ -129,10 +137,13 @@ export class AppDatabase {
     const row = this.db.prepare('SELECT * FROM projects WHERE id = ? AND removed_at IS NULL').get(id) as any
     return row ? mapProject(row) : undefined
   }
-  saveProject(project: Project): Project {
+  saveProject(project: Project, problem?: { id: string; statement: string; constraints: string[]; samples: Array<{ input: string; output: string }>; createdAt: string }): Project {
     this.ensureWritable()
-    this.db.prepare(`INSERT INTO projects(id,workspace_id,name,type,creation_mode,relative_root,problem_id,created_at,updated_at,last_opened_at)
-      VALUES(@id,@workspaceId,@name,@type,@creationMode,@relativeRoot,@problemId,@createdAt,@updatedAt,@lastOpenedAt)`).run({ ...project, problemId: project.problemId ?? null })
+    this.db.transaction(() => {
+      if (problem) this.db.prepare('INSERT INTO problems(id,statement,constraints_json,samples_json,created_at) VALUES(@id,@statement,@constraintsJson,@samplesJson,@createdAt)').run({ ...problem, constraintsJson: JSON.stringify(problem.constraints), samplesJson: JSON.stringify(problem.samples) })
+      this.db.prepare(`INSERT INTO projects(id,workspace_id,name,type,creation_mode,relative_root,problem_id,created_at,updated_at,last_opened_at)
+        VALUES(@id,@workspaceId,@name,@type,@creationMode,@relativeRoot,@problemId,@createdAt,@updatedAt,@lastOpenedAt)`).run({ ...project, problemId: project.problemId ?? null })
+    })()
     return project
   }
   touchProject(id: string): Project { if (!this.recoveryMode) { const now = new Date().toISOString(); this.db.prepare('UPDATE projects SET last_opened_at = ?, updated_at = ? WHERE id = ?').run(now, now, id) }; const p = this.getProject(id); if (!p) throw new Error('Project not found'); return p }
@@ -166,6 +177,10 @@ export class AppDatabase {
     this.ensureWritable()
     this.db.prepare('INSERT INTO domain_events(event_id,type,occurred_at,actor,project_id,payload_json) VALUES(?,?,?,?,?,?)')
       .run(event.eventId, event.type, event.occurredAt, event.actor, event.projectId ?? null, JSON.stringify(event.payload))
+  }
+  listEvents(limit = 20): DomainEvent[] {
+    const rows = this.db.prepare('SELECT * FROM domain_events ORDER BY occurred_at DESC LIMIT ?').all(limit) as Array<{ event_id: string; type: string; occurred_at: string; actor: DomainEvent['actor']; project_id: string | null; payload_json: string }>
+    return rows.map(row => ({ eventId: row.event_id, type: row.type, version: 1, occurredAt: row.occurred_at, actor: row.actor, ...(row.project_id ? { projectId: row.project_id } : {}), payload: JSON.parse(row.payload_json) as unknown }))
   }
   private ensureWritable(): void { if (this.recoveryMode) throw new Error('Database is in read-only recovery mode') }
 }

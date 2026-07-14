@@ -48,10 +48,10 @@ test('launches securely and renders the real project workflow', async () => {
     await page.getByRole('link', { name: '设置' }).click()
     await page.getByRole('button', { name: '深色' }).click()
     await expect(page.locator('html')).toHaveClass(/dark/)
-    await page.getByRole('link', { name: '工作区' }).click()
+    await page.locator('.activity-rail').getByRole('link', { name: '工作区' }).click()
     await expect(page.locator('.workspace-view')).toBeVisible()
     await page.screenshot({ path: join(repo, 'test-results', 'visual', 'workspace-dark-1440x900.png') })
-    await page.getByRole('link', { name: '首页' }).click()
+    await page.locator('.activity-rail').getByRole('link', { name: '首页' }).click()
     await expect(page.getByRole('heading', { name: '继续你的 C++ 学习' })).toBeVisible()
     await page.screenshot({ path: join(repo, 'test-results', 'visual', 'home-dark-1440x900.png') })
   } finally { await electronApp.close() }

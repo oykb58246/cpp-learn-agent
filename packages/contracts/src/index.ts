@@ -1,5 +1,6 @@
 import { z } from 'zod'
 export { ipc } from './ipc'
+export * from './future'
 
 export const themeSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themeSchema>
@@ -119,7 +120,7 @@ export interface DomainEvent<T = unknown> {
 export interface AppSettings { theme: ThemePreference; lastProjectId?: string; sidebarWidth: number }
 export interface AppBootstrap {
   version: string; platform: string; recoveryMode: boolean; settings: AppSettings
-  recentProjects: Project[]; workspaces: Workspace[]
+  recentProjects: Project[]; workspaces: Workspace[]; recentEvents: DomainEvent[]
 }
 export interface MockDashboard {
   environment: Array<{ id: string; label: string; status: 'ready' | 'missing' | 'checking'; detail: string }>
@@ -128,11 +129,12 @@ export interface MockDashboard {
 }
 
 export interface CppPetApi {
-  app: { getBootstrap(): Promise<ApiResult<AppBootstrap>> }
-  settings: { update(input: Partial<AppSettings>): Promise<ApiResult<AppSettings>> }
+  app: { getBootstrap(): Promise<ApiResult<AppBootstrap>>; getVersion(): Promise<ApiResult<string>> }
+  settings: { get(): Promise<ApiResult<AppSettings>>; update(input: Partial<AppSettings>): Promise<ApiResult<AppSettings>> }
   workspace: {
     selectRoot(): Promise<ApiResult<Workspace | null>>
     list(): Promise<ApiResult<Workspace[]>>
+    open(input: { workspaceId: string }): Promise<ApiResult<Workspace>>
     setTrust(input: { workspaceId: string; trusted: boolean }): Promise<ApiResult<Workspace>>
     remove(input: { workspaceId: string }): Promise<ApiResult<void>>
     onChanged(listener: (event: WorkspaceChangedEvent) => void): () => void
