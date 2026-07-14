@@ -7,6 +7,7 @@ import {
   debugCommandRequestSchema,
   debugStartRequestSchema,
   environmentInstallRequestSchema,
+  environmentInstallTaskSchema,
   environmentInstallerStatusSchema,
   environmentOpenDownloadRequestSchema,
   fileRevisionSchema,
@@ -66,5 +67,14 @@ describe('contracts', () => {
     expect(environmentInstallRequestSchema.safeParse({ target: 'llvm' }).success).toBe(true)
     expect(environmentInstallRequestSchema.safeParse({ target: 'visual-studio' }).success).toBe(false)
     expect(environmentInstallerStatusSchema.safeParse({ available: true, manager: 'winget', version: 'v1' }).success).toBe(true)
+    expect(environmentInstallTaskSchema.safeParse({
+      taskId: crypto.randomUUID(),
+      target: 'cmake',
+      packageId: 'Kitware.CMake',
+      status: 'succeeded',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      exitCode: 0
+    }).success).toBe(true)
   })
 })

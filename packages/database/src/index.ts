@@ -105,7 +105,15 @@ export class AppDatabase {
 
   getSettings(): AppSettings {
     const row = this.db.prepare('SELECT value_json FROM settings WHERE key = ?').get('app') as { value_json: string } | undefined
-    if (!row) return { theme: 'system', sidebarWidth: 260, onboardingCompleted: false, onboardingStatus: 'pending', onboardingReminderDismissed: false }
+    if (!row) return {
+      theme: 'system',
+      sidebarWidth: 260,
+      inspectorWidth: 320,
+      bottomPanelHeight: 190,
+      onboardingCompleted: false,
+      onboardingStatus: 'pending',
+      onboardingReminderDismissed: false
+    }
     const saved = JSON.parse(row.value_json) as Partial<AppSettings>
     const onboardingCompleted = typeof saved.onboardingCompleted === 'boolean' ? saved.onboardingCompleted : true
     const onboardingStatus = saved.onboardingStatus === 'pending' || saved.onboardingStatus === 'completed' || saved.onboardingStatus === 'skipped'
@@ -114,6 +122,8 @@ export class AppDatabase {
     return {
       theme: 'system',
       sidebarWidth: 260,
+      inspectorWidth: 320,
+      bottomPanelHeight: 190,
       onboardingCompleted,
       onboardingReminderDismissed: false,
       ...saved,

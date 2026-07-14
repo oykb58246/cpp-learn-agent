@@ -20,12 +20,28 @@
 | `environment:open-download` | 打开白名单中的官方工具下载页面 |
 | `environment:installer-status` | 检查 WinGet 是否可运行 |
 | `environment:install` | 经确认后打开白名单软件包的可见安装终端 |
+| `environment:install-tasks` | 查询当前 Main 会话中的安装任务 |
+| `environment:install-changed` | 推送 running/succeeded/failed 安装状态 |
 
 编译、链接、运行时、clangd、clang-tidy、调试器和测试问题统一为 `Diagnostic`。
 
 `environment:open-download` 只接受 `msys2`、`llvm`、`cmake`、`vscode` 和 `visual-studio` 五个枚举值。Renderer 不能传入 URL。
 
 `environment:install` 只接受 `msys2`、`llvm`、`cmake` 和 `vscode`。Main 固定映射到允许的软件包 ID，Renderer 不能提交软件包 ID、命令、参数或脚本。安装前必须经过 Electron 原生确认框，PowerShell 窗口保持可见。
+
+安装事件只包含任务 UUID、固定目标、软件包 ID、状态、时间与退出码，不向 Renderer 暴露命令或终端输出。同一时间只允许一个安装任务运行。
+
+## 布局设置
+
+`AppSettings` 增加以下持久化字段：
+
+| 字段 | 范围 | 默认值 |
+|---|---:|---:|
+| `sidebarWidth` | 180–480 | 260 |
+| `inspectorWidth` | 220–480 | 320 |
+| `bottomPanelHeight` | 120–560 | 190 |
+
+Renderer 只通过 `settings:update` 提交数值，Main 使用 Zod 校验范围，Database 与旧版 settings 合并默认值。
 
 ## 语言服务
 

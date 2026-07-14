@@ -233,10 +233,21 @@ export const environmentInstallerStatusSchema = z.object({
   reason: z.string().optional()
 })
 export type EnvironmentInstallerStatus = z.infer<typeof environmentInstallerStatusSchema>
+export const environmentInstallTaskSchema = z.object({
+  taskId: z.string().uuid(),
+  target: environmentInstallTargetSchema,
+  packageId: z.string(),
+  status: z.enum(['running', 'succeeded', 'failed']),
+  startedAt: z.string(),
+  finishedAt: z.string().optional(),
+  exitCode: z.number().int().nullable().optional()
+})
+export type EnvironmentInstallTask = z.infer<typeof environmentInstallTaskSchema>
 export const environmentInstallResultSchema = z.object({
   launched: z.boolean(),
   target: environmentInstallTargetSchema,
-  packageId: z.string()
+  packageId: z.string(),
+  task: environmentInstallTaskSchema.optional()
 })
 export type EnvironmentInstallResult = z.infer<typeof environmentInstallResultSchema>
 

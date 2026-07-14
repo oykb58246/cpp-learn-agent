@@ -2,7 +2,7 @@
 
 面向 C++ 初学者的 Windows 桌面学习 Agent。项目通过代码工作区、教学型 Agent 和桌面宠物，将环境配置、知识学习、代码编写、错误诊断、逻辑纠错与项目实践连接成一条可执行、可验证、可追踪的学习流程。
 
-> **当前状态：开发中。** 仓库已进入 H2 C++ 开发能力阶段。本文“规划能力”描述的是完整产品目标，不代表相关功能已经全部实现。
+> **当前状态：开发中。** H2 C++ 开发能力已完成交接基线，后续进入 H3 Agent 业务阶段。本文“规划能力”描述的是完整产品目标，不代表相关功能已经全部实现。
 
 ## 项目简介
 
@@ -86,7 +86,7 @@ flowchart TB
 - Vitest 契约/单元测试与 Playwright Electron E2E 测试框架。
 - GCC、Clang、MSVC、CMake、调试器和 VS Code 的本机候选探测。
 - 首次启动环境初始化向导，分步完成自动检测、工具链验证绑定、工作区授权和结果确认。
-- 缺失工具提供固定官方入口；WinGet 可用时，经用户确认后可打开可见安装终端，应用不接受任意软件包或命令，也不会静默修改系统 PATH。
+- 缺失工具提供固定官方入口；WinGet 可用时，经用户确认后可打开可见安装终端，跟踪安装结果并自动重新检测环境。应用不接受任意软件包或命令，也不会静默修改系统 PATH。
 - GCC 与 MSVC Hello World 编译运行烟雾验证。
 - 工具链绑定、SQLite 持久化、健康检查和设置页环境面板。
 - 受限子进程的超时、取消、输出上限、标准输入和 Windows 进程树回收。
@@ -98,6 +98,7 @@ flowchart TB
 - 标准 clangd/LSP 客户端、Monaco 补全、悬停、定义跳转、实时诊断与缺失工具降级。
 - GDB/MI 单文件调试、编辑器断点、继续/单步/跳出、暂停行、局部变量、调用栈和调试输出。
 - 中文项目路径的调试源码暂存与源位置回映射。
+- 文件侧边栏、快照侧边栏和底部输出面板支持拖拽调整、键盘微调、双击复位与尺寸持久化。
 - 成功、语法错误、链接错误、死循环、崩溃、逻辑错误和 CMake 工程固定 C++ 样例库。
 
 DAP/LLDB/MSVC 调试、Agent/MCP、知识树、成长系统和桌面宠物仍属于后续工作。本机未安装 clangd 和 clang-tidy，因此两者的真实工具执行仍需在 LLVM 环境补充验收。
@@ -180,6 +181,7 @@ cpp-learn-agent/
 - [H1 运行手册](./docs/handoff-a/runbook.md)：原生 SQLite ABI、开发、测试、打包和故障排查。
 - [H1 接收清单](./docs/handoff-a/h1-acceptance.md)：成员 B 在独立环境执行的验收步骤。
 - [成员 B 工作计划](./docs/handoff-b/work-plan.md)：H2 分批实现范围与当前进度。
+- [成员 B H2 交接说明](./docs/handoff-b/handoff.md)：交接基线、阅读顺序、已交付能力和成员 C 接入点。
 - [成员 B 第 2 批测试报告](./docs/handoff-b/batch-2-test-report.md)：Monaco、编译运行、诊断和 Electron E2E 验证结果。
 - [成员 B 第 3 批工程工具测试报告](./docs/handoff-b/batch-3-engineering-test-report.md)：CMake、CTest、clang-tidy、VS Code 与中文路径构建验证结果。
 - [H2 接收清单](./docs/handoff-b/h2-acceptance.md)：成员 C 独立验收 H2 开发能力的步骤。

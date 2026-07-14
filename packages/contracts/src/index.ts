@@ -11,6 +11,7 @@ import type {
   DebugStartRequest,
   EnvironmentInstallRequest,
   EnvironmentInstallResult,
+  EnvironmentInstallTask,
   EnvironmentInstallerStatus,
   EnvironmentOpenDownloadRequest,
   LanguageCompletion,
@@ -158,6 +159,8 @@ export interface AppSettings {
   lastProjectId?: string
   activeToolchainId?: string
   sidebarWidth: number
+  inspectorWidth: number
+  bottomPanelHeight: number
   onboardingCompleted: boolean
   onboardingStatus: 'pending' | 'completed' | 'skipped'
   onboardingReminderDismissed: boolean
@@ -237,6 +240,8 @@ export interface CppPetApi {
     openDownload(input: EnvironmentOpenDownloadRequest): Promise<ApiResult<void>>
     installerStatus(): Promise<ApiResult<EnvironmentInstallerStatus>>
     install(input: EnvironmentInstallRequest): Promise<ApiResult<EnvironmentInstallResult>>
+    installTasks(): Promise<ApiResult<EnvironmentInstallTask[]>>
+    onInstallChanged(listener: (task: EnvironmentInstallTask) => void): () => void
   }
   language: {
     status(input: LanguageStatusRequest): Promise<ApiResult<LanguageStatus>>

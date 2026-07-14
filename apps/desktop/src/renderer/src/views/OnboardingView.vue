@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ArrowLeft,
@@ -23,6 +23,7 @@ import {
 } from 'lucide-vue-next'
 import type {
   EnvironmentDownloadTarget,
+  EnvironmentInstallTask,
   EnvironmentInstallerStatus,
   EnvironmentInstallTarget,
   ToolchainBindingState,
@@ -30,6 +31,7 @@ import type {
   ToolchainDetectionResult
 } from '@cpp-pet/contracts'
 import { useAppStore } from '../stores/app'
+import { environmentInstallOutcome } from '../utils/environment-install'
 
 const app = useAppStore()
 const router = useRouter()
@@ -43,8 +45,10 @@ const selectedWorkspaceId = ref('')
 const toolchainMessage = ref('')
 const installMessage = ref('')
 const installingTarget = ref<EnvironmentInstallTarget | ''>('')
+const installTasks = ref<EnvironmentInstallTask[]>([])
 const installerStatus = ref<EnvironmentInstallerStatus | null>(null)
 const skipConfirming = ref(false)
+let unlistenInstall: (() => void) | undefined
 
 const steps = [
   { title: '开始', detail: '了解初始化流程', icon: Sparkles },
@@ -111,11 +115,14 @@ const installPlans = computed(() => {
   return [...targets].map(target => ({ target, ...installCatalog[target] }))
 })
 const isFirstRun = computed(() => app.settings.onboardingStatus === 'pending')
+const runningInstall = computed(() => installTasks.value.find(item => item.status === 'running'))
 
 onMounted(async () => {
-  await Promise.all([loadBindings(), loadInstallerStatus()])
+  await Promise.all([loadBindings(), loadInstallerStatus(), loadInstallTasks()])
+  unlistenInstall = window.cppPet.environment.onInstallChanged(task => { void handleInstallChanged(task) })
   if (app.workspaces[0]) selectedWorkspaceId.value = app.workspaces[0].id
 })
+onBeforeUnmount(() => unlistenInstall?.())
 
 async function loadBindings() {
   const result = await window.cppPet.toolchains.list()
@@ -156,6 +163,39 @@ async function loadInstallerStatus() {
   else app.setError(result.error)
 }
 
+async function loadInstallTasks() {
+  const result = await window.cppPet.environment.installTasks()
+  if (result.ok) installTasks.value = result.data
+  else app.setError(result.error)
+}
+
+function upsertInstallTask(task: EnvironmentInstallTask) {
+  installTasks.value = [task, ...installTasks.value.filter(item => item.taskId !== task.taskId)]
+}
+
+function latestInstall(target: EnvironmentInstallTarget) {
+  return installTasks.value.find(item => item.target === target)
+}
+
+function installButtonLabel(target: EnvironmentInstallTarget) {
+  if (installingTarget.value === target) return '正在准备'
+  const task = latestInstall(target)
+  if (task?.status === 'running') return '安装进行中'
+  if (task?.status === 'succeeded') return '重新安装'
+  if (task?.status === 'failed') return '重试安装'
+  return 'WinGet 安装'
+}
+
+async function handleInstallChanged(task: EnvironmentInstallTask) {
+  upsertInstallTask(task)
+  const outcome = environmentInstallOutcome(task)
+  installMessage.value = outcome.message
+  if (outcome.redetect) {
+    await detectEnvironment()
+    if (task.target !== 'msys2') installMessage.value = `${installCatalog[task.target].label}安装完成，环境已重新检测。`
+  }
+}
+
 async function installWithWinget(target: EnvironmentInstallTarget) {
   installingTarget.value = target
   installMessage.value = ''
@@ -165,8 +205,9 @@ async function installWithWinget(target: EnvironmentInstallTarget) {
     app.setError(result.error)
     return
   }
+  if (result.data.task) upsertInstallTask(result.data.task)
   installMessage.value = result.data.launched
-    ? `${installCatalog[target].label} 安装终端已打开。安装结束后回到这里重新检测。`
+    ? `${installCatalog[target].label} 安装终端已打开，完成后本页会自动重新检测。`
     : '已取消打开安装终端。'
 }
 
@@ -275,11 +316,19 @@ function candidateMeta(candidate: ToolchainCandidate) {
               <b :class="{ ready: installerStatus?.available }">{{ installerStatus?.available ? `WinGet ${installerStatus.version ?? '可用'}` : '仅官网安装' }}</b>
             </header>
             <article v-for="plan in installPlans" :key="plan.target">
-              <div><strong>{{ plan.label }}</strong><span>{{ plan.detail }}</span><code v-if="plan.after">{{ plan.after }}</code></div>
+              <div>
+                <strong>{{ plan.label }}</strong>
+                <span>{{ plan.detail }}</span>
+                <code v-if="plan.after">{{ plan.after }}</code>
+                <small v-if="latestInstall(plan.target)" :class="['install-state', latestInstall(plan.target)?.status]">
+                  {{ latestInstall(plan.target)?.status === 'running' ? '安装终端正在运行' : latestInstall(plan.target)?.status === 'succeeded' ? '最近安装命令已成功' : '最近安装命令未成功' }}
+                </small>
+              </div>
               <div class="installer-actions">
                 <button class="secondary-command" @click="openDownload(plan.target)"><ExternalLink :size="14" />官网</button>
-                <button class="primary-command" :disabled="!installerStatus?.available || Boolean(installingTarget)" @click="installWithWinget(plan.target)">
-                  <Download :size="14" />{{ installingTarget === plan.target ? '正在准备' : 'WinGet 安装' }}
+                <button class="primary-command" :disabled="!installerStatus?.available || Boolean(installingTarget) || Boolean(runningInstall)" @click="installWithWinget(plan.target)">
+                  <RefreshCw v-if="latestInstall(plan.target)?.status === 'running'" :size="14" class="spinning" />
+                  <Download v-else :size="14" />{{ installButtonLabel(plan.target) }}
                 </button>
               </div>
             </article>

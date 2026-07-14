@@ -38,7 +38,13 @@ const api: CppPetApi = {
   environment: {
     openDownload: input => invoke(ipc.environmentOpenDownload, input),
     installerStatus: () => invoke(ipc.environmentInstallerStatus),
-    install: input => invoke(ipc.environmentInstall, input)
+    install: input => invoke(ipc.environmentInstall, input),
+    installTasks: () => invoke(ipc.environmentInstallTasks),
+    onInstallChanged: listener => {
+      const wrapped = (_: unknown, task: Parameters<typeof listener>[0]) => listener(task)
+      ipcRenderer.on(ipc.environmentInstallChanged, wrapped)
+      return () => ipcRenderer.removeListener(ipc.environmentInstallChanged, wrapped)
+    }
   },
   language: {
     status: input => invoke(ipc.languageStatus, input),

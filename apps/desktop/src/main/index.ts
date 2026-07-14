@@ -30,7 +30,8 @@ import {
   vscodeOpenRequestSchema,
   type ApiResult,
   type AppError,
-  type AppSettings
+  type AppSettings,
+  type EnvironmentInstallTask
 } from '@cpp-pet/contracts'
 import { z } from 'zod'
 
@@ -43,6 +44,7 @@ const buildArtifacts = new Map<string, { path: string; projectId: string; projec
 const cmakeBuilds = new Map<string, { directory: string; sourceDirectory: string; projectId: string; configuration: 'Debug' | 'Release' }>()
 const languageSessions = new Map<string, ClangdSession>()
 const debugSessions = new Map<string, GdbMiSession>()
+const environmentInstallTasks = new Map<string, EnvironmentInstallTask>()
 let stopWatching: (() => void) | null = null
 if (process.env.CPP_PET_USER_DATA) app.setPath('userData', process.env.CPP_PET_USER_DATA)
 
@@ -85,7 +87,9 @@ function registerIpc(): void {
   handle(ipc.settingsUpdate, z.object({
     theme: z.enum(['system', 'light', 'dark']).optional(),
     lastProjectId: z.string().optional(),
-    sidebarWidth: z.number().min(220).max(360).optional(),
+    sidebarWidth: z.number().min(180).max(480).optional(),
+    inspectorWidth: z.number().min(220).max(480).optional(),
+    bottomPanelHeight: z.number().min(120).max(560).optional(),
     onboardingCompleted: z.boolean().optional(),
     onboardingStatus: z.enum(['pending', 'completed', 'skipped']).optional(),
     onboardingReminderDismissed: z.boolean().optional()
@@ -333,6 +337,7 @@ function registerIpc(): void {
     await shell.openExternal(urls[input.target])
   })
   handle(ipc.environmentInstallerStatus, empty, async () => {
+    if (process.env.CPP_PET_E2E_INSTALLER === 'mock') return { available: true, manager: 'winget' as const, version: 'mock' }
     if (process.platform !== 'win32') return { available: false, manager: 'winget' as const, reason: '当前自动安装引导仅支持 Windows。' }
     const result = await runProcess('winget.exe', ['--version'], { timeoutMs: 5_000, maxOutputBytes: 16 * 1024 })
     const version = `${result.stdout}\n${result.stderr}`.split(/\r?\n/).map(line => line.trim()).find(Boolean)
@@ -340,7 +345,11 @@ function registerIpc(): void {
       ? { available: true, manager: 'winget' as const, ...(version ? { version } : {}) }
       : { available: false, manager: 'winget' as const, reason: '未找到可运行的 WinGet，请使用官方下载入口。' }
   })
+  handle(ipc.environmentInstallTasks, empty, () => [...environmentInstallTasks.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt)))
   handle(ipc.environmentInstall, environmentInstallRequestSchema, async input => {
+    if ([...environmentInstallTasks.values()].some(task => task.status === 'running')) {
+      throw new ToolExecutionError('ENVIRONMENT_INSTALL_IN_PROGRESS', '已有环境安装任务正在运行。', '等待当前安装结束后再安装其他组件。', true)
+    }
     const packages = {
       msys2: { label: 'MSYS2', packageId: 'MSYS2.MSYS2' },
       llvm: { label: 'LLVM', packageId: 'LLVM.LLVM' },
@@ -348,6 +357,28 @@ function registerIpc(): void {
       vscode: { label: 'Visual Studio Code', packageId: 'Microsoft.VisualStudioCode' }
     } as const
     const target = packages[input.target]
+    if (process.env.CPP_PET_E2E_INSTALLER === 'mock') {
+      const task: EnvironmentInstallTask = {
+        taskId: randomUUID(),
+        target: input.target,
+        packageId: target.packageId,
+        status: 'running',
+        startedAt: new Date().toISOString()
+      }
+      environmentInstallTasks.set(task.taskId, task)
+      mainWindow?.webContents.send(ipc.environmentInstallChanged, task)
+      setTimeout(() => {
+        const completed: EnvironmentInstallTask = {
+          ...task,
+          status: 'succeeded',
+          finishedAt: new Date().toISOString(),
+          exitCode: 0
+        }
+        environmentInstallTasks.set(task.taskId, completed)
+        mainWindow?.webContents.send(ipc.environmentInstallChanged, completed)
+      }, 50)
+      return { launched: true, target: input.target, packageId: target.packageId, task }
+    }
     const status = await runProcess('winget.exe', ['--version'], { timeoutMs: 5_000, maxOutputBytes: 16 * 1024 })
     if (status.exitCode !== 0) throw new ToolExecutionError('WINGET_NOT_AVAILABLE', '当前系统无法运行 WinGet。', '使用“官方下载”安装，完成后返回向导重新检测。')
     const confirmation = await dialog.showMessageBox(mainWindow!, {
@@ -360,19 +391,49 @@ function registerIpc(): void {
       detail: `应用将打开一个可见的 PowerShell 窗口并运行固定软件包 ${target.packageId}。你可以查看安装过程、处理系统授权或随时关闭终端。`
     })
     if (confirmation.response !== 1) return { launched: false, target: input.target, packageId: target.packageId }
+    const task: EnvironmentInstallTask = {
+      taskId: randomUUID(),
+      target: input.target,
+      packageId: target.packageId,
+      status: 'running',
+      startedAt: new Date().toISOString()
+    }
+    environmentInstallTasks.set(task.taskId, task)
+    if (environmentInstallTasks.size > 20) {
+      const oldest = [...environmentInstallTasks.values()].sort((a, b) => a.startedAt.localeCompare(b.startedAt))[0]
+      if (oldest && oldest.status !== 'running') environmentInstallTasks.delete(oldest.taskId)
+    }
     const command = [
       `Write-Host 'CppPet 正在启动 ${target.label} 安装...' -ForegroundColor Cyan`,
-      `winget install --id '${target.packageId}' --exact --source winget --interactive --accept-source-agreements --accept-package-agreements`,
-      `Write-Host '安装命令已结束。请回到宠码学伴并点击重新检测。' -ForegroundColor Green`
+      `$exitCode = 1`,
+      `try { winget install --id '${target.packageId}' --exact --source winget --interactive --accept-source-agreements --accept-package-agreements; $exitCode = $LASTEXITCODE } catch { Write-Error $_; $exitCode = 1 }`,
+      `if ($exitCode -eq 0) { Write-Host '安装完成，宠码学伴将自动重新检测环境。' -ForegroundColor Green } else { Write-Host \"安装未成功，退出码: $exitCode\" -ForegroundColor Red }`,
+      `Start-Sleep -Seconds 3`,
+      `exit $exitCode`
     ].join('; ')
-    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NoExit', '-Command', command], {
+    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', command], {
       detached: true,
       stdio: 'ignore',
       windowsHide: false
     })
-    child.once('error', () => undefined)
+    let finished = false
+    const finishTask = (status: EnvironmentInstallTask['status'], exitCode: number | null) => {
+      if (finished) return
+      finished = true
+      const completed: EnvironmentInstallTask = {
+        ...task,
+        status,
+        finishedAt: new Date().toISOString(),
+        exitCode
+      }
+      environmentInstallTasks.set(task.taskId, completed)
+      mainWindow?.webContents.send(ipc.environmentInstallChanged, completed)
+    }
+    child.once('error', () => finishTask('failed', null))
+    child.once('close', code => finishTask(code === 0 ? 'succeeded' : 'failed', code))
+    mainWindow?.webContents.send(ipc.environmentInstallChanged, task)
     child.unref()
-    return { launched: true, target: input.target, packageId: target.packageId }
+    return { launched: true, target: input.target, packageId: target.packageId, task }
   })
   handle(ipc.languageStatus, languageStatusRequestSchema, input => {
     requiredServices().workspaceService.projectRoot(input.projectId)

@@ -47,11 +47,14 @@ import DiffEditorHost from '../components/DiffEditorHost.vue'
 import EditorHost from '../components/EditorHost.vue'
 import FileTree from '../components/FileTree.vue'
 import ProjectDialog from '../components/ProjectDialog.vue'
+import { useAppStore } from '../stores/app'
 import { useWorkspaceStore } from '../stores/workspace'
 
+const app = useAppStore()
 const store = useWorkspaceStore()
 const route = useRoute()
 const router = useRouter()
+const workspaceView = ref<HTMLElement | null>(null)
 const dialog = ref(false)
 const search = ref('')
 const snapshotLabel = ref('')
@@ -63,6 +66,9 @@ const editorHost = ref<InstanceType<typeof EditorHost> | null>(null)
 const diffOpen = ref(false)
 const panelOpen = ref(true)
 const panelTab = ref<'output' | 'problems' | 'debug'>('output')
+const sidebarWidth = ref(260)
+const inspectorWidth = ref(320)
+const bottomPanelHeight = ref(190)
 const standard = ref<'c++17' | 'c++20' | 'c++23'>('c++17')
 const standardInput = ref('')
 const executing = ref<'build' | 'run' | 'cmake' | 'ctest' | 'analysis' | null>(null)
@@ -81,6 +87,15 @@ const debugState = ref<DebugSessionState | null>(null)
 const debuggerBusy = ref(false)
 let autoSaveTimer: ReturnType<typeof setTimeout> | undefined
 let stopLanguageDiagnostics: (() => void) | undefined
+type ResizeTarget = 'sidebar' | 'inspector' | 'panel'
+const minimumEditorWidth = 420
+let resizeSession: { target: ResizeTarget; startX: number; startY: number; startValue: number } | undefined
+
+const layoutStyle = computed(() => ({
+  '--workspace-sidebar-width': `${sidebarWidth.value}px`,
+  '--workspace-inspector-width': `${inspectorWidth.value}px`,
+  '--workspace-bottom-panel-height': `${bottomPanelHeight.value}px`
+}))
 
 const entryDialog = reactive({
   visible: false,
@@ -148,6 +163,7 @@ const outputText = computed(() => {
 })
 
 onMounted(async () => {
+  window.addEventListener('resize', fitLayoutToViewport)
   stopLanguageDiagnostics = window.cppPet.language.onDiagnostics(event => {
     if (event.projectId !== store.currentProject?.id) return
     languageDiagnostics.value = {
@@ -162,9 +178,12 @@ onMounted(async () => {
     await store.openProject(store.projects[0].id)
     await router.replace(`/workspace/${store.projects[0].id}`)
   }
+  fitLayoutToViewport()
 })
 onBeforeUnmount(() => {
   clearTimeout(autoSaveTimer)
+  stopResize()
+  window.removeEventListener('resize', fitLayoutToViewport)
   stopLanguageDiagnostics?.()
   if (debugState.value && !['exited', 'error'].includes(debugState.value.status)) {
     void window.cppPet.debug.command({ sessionId: debugState.value.sessionId, command: 'stop' })
@@ -174,6 +193,17 @@ watch(() => route.params.projectId, async id => {
   if (typeof id === 'string' && id !== store.currentProject?.id) await store.openProject(id)
 })
 watch(() => active.value?.relativePath, () => { diffOpen.value = false })
+watch(
+  () => [app.settings.sidebarWidth, app.settings.inspectorWidth, app.settings.bottomPanelHeight] as const,
+  ([savedSidebarWidth, savedInspectorWidth, savedBottomPanelHeight]) => {
+    if (resizeSession) return
+    sidebarWidth.value = savedSidebarWidth
+    inspectorWidth.value = savedInspectorWidth
+    bottomPanelHeight.value = savedBottomPanelHeight
+    void nextTick(fitLayoutToViewport)
+  },
+  { immediate: true }
+)
 watch(() => store.currentProject?.id, async id => {
   languageDiagnostics.value = {}
   languageAvailable.value = false
@@ -187,6 +217,98 @@ watch(() => store.currentProject?.id, async id => {
   languageAvailable.value = result.data.available
   languageStatusText.value = result.data.available ? 'clangd 已连接' : (result.data.reason ?? 'clangd 不可用')
 })
+
+function clamp(value: number, min: number, max: number) {
+  return Math.round(Math.min(Math.max(value, min), Math.max(min, max)))
+}
+function resizeLimit(target: ResizeTarget) {
+  const width = workspaceView.value?.clientWidth ?? window.innerWidth
+  const height = workspaceView.value?.clientHeight ?? window.innerHeight
+  if (target === 'sidebar') return { min: 180, max: Math.min(480, width - (inspectorOpen.value ? inspectorWidth.value : 0) - minimumEditorWidth) }
+  if (target === 'inspector') return { min: 220, max: Math.min(480, width - sidebarWidth.value - minimumEditorWidth) }
+  return { min: 120, max: Math.min(560, height - 180) }
+}
+function setResizeValue(target: ResizeTarget, value: number) {
+  const limit = resizeLimit(target)
+  const next = clamp(value, limit.min, limit.max)
+  if (target === 'sidebar') sidebarWidth.value = next
+  else if (target === 'inspector') inspectorWidth.value = next
+  else bottomPanelHeight.value = next
+}
+function fitLayoutToViewport() {
+  if (!resizeSession) {
+    sidebarWidth.value = app.settings.sidebarWidth
+    inspectorWidth.value = app.settings.inspectorWidth
+    bottomPanelHeight.value = app.settings.bottomPanelHeight
+  }
+  setResizeValue('sidebar', sidebarWidth.value)
+  if (inspectorOpen.value) setResizeValue('inspector', inspectorWidth.value)
+  if (panelOpen.value) setResizeValue('panel', bottomPanelHeight.value)
+}
+function beginResize(target: ResizeTarget, event: PointerEvent) {
+  if (event.button !== 0) return
+  const startValue = target === 'sidebar' ? sidebarWidth.value : target === 'inspector' ? inspectorWidth.value : bottomPanelHeight.value
+  resizeSession = { target, startX: event.clientX, startY: event.clientY, startValue }
+  document.body.classList.add(target === 'panel' ? 'workspace-resizing-y' : 'workspace-resizing-x')
+  window.addEventListener('pointermove', moveResize)
+  window.addEventListener('pointerup', finishResize, { once: true })
+  event.preventDefault()
+}
+function moveResize(event: PointerEvent) {
+  if (!resizeSession) return
+  const horizontalDelta = event.clientX - resizeSession.startX
+  const verticalDelta = event.clientY - resizeSession.startY
+  const delta = resizeSession.target === 'sidebar'
+    ? horizontalDelta
+    : resizeSession.target === 'inspector'
+      ? -horizontalDelta
+      : -verticalDelta
+  setResizeValue(resizeSession.target, resizeSession.startValue + delta)
+}
+function finishResize() {
+  const target = resizeSession?.target
+  stopResize()
+  if (target) persistResize(target)
+}
+function stopResize() {
+  resizeSession = undefined
+  document.body.classList.remove('workspace-resizing-x', 'workspace-resizing-y')
+  window.removeEventListener('pointermove', moveResize)
+  window.removeEventListener('pointerup', finishResize)
+}
+function persistResize(target: ResizeTarget) {
+  if (target === 'sidebar') void app.updateSettings({ sidebarWidth: sidebarWidth.value })
+  else if (target === 'inspector') void app.updateSettings({ inspectorWidth: inspectorWidth.value })
+  else void app.updateSettings({ bottomPanelHeight: bottomPanelHeight.value })
+}
+function resetResize(target: ResizeTarget) {
+  setResizeValue(target, target === 'sidebar' ? 260 : target === 'inspector' ? 320 : 190)
+  persistResize(target)
+}
+function resizeWithKeyboard(target: ResizeTarget, event: KeyboardEvent) {
+  if (event.key === 'Home') {
+    event.preventDefault()
+    resetResize(target)
+    return
+  }
+  const step = event.shiftKey ? 32 : 16
+  let direction = 0
+  if (target === 'panel') {
+    if (event.key === 'ArrowUp') direction = 1
+    if (event.key === 'ArrowDown') direction = -1
+  } else if (target === 'sidebar') {
+    if (event.key === 'ArrowRight') direction = 1
+    if (event.key === 'ArrowLeft') direction = -1
+  } else {
+    if (event.key === 'ArrowLeft') direction = 1
+    if (event.key === 'ArrowRight') direction = -1
+  }
+  if (!direction) return
+  event.preventDefault()
+  const current = target === 'sidebar' ? sidebarWidth.value : target === 'inspector' ? inspectorWidth.value : bottomPanelHeight.value
+  setResizeValue(target, current + direction * step)
+  persistResize(target)
+}
 
 async function switchProject(id: string) {
   if (debugState.value && !['exited', 'error'].includes(debugState.value.status)) await debugCommand('stop')
@@ -471,7 +593,7 @@ async function overwriteDisk() {
 </script>
 
 <template>
-  <div :class="['workspace-view', { 'without-inspector': !inspectorOpen }]">
+  <div ref="workspaceView" :class="['workspace-view', { 'without-inspector': !inspectorOpen }]" :style="layoutStyle">
     <aside class="workspace-sidebar">
       <div class="sidebar-heading">
         <select :value="store.currentProject?.id" @change="switchProject(($event.target as HTMLSelectElement).value)">
@@ -499,6 +621,20 @@ async function overwriteDisk() {
       <FileTree :nodes="store.tree" :active-path="store.activePath" @open="store.openFile" @menu="menu" />
       <div v-if="!store.currentProject" class="sidebar-empty">选择或新建项目</div>
     </aside>
+    <div
+      class="workspace-resizer workspace-resizer-sidebar"
+      role="separator"
+      aria-label="调整文件侧边栏宽度"
+      aria-orientation="vertical"
+      :aria-valuenow="sidebarWidth"
+      aria-valuemin="180"
+      aria-valuemax="480"
+      tabindex="0"
+      title="拖动调整文件侧边栏宽度，双击恢复默认"
+      @pointerdown="beginResize('sidebar', $event)"
+      @dblclick="resetResize('sidebar')"
+      @keydown="resizeWithKeyboard('sidebar', $event)"
+    />
 
     <section class="editor-area">
       <div class="editor-tabs">
@@ -574,6 +710,21 @@ async function overwriteDisk() {
         </div>
       </div>
 
+      <div
+        v-if="panelOpen"
+        class="workspace-resizer workspace-resizer-panel"
+        role="separator"
+        aria-label="调整底部面板高度"
+        aria-orientation="horizontal"
+        :aria-valuenow="bottomPanelHeight"
+        aria-valuemin="120"
+        aria-valuemax="560"
+        tabindex="0"
+        title="拖动调整输出面板高度，双击恢复默认"
+        @pointerdown="beginResize('panel', $event)"
+        @dblclick="resetResize('panel')"
+        @keydown="resizeWithKeyboard('panel', $event)"
+      />
       <section v-if="panelOpen" class="bottom-panel">
         <header>
           <button :class="{ active: panelTab === 'output' }" @click="panelTab = 'output'">输出</button>
@@ -623,6 +774,21 @@ async function overwriteDisk() {
       </section>
     </section>
 
+    <div
+      v-if="inspectorOpen"
+      class="workspace-resizer workspace-resizer-inspector"
+      role="separator"
+      aria-label="调整快照侧边栏宽度"
+      aria-orientation="vertical"
+      :aria-valuenow="inspectorWidth"
+      aria-valuemin="220"
+      aria-valuemax="480"
+      tabindex="0"
+      title="拖动调整快照侧边栏宽度，双击恢复默认"
+      @pointerdown="beginResize('inspector', $event)"
+      @dblclick="resetResize('inspector')"
+      @keydown="resizeWithKeyboard('inspector', $event)"
+    />
     <aside v-if="inspectorOpen" class="workspace-inspector">
       <header><div><Camera :size="17" /><strong>快照</strong></div><button class="icon-command" @click="inspectorOpen = false"><X :size="15" /></button></header>
       <div class="snapshot-create"><input v-model="snapshotLabel" placeholder="快照标签" /><button @click="snapshot"><Plus :size="15" />创建</button></div>
