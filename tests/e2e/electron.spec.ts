@@ -10,9 +10,10 @@ test.beforeEach(() => { temp = mkdtempSync(join(tmpdir(), 'cpppet-e2e-')); mkdir
 test.afterEach(() => rmSync(temp, { recursive: true, force: true }))
 
 test('launches securely and renders the real project workflow', async () => {
+  // Keep Chromium inside the test process on restricted Windows runners.
   const electronApp = await electron.launch({
     executablePath: electronPath as unknown as string,
-    args: [join(repo, 'apps/desktop')],
+    args: ['--in-process-gpu', '--no-sandbox', join(repo, 'apps/desktop')],
     env: { ...process.env, CPP_PET_USER_DATA: join(temp, 'user-data'), CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace') }
   })
   try {
@@ -28,15 +29,25 @@ test('launches securely and renders the real project workflow', async () => {
     await expect(page.getByText('边界练习', { exact: true })).toBeVisible()
     const security = await page.evaluate(() => ({ api: typeof window.cppPet, nodeRequire: typeof (window as any).require, process: typeof (window as any).process, genericInvoke: typeof (window.cppPet as any).invoke }))
     expect(security).toEqual({ api: 'object', nodeRequire: 'undefined', process: 'undefined', genericInvoke: 'undefined' })
+    const toolchain = await page.evaluate(async () => {
+      const detected = await window.cppPet.toolchains.detect()
+      if (!detected.ok || !detected.data.candidates[0]) return detected
+      return window.cppPet.toolchains.bind({ candidateId: detected.data.candidates[0].id })
+    })
+    expect(toolchain.ok).toBe(true)
     await page.screenshot({ path: join(repo, 'test-results', 'visual', 'home-1440x900.png') })
     await page.getByText('边界练习', { exact: true }).click()
     await expect(page.locator('.workspace-view')).toBeVisible()
     await page.getByText('main.cpp', { exact: true }).click()
-    const editor = page.locator('.basic-editor')
-    await expect(editor).toHaveValue(/Hello, C\+\+!/)
-    await editor.fill('#include <iostream>\n\nint main() {\n    std::cout << "Saved by E2E" << std::endl;\n    return 0;\n}\n')
+    const editor = page.locator('.monaco-editor-host .monaco-editor')
+    await expect(editor).toBeVisible()
+    await editor.click()
+    await page.keyboard.press('Control+A')
+    await page.keyboard.insertText('#include <iostream>\n\nint main() {\n    std::cout << "Saved by E2E" << std::endl;\n    return 0;\n}\n')
     await page.getByRole('button', { name: '保存', exact: true }).click()
     await expect(page.locator('.snapshot-list article').first()).toContainText('保存前')
+    await page.getByRole('button', { name: '运行', exact: true }).click()
+    await expect(page.locator('.process-output')).toContainText('Saved by E2E', { timeout: 30_000 })
     await page.screenshot({ path: join(repo, 'test-results', 'visual', 'workspace-1440x900.png') })
     const browserWindow = await electronApp.browserWindow(page)
     await browserWindow.evaluate(win => win.setSize(1024, 720))

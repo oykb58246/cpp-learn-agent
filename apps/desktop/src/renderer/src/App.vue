@@ -43,7 +43,7 @@ const projectName = computed(() => workspace.currentProject?.name ?? '宠码学�
     <footer class="statusbar">
       <span><i class="status-dot" /> 数据库已连接</span>
       <span v-if="appStore.bootstrap?.recoveryMode" class="danger">只读恢复模式</span>
-      <span>H1 · Foundation</span><span class="status-spacer" /><span>Windows</span><span>UTF-8</span>
+      <span>H2 · C++ Tools</span><span class="status-spacer" /><span>Windows</span><span>UTF-8</span>
     </footer>
     <div v-if="appStore.error || workspace.error" class="error-toast">
       <strong>{{ (appStore.error || workspace.error)?.message }}</strong>

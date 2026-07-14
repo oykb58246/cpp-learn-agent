@@ -8,5 +8,10 @@ export const ipc = {
   filesRename: 'files:rename', filesRemove: 'files:remove', filesSearch: 'files:search',
   filesCopy: 'files:copy', filesMove: 'files:move',
   snapshotCreate: 'snapshots:create', snapshotList: 'snapshots:list', snapshotPreview: 'snapshots:preview-restore',
-  snapshotRestore: 'snapshots:restore', snapshotRemove: 'snapshots:remove', mockDashboard: 'mocks:get-dashboard'
+  snapshotRestore: 'snapshots:restore', snapshotRemove: 'snapshots:remove',
+  toolchainDetect: 'toolchain:detect', toolchainProbe: 'toolchain:probe', toolchainList: 'toolchain:list',
+  toolchainBind: 'toolchain:bind', toolchainUnbind: 'toolchain:unbind', toolchainHealth: 'toolchain:health',
+  compilerBuild: 'compiler:build',
+  programRun: 'program:run', programStop: 'program:stop',
+  mockDashboard: 'mocks:get-dashboard'
 } as const

@@ -1,0 +1,4 @@
+[
+  { "input": "2\n", "output": "even" },
+  { "input": "7\n", "output": "odd" }
+]

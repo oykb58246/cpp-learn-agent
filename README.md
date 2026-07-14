@@ -2,7 +2,7 @@
 
 面向 C++ 初学者的 Windows 桌面学习 Agent。项目通过代码工作区、教学型 Agent 和桌面宠物，将环境配置、知识学习、代码编写、错误诊断、逻辑纠错与项目实践连接成一条可执行、可验证、可追踪的学习流程。
 
-> **当前状态：开发中。** 仓库目前处于 H1 基础工程阶段。本文“规划能力”描述的是完整产品目标，不代表相关功能已经全部实现。
+> **当前状态：开发中。** 仓库已进入 H2 C++ 开发能力阶段。本文“规划能力”描述的是完整产品目标，不代表相关功能已经全部实现。
 
 ## 项目简介
 
@@ -76,16 +76,23 @@ flowchart TB
 
 ## 当前进展
 
-当前仓库正在建设 H1 基础工程，已包含以下基础能力：
+当前仓库已完成 H1 基础工程，并开始建设 H2 C++ 开发能力，现已包含：
 
 - Electron、Vue 3、TypeScript 与 pnpm workspace 工程骨架。
 - 基于 `contextBridge`、Zod 和共享类型的 IPC 契约。
-- 工作区授权、项目创建与导入、文件树、搜索和基础文本编辑。
-- 文件哈希、外部变更监听、冲突提示、修改前快照与恢复。
+- 工作区授权、项目创建与导入、文件树、搜索和 Monaco 多标签编辑。
+- 自动保存、文件哈希、外部变更监听、Monaco Diff 冲突处理、修改前快照与恢复。
 - SQLite WAL、Schema Migration、迁移备份和只读恢复模式。
 - Vitest 契约/单元测试与 Playwright Electron E2E 测试框架。
+- GCC、Clang、MSVC、CMake、调试器和 VS Code 的本机候选探测。
+- GCC 与 MSVC Hello World 编译运行烟雾验证。
+- 工具链绑定、SQLite 持久化、健康检查和设置页环境面板。
+- 受限子进程的超时、取消、输出上限、标准输入和 Windows 进程树回收。
+- 当前 C++ 文件的真实编译、运行和停止，支持 C++17、C++20 与 C++23 选择。
+- GCC、Clang、MSVC 编译/链接诊断标准化，以及输出面板、问题面板和行内标记。
+- 成功、语法错误、链接错误、死循环、崩溃和逻辑错误固定 C++ 样例库。
 
-Monaco、C++ 工具链、clangd、调试器、Agent/MCP、知识树、成长系统和桌面宠物仍属于后续阶段。
+clangd/LSP、clang-tidy、DAP、CMake/CTest 工作流、VS Code 定位、Agent/MCP、知识树、成长系统和桌面宠物仍属于后续工作。
 
 ## 技术栈
 
@@ -94,8 +101,8 @@ Monaco、C++ 工具链、clangd、调试器、Agent/MCP、知识树、成长系�
 | 桌面端 | Electron、electron-vite、electron-builder |
 | 前端 | Vue 3、TypeScript、Vite、Pinia |
 | UI | Element Plus、Lucide、Design Tokens |
-| 编辑器（规划） | Monaco Editor、clangd / LSP |
-| C++ 工具（规划） | GCC / Clang / MSVC、CMake、CTest、clang-tidy、GDB / LLDB、DAP |
+| 编辑器 | Monaco Editor；clangd / LSP 待接入 |
+| C++ 工具 | GCC / Clang / MSVC 单文件编译运行；CMake、CTest、clang-tidy、GDB / LLDB、DAP 待接入 |
 | Agent（规划） | MCP SDK、可配置文本/多模态模型 Gateway |
 | 数据 | SQLite、better-sqlite3、WAL |
 | 校验 | Zod、Vitest、Playwright |
@@ -136,6 +143,7 @@ cpp-learn-agent/
 |   `-- desktop/          # Electron 主进程、Preload 与 Vue Renderer
 |-- packages/
 |   |-- contracts/        # 共享类型、Schema 与 IPC 契约
+|   |-- cpp-local-tools/  # 工具链探测、受限进程与烟雾验证
 |   |-- database/         # SQLite、迁移与数据访问
 |   |-- ui-kit/           # 设计变量与共享 UI 基础
 |   `-- workspace-core/   # 工作区、文件、项目、搜索与快照
@@ -161,5 +169,7 @@ cpp-learn-agent/
 - [H1 架构说明](./docs/handoff-a/architecture.md)：进程边界、包依赖和成员 B 接入点。
 - [H1 运行手册](./docs/handoff-a/runbook.md)：原生 SQLite ABI、开发、测试、打包和故障排查。
 - [H1 接收清单](./docs/handoff-a/h1-acceptance.md)：成员 B 在独立环境执行的验收步骤。
+- [成员 B 工作计划](./docs/handoff-b/work-plan.md)：H2 分批实现范围与当前进度。
+- [成员 B 第 2 批测试报告](./docs/handoff-b/batch-2-test-report.md)：Monaco、编译运行、诊断和 Electron E2E 验证结果。
 
 本项目为软件工程课程大作业，计划由 4 人在 16 周内协作完成。

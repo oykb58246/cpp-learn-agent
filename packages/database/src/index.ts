@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import type { AppSettings, DomainEvent, Project, SnapshotManifest, Workspace } from '@cpp-pet/contracts'
+import type { AppSettings, DomainEvent, Project, SnapshotManifest, ToolchainProfile, Workspace } from '@cpp-pet/contracts'
 
 const foundationSql = `
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS problems (
 );
 INSERT OR IGNORE INTO users(id, nickname, created_at, updated_at) VALUES('local-user', 'C++ 学习者', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 ` }
+const toolchainMigration: Migration = { version: 3, name: 'h2-toolchain-profiles', sql: `
+CREATE TABLE IF NOT EXISTS toolchain_profiles (
+  id TEXT PRIMARY KEY, family TEXT NOT NULL, version TEXT NOT NULL, target_arch TEXT NOT NULL,
+  compiler_path TEXT NOT NULL, debugger_path TEXT, environment_script TEXT, language_server_path TEXT,
+  cmake_generator TEXT, compile_commands_path TEXT, capabilities_json TEXT NOT NULL,
+  verified_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_toolchain_profiles_updated ON toolchain_profiles(updated_at DESC);
+` }
 const migrationHash = (migration: Migration) => createHash('sha256').update(`${migration.version}:${migration.name}:${migration.sql}`).digest('hex')
 
 export interface SnapshotRecord extends SnapshotManifest { manifestPath: string; blobHashes: Record<string, string> }
@@ -52,7 +61,7 @@ export class AppDatabase {
   readonly recoveryMode: boolean
 
   constructor(readonly filePath: string, additionalMigrations: Migration[] = []) {
-    const migrations = [foundationMigration, projectMetadataMigration, ...additionalMigrations]
+    const migrations = [foundationMigration, projectMetadataMigration, toolchainMigration, ...additionalMigrations]
     mkdirSync(dirname(filePath), { recursive: true })
     this.db = new Database(filePath)
     this.db.pragma('foreign_keys = ON')
@@ -103,6 +112,54 @@ export class AppDatabase {
     const next = { ...this.getSettings(), ...patch }
     this.db.prepare('INSERT OR REPLACE INTO settings(key, value_json) VALUES(?, ?)').run('app', JSON.stringify(next))
     return next
+  }
+  setActiveToolchain(id?: string): AppSettings {
+    this.ensureWritable()
+    const next = { ...this.getSettings() }
+    if (id) next.activeToolchainId = id
+    else delete next.activeToolchainId
+    this.db.prepare('INSERT OR REPLACE INTO settings(key, value_json) VALUES(?, ?)').run('app', JSON.stringify(next))
+    return next
+  }
+  listToolchainProfiles(): ToolchainProfile[] {
+    const rows = this.db.prepare('SELECT * FROM toolchain_profiles ORDER BY updated_at DESC').all() as any[]
+    return rows.map(mapToolchainProfile)
+  }
+  getToolchainProfile(id: string): ToolchainProfile | undefined {
+    const row = this.db.prepare('SELECT * FROM toolchain_profiles WHERE id = ?').get(id) as any
+    return row ? mapToolchainProfile(row) : undefined
+  }
+  saveToolchainProfile(profile: ToolchainProfile): ToolchainProfile {
+    this.ensureWritable()
+    const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO toolchain_profiles(
+      id,family,version,target_arch,compiler_path,debugger_path,environment_script,language_server_path,
+      cmake_generator,compile_commands_path,capabilities_json,verified_at,created_at,updated_at
+    ) VALUES(
+      @id,@family,@version,@targetArch,@compilerPath,@debuggerPath,@environmentScript,@languageServerPath,
+      @cmakeGenerator,@compileCommandsPath,@capabilitiesJson,@verifiedAt,@createdAt,@updatedAt
+    ) ON CONFLICT(id) DO UPDATE SET
+      family=excluded.family,version=excluded.version,target_arch=excluded.target_arch,
+      compiler_path=excluded.compiler_path,debugger_path=excluded.debugger_path,
+      environment_script=excluded.environment_script,language_server_path=excluded.language_server_path,
+      cmake_generator=excluded.cmake_generator,compile_commands_path=excluded.compile_commands_path,
+      capabilities_json=excluded.capabilities_json,verified_at=excluded.verified_at,updated_at=excluded.updated_at`)
+      .run({
+        ...profile,
+        debuggerPath: profile.debuggerPath ?? null,
+        environmentScript: profile.environmentScript ?? null,
+        languageServerPath: profile.languageServerPath ?? null,
+        cmakeGenerator: profile.cmakeGenerator ?? null,
+        compileCommandsPath: profile.compileCommandsPath ?? null,
+        capabilitiesJson: JSON.stringify(profile.capabilities),
+        createdAt: now,
+        updatedAt: now
+      })
+    return profile
+  }
+  removeToolchainProfile(id: string): void {
+    this.ensureWritable()
+    this.db.prepare('DELETE FROM toolchain_profiles WHERE id = ?').run(id)
   }
   listWorkspaces(): Workspace[] {
     return (this.db.prepare('SELECT * FROM workspaces WHERE removed_at IS NULL ORDER BY last_opened_at DESC').all() as any[]).map(mapWorkspace)
@@ -188,3 +245,17 @@ export class AppDatabase {
 const normalizeRoot = (value: string) => value.replaceAll('\\', '/').replace(/\/$/, '').toLowerCase()
 const mapWorkspace = (r: any): Workspace => ({ id: r.id, name: r.name, rootPath: r.root_path, trustState: r.trust_state, createdAt: r.created_at, lastOpenedAt: r.last_opened_at })
 const mapProject = (r: any): Project => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, type: r.type, creationMode: r.creation_mode, relativeRoot: r.relative_root, ...(r.problem_id ? { problemId: r.problem_id } : {}), createdAt: r.created_at, updatedAt: r.updated_at, lastOpenedAt: r.last_opened_at })
+const mapToolchainProfile = (r: any): ToolchainProfile => ({
+  id: r.id,
+  family: r.family,
+  version: r.version,
+  targetArch: r.target_arch,
+  compilerPath: r.compiler_path,
+  ...(r.debugger_path ? { debuggerPath: r.debugger_path } : {}),
+  ...(r.environment_script ? { environmentScript: r.environment_script } : {}),
+  ...(r.language_server_path ? { languageServerPath: r.language_server_path } : {}),
+  ...(r.cmake_generator ? { cmakeGenerator: r.cmake_generator } : {}),
+  ...(r.compile_commands_path ? { compileCommandsPath: r.compile_commands_path } : {}),
+  capabilities: JSON.parse(r.capabilities_json),
+  verifiedAt: r.verified_at
+})

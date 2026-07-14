@@ -25,6 +25,16 @@ const api: CppPetApi = {
     create: input => invoke(ipc.snapshotCreate, input), list: input => invoke(ipc.snapshotList, input),
     previewRestore: input => invoke(ipc.snapshotPreview, input), restore: input => invoke(ipc.snapshotRestore, input), remove: input => invoke(ipc.snapshotRemove, input)
   },
+  toolchains: {
+    detect: () => invoke(ipc.toolchainDetect), probe: input => invoke(ipc.toolchainProbe, input),
+    list: () => invoke(ipc.toolchainList), bind: input => invoke(ipc.toolchainBind, input),
+    unbind: input => invoke(ipc.toolchainUnbind, input), health: input => invoke(ipc.toolchainHealth, input)
+  },
+  compiler: { build: input => invoke(ipc.compilerBuild, input) },
+  program: {
+    run: input => invoke(ipc.programRun, input),
+    stop: input => invoke(ipc.programStop, input)
+  },
   mocks: { getDashboard: () => invoke(ipc.mockDashboard) }
 }
 contextBridge.exposeInMainWorld('cppPet', api)

@@ -1,4 +1,17 @@
 import { z } from 'zod'
+import type {
+  BuildRequest,
+  BuildResult,
+  ProgramRunRequest,
+  ProgramRunResult,
+  ProgramStopRequest,
+  ProgramStopResult,
+  ToolchainBindingState,
+  ToolchainDetectionResult,
+  ToolchainHealthResult,
+  ToolchainProbeResult,
+  ToolchainProfile
+} from './future'
 export { ipc } from './ipc'
 export * from './future'
 
@@ -117,7 +130,7 @@ export interface DomainEvent<T = unknown> {
   eventId: string; type: string; version: 1; occurredAt: string
   actor: 'user' | 'system' | 'agent' | 'tool'; projectId?: string; payload: T
 }
-export interface AppSettings { theme: ThemePreference; lastProjectId?: string; sidebarWidth: number }
+export interface AppSettings { theme: ThemePreference; lastProjectId?: string; activeToolchainId?: string; sidebarWidth: number }
 export interface AppBootstrap {
   version: string; platform: string; recoveryMode: boolean; settings: AppSettings
   recentProjects: Project[]; workspaces: Workspace[]; recentEvents: DomainEvent[]
@@ -165,6 +178,21 @@ export interface CppPetApi {
     previewRestore(input: { snapshotId: string }): Promise<ApiResult<RestorePreview>>
     restore(input: { snapshotId: string }): Promise<ApiResult<void>>
     remove(input: { snapshotId: string }): Promise<ApiResult<void>>
+  }
+  toolchains: {
+    detect(): Promise<ApiResult<ToolchainDetectionResult>>
+    probe(input: { candidateId: string }): Promise<ApiResult<ToolchainProbeResult>>
+    list(): Promise<ApiResult<ToolchainBindingState>>
+    bind(input: { candidateId: string }): Promise<ApiResult<ToolchainProfile>>
+    unbind(input: { profileId: string }): Promise<ApiResult<void>>
+    health(input: { profileId: string }): Promise<ApiResult<ToolchainHealthResult>>
+  }
+  compiler: {
+    build(input: BuildRequest): Promise<ApiResult<BuildResult>>
+  }
+  program: {
+    run(input: ProgramRunRequest): Promise<ApiResult<ProgramRunResult>>
+    stop(input: ProgramStopRequest): Promise<ApiResult<ProgramStopResult>>
   }
   mocks: { getDashboard(): Promise<ApiResult<MockDashboard>> }
 }
