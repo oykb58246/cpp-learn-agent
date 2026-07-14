@@ -187,7 +187,7 @@ function projectFiles(type: Project['type'], mode: Project['creationMode'], stat
   const main = '#include <iostream>\n\nint main() {\n    std::cout << "Hello, C++!" << std::endl;\n    return 0;\n}\n'
   const files = type === 'single-file' ? [{ relativePath: 'main.cpp', content: main }, { relativePath: 'README.md', content: header }]
     : type === 'multi-file' ? [{ relativePath: 'src/main.cpp', content: main }, { relativePath: 'include/utils.hpp', content: '#pragma once\n' }, { relativePath: 'src/utils.cpp', content: '#include "utils.hpp"\n' }, { relativePath: 'README.md', content: header }]
-      : [{ relativePath: 'src/main.cpp', content: main }, { relativePath: 'CMakeLists.txt', content: 'cmake_minimum_required(VERSION 3.20)\nproject(CppPetProject LANGUAGES CXX)\nset(CMAKE_CXX_STANDARD 17)\nadd_executable(cpp_pet src/main.cpp)\n' }, { relativePath: 'README.md', content: header }]
+      : [{ relativePath: 'src/main.cpp', content: main }, { relativePath: 'CMakeLists.txt', content: 'cmake_minimum_required(VERSION 3.20)\nproject(CppPetProject LANGUAGES CXX)\nset(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nadd_executable(cpp_pet src/main.cpp)\nenable_testing()\nadd_test(NAME cpp_pet_runs COMMAND cpp_pet)\n' }, { relativePath: 'README.md', content: header }]
   if (mode === 'problem') files.push({ relativePath: 'problem.md', content: statement ?? '# 题目\n' }, { relativePath: 'tests/cases.json', content: JSON.stringify(samples, null, 2) })
   return files
 }

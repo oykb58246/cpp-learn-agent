@@ -8,5 +8,21 @@ export const ipc = {
   filesRename: 'files:rename', filesRemove: 'files:remove', filesSearch: 'files:search',
   filesCopy: 'files:copy', filesMove: 'files:move',
   snapshotCreate: 'snapshots:create', snapshotList: 'snapshots:list', snapshotPreview: 'snapshots:preview-restore',
-  snapshotRestore: 'snapshots:restore', snapshotRemove: 'snapshots:remove', mockDashboard: 'mocks:get-dashboard'
+  snapshotRestore: 'snapshots:restore', snapshotRemove: 'snapshots:remove',
+  toolchainDetect: 'toolchain:detect', toolchainProbe: 'toolchain:probe', toolchainList: 'toolchain:list',
+  toolchainBind: 'toolchain:bind', toolchainUnbind: 'toolchain:unbind', toolchainHealth: 'toolchain:health',
+  compilerBuild: 'compiler:build',
+  cmakeBuild: 'cmake:build', ctestRun: 'ctest:run',
+  analysisClangTidy: 'analysis:clang-tidy',
+  vscodeOpen: 'vscode:open',
+  environmentOpenDownload: 'environment:open-download',
+  environmentInstallerStatus: 'environment:installer-status',
+  environmentInstall: 'environment:install', environmentInstallTasks: 'environment:install-tasks',
+  environmentInstallChanged: 'environment:install-changed',
+  languageStatus: 'language:status', languageSync: 'language:sync',
+  languageCompletion: 'language:completion', languageHover: 'language:hover',
+  languageDefinition: 'language:definition', languageDiagnostics: 'language:diagnostics',
+  debugStart: 'debug:start', debugCommand: 'debug:command',
+  programRun: 'program:run', programStop: 'program:stop',
+  mockDashboard: 'mocks:get-dashboard'
 } as const

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowRight, CheckCircle2, CircleAlert, Clock3, FolderOpen, Plus, Search, ShieldCheck } from 'lucide-vue-next'
+import { ArrowRight, CheckCircle2, CircleAlert, Clock3, FolderOpen, Plus, Search, ShieldCheck, Wrench, X } from 'lucide-vue-next'
 import ProjectDialog from '../components/ProjectDialog.vue'
 import { useAppStore } from '../stores/app'
 import { useWorkspaceStore } from '../stores/workspace'
@@ -11,12 +11,19 @@ const projects = computed(() => app.projects.filter(item => item.name.toLowerCas
 const eventLabel = (type: string) => ({ 'project.created': '创建项目', 'project.removed': '移除项目', 'file.created': '新建文件', 'file.patched': '保存文件', 'file.deleted': '删除文件', 'file.renamed': '移动或重命名', 'snapshot.created': '创建快照', 'snapshot.restored': '恢复快照', 'snapshot.deleted': '删除快照' }[type] ?? type)
 async function openProject(id: string) { await workspace.openProject(id); await router.push(`/workspace/${id}`) }
 async function created(project: { id: string }) { await workspace.openProject(project.id); await router.push(`/workspace/${project.id}`) }
+async function dismissOnboardingReminder() { await app.updateSettings({ onboardingReminderDismissed: true }) }
 </script>
 
 <template>
   <div class="home-view page-scroll">
     <section class="page-header"><div><p class="eyebrow">今日工作台</p><h1>继续你的 C++ 学习</h1><p>项目、错误和工具状态都在同一个可追踪工作流中。</p></div><button class="primary-command" @click="dialog = true"><Plus :size="17" />新建项目</button></section>
     <section v-if="app.bootstrap?.recoveryMode" class="recovery-banner"><CircleAlert :size="18" /><div><strong>数据处于只读恢复模式</strong><span>原数据库已保留，请先检查备份再继续写入。</span></div></section>
+    <section v-if="app.settings.onboardingStatus === 'skipped' && !app.settings.onboardingReminderDismissed" class="environment-reminder">
+      <Wrench :size="19" />
+      <div><strong>环境初始化尚未完成</strong><span>可从“设置 → C++ 工具链 → 环境向导”继续，也可以现在直接返回向导。</span></div>
+      <button class="primary-command" @click="router.push('/onboarding')">打开环境向导</button>
+      <button class="icon-command" title="关闭提醒" @click="dismissOnboardingReminder"><X :size="16" /></button>
+    </section>
     <section class="command-row"><div class="search-field"><Search :size="17" /><input v-model="query" placeholder="查找最近项目" /></div><button class="secondary-command" @click="dialog = true"><FolderOpen :size="17" />导入项目</button></section>
     <section class="status-strip">
       <div v-for="item in app.dashboard?.environment" :key="item.id" class="status-item"><i :class="['status-indicator', item.status]" /><div><span>{{ item.label }}</span><small>{{ item.detail }}</small></div></div>

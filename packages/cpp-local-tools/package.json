@@ -1,0 +1,23 @@
+{
+  "name": "@cpp-pet/cpp-local-tools",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": { "types": "./src/index.ts", "default": "./src/index.ts" },
+    "./language-server": { "types": "./src/language-server.ts", "default": "./src/language-server.ts" },
+    "./debugger": { "types": "./src/debugger.ts", "default": "./src/debugger.ts" }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run src"
+  },
+  "dependencies": { "@cpp-pet/contracts": "workspace:*" },
+  "devDependencies": {
+    "@types/node": "^22.19.13",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  }
+}
