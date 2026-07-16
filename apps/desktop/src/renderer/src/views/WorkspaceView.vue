@@ -5,6 +5,7 @@ import {
   AlertCircle,
   ArrowDownToLine,
   ArrowUpFromLine,
+  Bot,
   Boxes,
   Bug,
   Camera,
@@ -41,6 +42,7 @@ import type {
   DebugCommand,
   DebugSessionState,
   Diagnostic,
+  AgentStartRequest,
   FileTreeNode,
   ProgramRunResult,
   StaticAnalysisResult
@@ -49,11 +51,17 @@ import DiffEditorHost from '../components/DiffEditorHost.vue'
 import EditorHost from '../components/EditorHost.vue'
 import FileTree from '../components/FileTree.vue'
 import ProjectDialog from '../components/ProjectDialog.vue'
+import AgentComposer from '../components/AgentComposer.vue'
+import ApprovalCard from '../components/ApprovalCard.vue'
+import RunTimeline from '../components/RunTimeline.vue'
 import { useAppStore } from '../stores/app'
+import { useAgentStore } from '../stores/agent'
 import { useWorkspaceStore } from '../stores/workspace'
+import type { AgentEditorSelection } from '../utils/editor-selection'
 
 const app = useAppStore()
 const store = useWorkspaceStore()
+const agent = useAgentStore()
 const route = useRoute()
 const router = useRouter()
 const workspaceView = ref<HTMLElement | null>(null)
@@ -66,6 +74,8 @@ const contextPos = ref({ x: 0, y: 0 })
 const active = computed(() => store.activeTab)
 const editorHost = ref<InstanceType<typeof EditorHost> | null>(null)
 const editorFontSize = ref(13)
+const agentOpen = ref(false)
+const agentSelection = ref<AgentEditorSelection>()
 const diffOpen = ref(false)
 const panelOpen = ref(true)
 const panelTab = ref<'output' | 'problems' | 'debug'>('output')
@@ -123,6 +133,14 @@ const allDiagnostics = computed(() => [
   ...diagnostics.value,
   ...Object.values(languageDiagnostics.value).flat()
 ])
+const activeDiagnostics = computed(() => {
+  const path = active.value?.relativePath
+  if (!path) return []
+  const normalized = normalizePath(path)
+  return allDiagnostics.value.filter(item => !item.file || normalizePath(item.file) === normalized)
+})
+const agentTimeline = computed(() => agent.currentRun && 'timeline' in agent.currentRun ? agent.currentRun.timeline.slice(-6) : [])
+const agentRunning = computed(() => Boolean(agent.currentRun && !['completed', 'failed', 'cancelled'].includes(agent.currentRun.status)))
 const outputText = computed(() => {
   const chunks: string[] = []
   if (buildResult.value) {
@@ -166,6 +184,7 @@ const outputText = computed(() => {
 })
 
 onMounted(async () => {
+  agent.subscribe()
   window.addEventListener('resize', fitLayoutToViewport)
   stopLanguageDiagnostics = window.cppPet.language.onDiagnostics(event => {
     if (event.projectId !== store.currentProject?.id) return
@@ -174,7 +193,7 @@ onMounted(async () => {
       [normalizePath(event.relativePath)]: event.diagnostics
     }
   })
-  await store.loadProjects()
+  await Promise.all([store.loadProjects(), agent.refreshAll()])
   const id = route.params.projectId as string | undefined
   if (id) await store.openProject(id)
   else if (store.projects[0]) {
@@ -188,6 +207,7 @@ onBeforeUnmount(() => {
   stopResize()
   window.removeEventListener('resize', fitLayoutToViewport)
   stopLanguageDiagnostics?.()
+  agent.dispose()
   if (debugState.value && !['exited', 'error'].includes(debugState.value.status)) {
     void window.cppPet.debug.command({ sessionId: debugState.value.sessionId, command: 'stop' })
   }
@@ -195,7 +215,7 @@ onBeforeUnmount(() => {
 watch(() => route.params.projectId, async id => {
   if (typeof id === 'string' && id !== store.currentProject?.id) await store.openProject(id)
 })
-watch(() => active.value?.relativePath, () => { diffOpen.value = false })
+watch(() => active.value?.relativePath, () => { diffOpen.value = false; agentSelection.value = undefined })
 watch(
   () => [app.settings.sidebarWidth, app.settings.inspectorWidth, app.settings.bottomPanelHeight] as const,
   ([savedSidebarWidth, savedInspectorWidth, savedBottomPanelHeight]) => {
@@ -348,6 +368,15 @@ async function showLocation(location: { relativePath: string; line: number; colu
 function languageFailed(reason: string) {
   languageAvailable.value = false
   languageStatusText.value = reason
+}
+
+async function submitAgent(request: AgentStartRequest) {
+  agentOpen.value = true
+  await agent.start(request)
+}
+
+async function decideAgent(decision: 'approved' | 'rejected') {
+  if (agent.pendingApproval) await agent.decide(agent.pendingApproval.id, decision)
 }
 async function runSearch() { await store.search(search.value) }
 function create(kind: 'file' | 'directory') { Object.assign(entryDialog, { visible: true, mode: 'create', kind, source: '', value: '' }) }
@@ -723,6 +752,7 @@ async function overwriteDisk() {
         </div>
         <span class="toolbar-status" :title="languageStatusText">{{ debuggerBusy ? '调试器正在执行…' : debugState?.status === 'stopped' ? `调试暂停：${debugState.reason ?? '断点'}` : executing === 'build' ? '正在编译…' : executing === 'run' ? '程序正在运行…' : executing === 'cmake' ? '正在构建工程…' : executing === 'ctest' ? '正在运行测试…' : executing === 'analysis' ? '正在静态分析…' : active?.dirty ? '等待自动保存' : active ? `${languageAvailable ? 'clangd 已连接' : '基础编辑模式'} · 已保存` : '' }}</span>
         <button class="panel-toggle" @click="panelOpen = !panelOpen"><Terminal :size="15" />{{ panelOpen ? '隐藏面板' : '显示面板' }}</button>
+        <button :class="['panel-toggle agent-toggle', { active: agentOpen }]" @click="agentOpen = !agentOpen"><Bot :size="15" />Agent</button>
       </div>
 
       <div v-if="active?.conflicted" class="conflict-band">
@@ -760,6 +790,7 @@ async function overwriteDisk() {
           @toggle-breakpoint="toggleBreakpoint"
           @language-failed="languageFailed"
           @font-size-change="editorFontSize = $event"
+          @selection="agentSelection = $event"
         />
         <div v-else class="editor-empty">
           <div class="cpp-glyph">C++</div>
@@ -768,6 +799,29 @@ async function overwriteDisk() {
           <button v-if="!store.currentProject" class="primary-command" @click="dialog = true">新建项目</button>
         </div>
       </div>
+
+      <section v-if="agentOpen" class="workspace-agent-panel">
+        <header>
+          <div><Bot :size="16" /><strong>CppPilot Agent</strong><span v-if="agent.currentRun">{{ agent.currentRun.status }}</span><span v-else>就绪</span></div>
+          <button class="icon-command" title="关闭 Agent 面板" @click="agentOpen = false"><X :size="14" /></button>
+        </header>
+        <div v-if="agent.error" class="workspace-agent-error"><AlertCircle :size="15" /><span>{{ agent.error.message }}</span></div>
+        <ApprovalCard v-if="agent.pendingApproval" :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
+        <div v-else-if="agent.currentRun" class="workspace-agent-evidence">
+          <RunTimeline :events="agentTimeline" />
+          <p v-if="agent.currentRun.response">{{ agent.currentRun.response }}</p>
+        </div>
+        <AgentComposer
+          source="editor"
+          :project-id="store.currentProject?.id"
+          :active-file="active?.relativePath"
+          :selection="agentSelection"
+          :diagnostics="activeDiagnostics"
+          :busy="agentRunning || agent.running"
+          @submit="submitAgent"
+          @cancel="agent.currentRun && agent.cancel(agent.currentRun.id)"
+        />
+      </section>
 
       <div
         v-if="panelOpen"

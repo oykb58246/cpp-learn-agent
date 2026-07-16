@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { CheckCircle2, Database, FolderRoot, MonitorCog, Moon, Play, RefreshCw, Sparkles, Sun, Trash2, Wrench } from 'lucide-vue-next'
+import { Bot, CheckCircle2, Database, FolderRoot, KeyRound, MonitorCog, Moon, Play, Plus, RefreshCw, Save, Sparkles, Sun, Trash2, Wifi, WifiOff, Wrench } from 'lucide-vue-next'
 import type {
   CursorStyle,
   ToolchainBindingState,
@@ -10,10 +10,12 @@ import type {
   ToolchainProbeResult
 } from '@cpp-pet/contracts'
 import { useAppStore } from '../stores/app'
+import { useAgentStore } from '../stores/agent'
 import classicPreview from '../assets/cursor-classic.png'
 import mascotPreview from '../assets/cursor-mascot.png'
 
 const app = useAppStore()
+const agent = useAgentStore()
 const route = useRoute()
 const router = useRouter()
 const detection = ref<ToolchainDetectionResult | null>(null)
@@ -21,6 +23,8 @@ const bindings = ref<ToolchainBindingState>({ profiles: [] })
 const probes = ref<Record<string, ToolchainProbeResult>>({})
 const detecting = ref(false)
 const activeAction = ref('')
+const modelAction = ref('')
+const modelNotice = ref('')
 const activeSection = ref('appearance')
 const scrollRoot = ref<HTMLElement | null>(null)
 let observer: IntersectionObserver | null = null
@@ -30,11 +34,16 @@ const sections = [
   { id: 'appearance', label: '外观', hint: '主题与光标', icon: Sun },
   { id: 'toolchains', label: 'C++ 工具链', hint: '检测与绑定', icon: Wrench },
   { id: 'workspace', label: '工作区', hint: '授权目录', icon: FolderRoot },
+  { id: 'models', label: '模型服务', hint: 'BYOK 与离线', icon: Bot },
   { id: 'data', label: '本地数据', hint: '数据库状态', icon: Database }
 ] as const
 
 const sectionIds = new Set(sections.map(item => item.id))
 const activeProfile = computed(() => bindings.value.profiles.find(item => item.id === bindings.value.activeProfileId))
+const modelForm = reactive({ id: '', name: 'OpenAI Compatible', baseUrl: 'https://api.openai.com/v1', model: '', timeoutMs: 30_000, enabled: true, apiKey: '' })
+const selectedModelId = ref('')
+const selectedModel = computed(() => agent.models.find(item => item.id === selectedModelId.value))
+const offlineMode = computed(() => !agent.models.some(item => item.enabled && item.apiKeyConfigured))
 
 const cursorOptions: Array<{ id: CursorStyle; title: string; detail: string; preview?: string }> = [
   { id: 'mascot', title: '桌宠光标', detail: '默认 · 猫猫 + 箭头', preview: mascotPreview },
@@ -51,7 +60,7 @@ function resolveTargetSection(): string | null {
 }
 
 onMounted(async () => {
-  await loadBindings()
+  await Promise.all([loadBindings(), loadModels()])
   await nextTick()
   setupSectionObserver()
   const target = resolveTargetSection()
@@ -98,7 +107,8 @@ async function jumpToSection(id: string, updateUrl = true) {
   // 程序化滚动期间暂时忽略 IntersectionObserver，避免顶部目录被“外观”抢回
   ignoreObserverUntil = Date.now() + 700
   await nextTick()
-  const stickyOffset = 72
+  const rootPaddingTop = Number.parseFloat(getComputedStyle(root).paddingTop) || 0
+  const stickyOffset = rootPaddingTop + (root.querySelector<HTMLElement>('.settings-jumpbar')?.getBoundingClientRect().height ?? 60) + 12
   const top = root.scrollTop + (target.getBoundingClientRect().top - root.getBoundingClientRect().top) - stickyOffset
   root.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
   if (updateUrl) {
@@ -110,6 +120,80 @@ async function loadBindings() {
   const result = await window.cppPet.toolchains.list()
   if (result.ok) bindings.value = result.data
   else app.setError(result.error)
+}
+
+async function loadModels() {
+  await agent.refreshModels()
+  if (!selectedModelId.value && agent.models[0]) selectModel(agent.models[0].id)
+}
+
+function selectModel(profileId: string) {
+  const profile = agent.models.find(item => item.id === profileId)
+  if (!profile) return
+  selectedModelId.value = profile.id
+  Object.assign(modelForm, {
+    id: profile.id,
+    name: profile.name,
+    baseUrl: profile.baseUrl,
+    model: profile.model,
+    timeoutMs: profile.timeoutMs,
+    enabled: profile.enabled,
+    apiKey: ''
+  })
+  modelNotice.value = ''
+}
+
+function newModel() {
+  selectedModelId.value = ''
+  Object.assign(modelForm, { id: '', name: 'OpenAI Compatible', baseUrl: 'https://api.openai.com/v1', model: '', timeoutMs: 30_000, enabled: true, apiKey: '' })
+  modelNotice.value = ''
+}
+
+async function saveModel() {
+  modelAction.value = 'save'
+  modelNotice.value = ''
+  const saved = await agent.saveModel({
+    ...(modelForm.id ? { id: modelForm.id } : {}),
+    name: modelForm.name.trim(),
+    baseUrl: modelForm.baseUrl.trim(),
+    model: modelForm.model.trim(),
+    timeoutMs: Number(modelForm.timeoutMs),
+    enabled: modelForm.enabled,
+    ...(modelForm.apiKey.trim() ? { apiKey: modelForm.apiKey.trim() } : {})
+  })
+  modelAction.value = ''
+  if (!saved) return
+  modelForm.apiKey = ''
+  selectedModelId.value = saved.id
+  modelForm.id = saved.id
+  modelNotice.value = '模型配置已保存。'
+}
+
+async function clearModelKey() {
+  if (!modelForm.id) return
+  modelAction.value = 'clear'
+  const profile = await agent.clearModelKey(modelForm.id)
+  modelAction.value = ''
+  if (profile) modelNotice.value = 'API Key 已清除。'
+}
+
+async function testModel() {
+  if (!modelForm.id) return
+  modelAction.value = 'test'
+  modelNotice.value = ''
+  const result = await agent.testModel(modelForm.id)
+  modelAction.value = ''
+  if (result) modelNotice.value = `连接成功 · ${result.latencyMs} ms`
+}
+
+async function removeModel() {
+  if (!modelForm.id) return
+  modelAction.value = 'remove'
+  const removed = await agent.removeModel(modelForm.id)
+  modelAction.value = ''
+  if (!removed) return
+  newModel()
+  if (agent.models[0]) selectModel(agent.models[0].id)
 }
 
 async function detectToolchains() {
@@ -309,6 +393,42 @@ async function selectCursor(style: CursorStyle) {
           <b :class="item.trustState">{{ item.trustState === 'trusted' ? '已信任' : item.trustState === 'inspection' ? '只读检查' : '已撤销' }}</b>
         </div>
         <button class="secondary-command" @click="app.selectWorkspace">添加工作区</button>
+      </section>
+
+      <section id="models" class="settings-section model-settings-section">
+        <header>
+          <Bot :size="18" />
+          <div>
+            <h2>模型服务</h2>
+            <p>OpenAI-compatible BYOK；未配置时使用确定性离线规划。</p>
+          </div>
+          <div class="section-actions model-profile-actions">
+            <select v-model="selectedModelId" aria-label="模型配置" @change="selectModel(selectedModelId)">
+              <option value="">新配置</option>
+              <option v-for="profile in agent.models" :key="profile.id" :value="profile.id">{{ profile.name }}</option>
+            </select>
+            <button class="icon-command" title="新建模型配置" @click="newModel"><Plus :size="15" /></button>
+          </div>
+        </header>
+        <div :class="['model-mode-line', { offline: offlineMode }]">
+          <component :is="offlineMode ? WifiOff : Wifi" :size="17" />
+          <div><strong>{{ offlineMode ? '离线规划模式' : '在线模型可用' }}</strong><span>{{ offlineMode ? '七条工作流仍调用本地工具并保留验证证据。' : `${selectedModel?.name ?? '已启用配置'} · 密钥已保护` }}</span></div>
+        </div>
+        <div class="model-field-grid">
+          <label><span>配置名称</span><input v-model="modelForm.name" maxlength="100" /></label>
+          <label><span>模型名称</span><input v-model="modelForm.model" maxlength="200" placeholder="例如 gpt-4.1-mini" /></label>
+          <label class="wide"><span>Base URL</span><input v-model="modelForm.baseUrl" type="url" maxlength="2048" /></label>
+          <label><span>超时</span><input v-model.number="modelForm.timeoutMs" type="number" min="1000" max="120000" step="1000" /><small>毫秒</small></label>
+          <label class="model-toggle"><input v-model="modelForm.enabled" type="checkbox" /><span>启用此配置</span></label>
+          <label class="wide model-key-field"><span>API Key</span><div><KeyRound :size="15" /><input v-model="modelForm.apiKey" type="password" maxlength="10000" autocomplete="new-password" :placeholder="selectedModel?.apiKeyConfigured ? '已安全保存；留空保持不变' : '输入新密钥'" /></div></label>
+        </div>
+        <footer class="model-actions">
+          <span :class="{ success: modelNotice.startsWith('连接成功') || modelNotice.includes('已保存') }">{{ modelNotice }}</span>
+          <button v-if="modelForm.id" class="icon-command danger" title="删除模型配置" :disabled="Boolean(modelAction)" @click="removeModel"><Trash2 :size="15" /></button>
+          <button class="secondary-command" :disabled="!modelForm.id || !selectedModel?.apiKeyConfigured || Boolean(modelAction)" @click="clearModelKey"><KeyRound :size="14" />清除密钥</button>
+          <button class="secondary-command" :disabled="!modelForm.id || !selectedModel?.apiKeyConfigured || Boolean(modelAction)" @click="testModel"><Wifi :size="14" />{{ modelAction === 'test' ? '测试中' : '测试连接' }}</button>
+          <button class="primary-command" :disabled="!modelForm.name.trim() || !modelForm.model.trim() || !modelForm.baseUrl.trim() || Boolean(modelAction)" @click="saveModel"><Save :size="14" />{{ modelAction === 'save' ? '保存中' : '保存配置' }}</button>
+        </footer>
       </section>
 
       <section id="data" class="settings-section">

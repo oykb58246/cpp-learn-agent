@@ -1,0 +1,169 @@
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
+import electronPath from 'electron'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { createElectronEnvironment } from './electron-env'
+
+const repo = resolve(import.meta.dirname, '../..')
+let temp = ''
+
+test.beforeEach(() => {
+  temp = mkdtempSync(join(tmpdir(), 'cpppilot-h3-e2e-'))
+  mkdirSync(join(temp, 'workspace'))
+  mkdirSync(join(repo, 'test-results', 'visual'), { recursive: true })
+})
+test.afterEach(() => rmSync(temp, { recursive: true, force: true }))
+
+async function captureWindow(electronApp: ElectronApplication, page: Page, name: string) {
+  const browserWindow = await electronApp.browserWindow(page)
+  const png = await browserWindow.evaluate(async win => (await win.capturePage()).toPNG().toString('base64'))
+  writeFileSync(join(repo, 'test-results', 'visual', name), Buffer.from(png, 'base64'))
+}
+
+async function expectNoHorizontalOverflow(page: Page) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+  const overflowingContainers = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('.app-content, .page-scroll, .h3-view'))
+    .filter(element => element.scrollWidth > element.clientWidth + 1)
+    .map(element => ({
+      className: element.className,
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth
+    })))
+  expect(overflowingContainers).toEqual([])
+}
+
+async function expectAgentEvidenceNotToOverlap(page: Page) {
+  const overlap = await page.evaluate(() => {
+    const response = document.querySelector<HTMLElement>('.workspace-agent-evidence > p')
+    if (!response) return []
+    const responseRect = response.getBoundingClientRect()
+    return Array.from(document.querySelectorAll<HTMLElement>('.workspace-agent-evidence .run-timeline article'))
+      .map((event, index) => ({ index, event: event.getBoundingClientRect() }))
+      .filter(({ event }) => event.bottom > responseRect.top + 1 && event.top < responseRect.bottom - 1)
+      .map(({ index }) => index)
+  })
+  expect(overlap).toEqual([])
+}
+
+async function setWindowSize(electronApp: ElectronApplication, page: Page, width: number, height: number) {
+  const browserWindow = await electronApp.browserWindow(page)
+  await browserWindow.evaluate((win, size) => win.setSize(size.width, size.height), { width, height })
+  await expect.poll(async () => {
+    const [actualWidth, actualHeight] = await browserWindow.evaluate(win => win.getSize())
+    return Math.abs(actualWidth - width) <= 2 && Math.abs(actualHeight - height) <= 2
+  }).toBe(true)
+}
+
+test('completes the verified H3 diagnose and learning workflow', async () => {
+  test.setTimeout(180_000)
+  const electronApp = await electron.launch({
+    executablePath: electronPath as unknown as string,
+    args: ['--in-process-gpu', '--no-sandbox', join(repo, 'apps/desktop')],
+    env: createElectronEnvironment({ CPP_PET_USER_DATA: join(temp, 'user-data'), CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace') })
+  })
+  try {
+    const page = await electronApp.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    const setup = await page.evaluate(async () => {
+      await window.cppPet.settings.update({ onboardingStatus: 'completed' })
+      const detected = await window.cppPet.toolchains.detect()
+      if (!detected.ok || !detected.data.candidates[0]) return { error: 'NO_TOOLCHAIN' }
+      const candidate = detected.data.candidates.find(item => item.family === 'gcc') ?? detected.data.candidates[0]
+      const bound = await window.cppPet.toolchains.bind({ candidateId: candidate.id })
+      if (!bound.ok) return { error: bound.error.code }
+      const bootstrap = await window.cppPet.app.getBootstrap()
+      if (!bootstrap.ok || !bootstrap.data.recentProjects[0]) return { error: 'NO_PROJECT' }
+      const project = bootstrap.data.recentProjects[0]
+      const document = await window.cppPet.files.read({ projectId: project.id, relativePath: 'main.cpp' })
+      if (!document.ok) return { error: document.error.code }
+      const written = await window.cppPet.files.write({
+        projectId: project.id,
+        relativePath: 'main.cpp',
+        expectedHash: document.data.contentHash,
+        content: '#include <iostream>\n\nint main() {\n    std::cout << "missing semicolon"\n    return 0;\n}\n',
+        createSnapshot: false
+      })
+      if (!written.ok) return { error: written.error.code }
+      for (const conceptId of ['basics.program', 'basics.variables', 'basics.types', 'functions.basic']) {
+        const knowledge = await window.cppPet.learning.updateKnowledge({ conceptId, status: 'learning' })
+        if (!knowledge.ok) return { error: knowledge.error.code }
+      }
+      return { projectId: project.id }
+    })
+    expect(setup).toHaveProperty('projectId')
+    const projectId = (setup as { projectId: string }).projectId
+    await setWindowSize(electronApp, page, 1440, 900)
+    await page.evaluate(id => { window.location.hash = `#/workspace/${id}` }, projectId)
+    await page.reload()
+    await expect(page.locator('.workspace-view')).toBeVisible()
+    await page.getByText('main.cpp', { exact: true }).click()
+    await page.getByRole('button', { name: 'Agent', exact: true }).click()
+    await expect(page.locator('.workspace-agent-panel')).toBeVisible()
+    await page.getByLabel('Agent 模式').selectOption('diagnose')
+    await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('修复当前编译错误并解释根因')
+    await page.getByRole('button', { name: '发送', exact: true }).click()
+
+    await expect(page.locator('.approval-card')).toContainText('应用最小修复', { timeout: 30_000 })
+    await expect(page.locator('.approval-diff')).toContainText('--- a/main.cpp')
+    await expect(page.locator('.approval-diff')).toContainText('+  std::cout << "missing semicolon";')
+    await page.getByRole('button', { name: '批准', exact: true }).click()
+    await expect(page.locator('.approval-card')).toContainText('记录错误修复证据', { timeout: 30_000 })
+    await page.getByRole('button', { name: '批准', exact: true }).click()
+    await expect(page.locator('.workspace-agent-panel')).toContainText('completed', { timeout: 30_000 })
+    await expect(page.locator('.workspace-agent-panel')).toContainText('重新编译验证')
+    await captureWindow(electronApp, page, 'h3-workspace-agent-1440x900.png')
+
+    await setWindowSize(electronApp, page, 1024, 720)
+    await expectNoHorizontalOverflow(page)
+    await expectAgentEvidenceNotToOverlap(page)
+    await captureWindow(electronApp, page, 'h3-workspace-agent-1024x720.png')
+    await setWindowSize(electronApp, page, 1440, 900)
+
+    await page.getByRole('link', { name: 'Agent 记录' }).click()
+    await expect(page.getByRole('heading', { name: 'Agent 记录' })).toBeVisible()
+    await expect(page.locator('.run-timeline')).toContainText('workspace.apply_patch')
+    await expect(page.locator('.run-timeline')).toContainText('compiler.build')
+    await captureWindow(electronApp, page, 'h3-runs-1440x900.png')
+
+    await page.getByRole('link', { name: '练习' }).click()
+    await expect(page.getByRole('heading', { name: '练习中心' })).toBeVisible()
+    await expect(page.locator('.practice-layout')).toContainText('编译错误修复')
+    await expect(page.locator('.practice-layout')).toContainText('复习')
+    await captureWindow(electronApp, page, 'h3-practice-1440x900.png')
+
+    await page.getByRole('link', { name: '报告' }).click()
+    await expect(page.getByRole('heading', { name: '学习报告' })).toBeVisible()
+    await expect(page.locator('.report-metrics')).toContainText('30')
+    await expect(page.locator('.achievement-list')).toContainText('first-fix')
+    await captureWindow(electronApp, page, 'h3-reports-1440x900.png')
+
+    await page.getByRole('link', { name: '知识树' }).click()
+    await expect(page.getByRole('heading', { name: '知识树' })).toBeVisible()
+    await expect(page.locator('.knowledge-summary')).toContainText('38')
+    await expect(page.locator('.knowledge-groups')).toContainText('函数')
+    await captureWindow(electronApp, page, 'h3-knowledge-1440x900.png')
+
+    await page.getByRole('link', { name: '设置' }).click()
+    await expect(page.getByRole('heading', { name: '模型服务' })).toBeVisible()
+    await expect(page.locator('.model-mode-line')).toContainText('离线规划模式')
+    await setWindowSize(electronApp, page, 1024, 720)
+    await page.getByTitle('跳转到模型服务').click()
+    await expect.poll(() => page.evaluate(() => {
+      const jumpbar = document.querySelector<HTMLElement>('.settings-jumpbar')
+      const modelSection = document.querySelector<HTMLElement>('#models')
+      const root = document.querySelector<HTMLElement>('.settings-view')
+      if (!jumpbar || !modelSection || !root) return 'missing'
+      const jumpbarBottom = jumpbar.getBoundingClientRect().bottom
+      const modelTop = modelSection.getBoundingClientRect().top
+      const gap = modelTop - jumpbarBottom
+      return gap >= 8 && gap <= 40
+        ? 'aligned'
+        : JSON.stringify({ gap, jumpbarBottom, modelTop, scrollTop: root.scrollTop })
+    })).toBe('aligned')
+    await expectNoHorizontalOverflow(page)
+    await captureWindow(electronApp, page, 'h3-settings-1024x720.png')
+  } finally {
+    await electronApp.close()
+  }
+})
