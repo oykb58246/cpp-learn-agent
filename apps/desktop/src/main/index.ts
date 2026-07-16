@@ -34,6 +34,7 @@ import {
   type EnvironmentInstallTask
 } from '@cpp-pet/contracts'
 import { z } from 'zod'
+import { createWindowOptions } from './window-options'
 
 let mainWindow: BrowserWindow | null = null
 let database: AppDatabase | null = null
@@ -649,26 +650,14 @@ function createWindow(): void {
   const theme = database?.getSettings().theme ?? 'system'
   const chrome = windowChrome(theme)
   const iconPath = join(__dirname, '../../build/icon.ico')
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1024,
-    minHeight: 720,
-    show: false,
-    autoHideMenuBar: true,
-    title: 'CppPilot：带桌面宠物的 C++ 学习 Agent',
-    icon: existsSync(iconPath) ? iconPath : undefined,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: chrome.titleBarOverlay,
+  mainWindow = new BrowserWindow(createWindowOptions({
+    iconPath,
+    iconExists: existsSync(iconPath),
+    titleBarColor: chrome.titleBarOverlay.color,
+    symbolColor: chrome.titleBarOverlay.symbolColor,
     backgroundColor: chrome.backgroundColor,
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true
-    }
-  })
+    preloadPath: join(__dirname, '../preload/index.cjs')
+  }))
   mainWindow.once('ready-to-show', () => {
     applyWindowChrome(theme)
     mainWindow?.show()
