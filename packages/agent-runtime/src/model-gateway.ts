@@ -20,6 +20,7 @@ const toolRisks: Record<string, ToolRisk> = {
   'debug.start': 'L2',
   'debug.command': 'L1',
   'problem.parse': 'L0',
+  'project.create': 'L2',
   'tests.generate_cases': 'L0',
   'tests.run_cases': 'L2',
   'vscode.open_file': 'L1',

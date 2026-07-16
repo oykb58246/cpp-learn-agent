@@ -25,6 +25,7 @@ export interface RuntimePlanStep {
   arguments?: Record<string, unknown>
   sideEffects?: string[]
   summary?: string
+  continueOnFailure?: boolean
 }
 
 export interface RuntimePlan {
@@ -71,6 +72,7 @@ interface ExecutionState {
   index: number
   toolCalls: number
   approvedSteps: Set<string>
+  results: Map<string, unknown>
   deadline: number
 }
 
@@ -156,6 +158,7 @@ export class AgentRuntime {
       index: 0,
       toolCalls: 0,
       approvedSteps: new Set(),
+      results: new Map(),
       deadline: Date.now() + this.totalTimeoutMs
     }
     this.executions.set(run.id, state)
@@ -273,22 +276,13 @@ export class AgentRuntime {
       const step = state.run.steps[state.index]
       if (!planStep || !step) { await this.fail(state, 'PLAN_STATE_INVALID', '计划步骤状态不一致。'); return }
 
-      if (!planStep.toolName) {
-        step.status = 'completed'
-        step.startedAt = new Date().toISOString()
-        step.finishedAt = step.startedAt
-        await this.options.store.update(state.run)
-        state.index += 1
-        continue
-      }
-
       const risk = planStep.risk ?? 'L0'
-      if ((risk === 'L2' || risk === 'L3') && !state.approvedSteps.has(planStep.id)) {
+      if ((risk === 'L2' || risk === 'L3' || planStep.kind === 'approval') && !state.approvedSteps.has(planStep.id)) {
         const approval: Approval = {
           id: crypto.randomUUID(),
           runId: state.run.id,
           stepId: planStep.id,
-          toolName: planStep.toolName,
+          toolName: planStep.toolName ?? `policy.${planStep.id}`,
           risk,
           title: planStep.title,
           description: `Agent 请求执行 ${planStep.toolName}。`,
@@ -305,6 +299,15 @@ export class AgentRuntime {
         return
       }
 
+      if (!planStep.toolName) {
+        step.status = 'completed'
+        step.startedAt = new Date().toISOString()
+        step.finishedAt = step.startedAt
+        await this.options.store.update(state.run)
+        state.index += 1
+        continue
+      }
+
       if (state.toolCalls >= this.maxToolCalls) { await this.fail(state, 'TOOL_CALL_LIMIT', `工具调用超过上限 ${this.maxToolCalls}。`); return }
       const isValidation = planStep.kind === 'validate'
       await this.setStatus(state, isValidation ? 'validating' : 'executing')
@@ -313,13 +316,14 @@ export class AgentRuntime {
       await this.options.store.update(state.run)
 
       let result: ToolResult | undefined
+      const resolvedArguments = this.resolveValue(planStep.arguments ?? {}, state.results) as Record<string, unknown>
       for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
         state.toolCalls += 1
-        result = await this.options.toolClient.call(planStep.toolName, planStep.arguments ?? {}, state.controller.signal)
+        result = await this.options.toolClient.call(planStep.toolName, resolvedArguments, state.controller.signal)
         if (result.ok || !result.retryable || attempt === this.maxRetries) break
       }
       if (state.controller.signal.aborted || this.isTerminal(state.run.status)) return
-      if (!result?.ok) {
+      if (!result?.ok && !planStep.continueOnFailure) {
         step.status = 'failed'
         step.summary = result?.summary ?? '工具未返回结果。'
         step.finishedAt = new Date().toISOString()
@@ -327,18 +331,20 @@ export class AgentRuntime {
         return
       }
 
+      state.results.set(planStep.id, result?.structuredContent ?? result)
       step.status = 'completed'
-      step.summary = result.summary
+      step.summary = result?.summary ?? '工具未返回摘要。'
       step.finishedAt = new Date().toISOString()
       await this.options.store.update(state.run)
+      const eventKind = isValidation ? 'validation' : planStep.kind === 'learning' ? 'learning' : 'tool'
       await this.timeline(
         state,
-        isValidation ? 'validation' : 'tool',
+        eventKind,
         'completed',
         planStep.title,
-        result.summary,
+        step.summary,
         planStep.id,
-        { toolName: planStep.toolName, exitCode: result.exitCode, diagnostics: result.diagnostics.length, durationMs: result.durationMs }
+        { toolName: planStep.toolName, exitCode: result?.exitCode ?? null, diagnostics: result?.diagnostics.length ?? 0, durationMs: result?.durationMs ?? 0, expectedFailure: !result?.ok && Boolean(planStep.continueOnFailure) }
       )
       state.index += 1
     }
@@ -399,5 +405,25 @@ export class AgentRuntime {
 
   private isTerminal(status: AgentRun['status']): boolean {
     return status === 'completed' || status === 'failed' || status === 'cancelled'
+  }
+
+  private resolveValue(value: unknown, results: Map<string, unknown>): unknown {
+    if (Array.isArray(value)) return value.map(item => this.resolveValue(item, results))
+    if (!value || typeof value !== 'object') return value
+    const record = value as Record<string, unknown>
+    if (typeof record.$from === 'string') {
+      let resolved = results.get(record.$from)
+      if (typeof record.$path === 'string' && record.$path) {
+        for (const segment of record.$path.split('.')) {
+          if (resolved === null || resolved === undefined) break
+          if (Array.isArray(resolved)) resolved = resolved[Number(segment)]
+          else if (typeof resolved === 'object') resolved = (resolved as Record<string, unknown>)[segment]
+          else resolved = undefined
+        }
+      }
+      if (resolved === undefined) throw new Error(`Missing result reference: ${record.$from}.${String(record.$path ?? '')}`)
+      return resolved
+    }
+    return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, this.resolveValue(item, results)]))
   }
 }
