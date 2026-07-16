@@ -57,7 +57,7 @@ pnpm verify
 ## 构建说明
 
 - `pnpm install --frozen-lockfile` 通过，当前 `pnpm-lock.yaml` 与全部 workspace 清单一致。
-- `pnpm package:dir` 通过，生成 `release/win-unpacked/宠码学伴.exe`。
+- `pnpm package:dir` 通过，生成 `release/win-unpacked/CppPilot.exe`。
 - 目录包可执行文件已直接启动验证，进程保持运行且成功创建 Windows 主窗口。
 - Windows 可执行文件、任务栏和窗口使用 `apps/desktop/build/icon.ico`，不再使用默认 Electron 图标。
 - `better-sqlite3` 同时服务 Node 单元测试与 Electron 运行时，脚本会在两个 ABI 间自动重建。

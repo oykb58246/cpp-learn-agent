@@ -271,7 +271,7 @@ function candidateMeta(candidate: ToolchainCandidate) {
     <aside class="onboarding-steps">
       <div class="onboarding-brand">
         <span><Code2 :size="19" /></span>
-        <div><strong>环境初始化</strong><small>CppPet Setup</small></div>
+        <div><strong>环境初始化</strong><small>CppPilot Setup</small></div>
       </div>
       <ol>
         <li v-for="(item, index) in steps" :key="item.title" :class="{ active: step === index, done: step > index }">

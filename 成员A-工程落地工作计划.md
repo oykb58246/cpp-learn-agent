@@ -1,9 +1,9 @@
-# 宠码学伴：成员 A 工程落地工作计划
+# CppPilot：成员 A 工程落地工作计划
 
 > 文档性质：H1 工程落地与开发设计规格  
 > 适用范围：成员 A 负责的基础工程、工作区、数据与首批高保真界面  
 > 首要平台：Windows 10 / Windows 11  
-> 上游依据：《宠码学伴-C++新手学习助手应用开发策划案》  
+> 上游依据：《CppPilot：带桌面宠物的 C++ 学习 Agent 应用开发策划案》  
 > 排期方式：不绑定日期，按依赖关系和验收门组织实施
 
 ## 1. 文档定位
@@ -947,7 +947,7 @@ snapshots/
 
 | Token | 值 |
 |---|---:|
-| `--titlebar-height` | 36px |
+| `--titlebar-height` | 48px |
 | `--activity-rail-width` | 48px |
 | `--sidebar-width` | 260px |
 | `--sidebar-min-width` | 220px |
@@ -965,33 +965,34 @@ snapshots/
 
 | Token | 值 |
 |---|---|
-| `--canvas` | `#f7f7f5` |
+| `--canvas` | `#f5f7fb` |
 | `--panel` | `#ffffff` |
-| `--panel-subtle` | `#f0f0ed` |
-| `--text-primary` | `#20201e` |
-| `--text-secondary` | `#686862` |
-| `--border` | `#deded9` |
-| `--accent` | `#0e7c66` |
-| `--accent-hover` | `#0a6856` |
+| `--panel-subtle` | `#eef2f8` |
+| `--text-primary` | `#142033` |
+| `--text-secondary` | `#5b6b82` |
+| `--border` | `#d7e0ec` |
+| `--accent` | `#1b6fd4` |
+| `--accent-hover` | `#145bb0` |
 
 深色主题：
 
 | Token | 值 |
 |---|---|
-| `--canvas` | `#1e1e1c` |
-| `--panel` | `#252523` |
-| `--panel-subtle` | `#2d2d2a` |
-| `--text-primary` | `#f3f3ef` |
-| `--text-secondary` | `#aaa9a2` |
-| `--border` | `#3d3d39` |
-| `--accent` | `#51c7a5` |
-| `--accent-hover` | `#69d4b4` |
+| `--canvas` | `#121820` |
+| `--panel` | `#1a2230` |
+| `--panel-subtle` | `#232d3d` |
+| `--text-primary` | `#eef3fb` |
+| `--text-secondary` | `#a7b4c8` |
+| `--border` | `#2f3b4f` |
+| `--accent` | `#4da3ff` |
+| `--accent-hover` | `#6eb5ff` |
 
 状态色另设成功、警告、错误和信息色，不用强调色替代所有状态。阴影只用于弹窗、菜单和拖拽浮层。
 
 ### 10.3 原生窗口
 
 - 使用 `titleBarStyle: 'hidden'` 与 Windows 原生窗口控制按钮。
+- `titleBarOverlay` 的 `color` / `symbolColor` 必须跟随应用主题：浅色模式使用浅色底与深色符号，深色模式相反；切换主题时调用 `setTitleBarOverlay` 同步，不能写死深色。
 - 自定义标题栏设置 `-webkit-app-region: drag`，交互控件显式设为 `no-drag`。
 - 标题栏左侧显示产品图标、当前项目名和未保存标记，不放大型品牌标题。
 - 文件夹选择使用 `dialog.showOpenDialog`。
@@ -1002,7 +1003,7 @@ snapshots/
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────┐
-│ 36px Title Bar: 产品 / 当前项目 / 全局命令 / 原生窗口按钮          │
+│ 48px Title Bar: 产品 / 当前项目 / 全局命令 / 原生窗口按钮          │
 ├──────┬───────────────┬───────────────────────────┬──────────────────┤
 │ 48px │ 220-360px     │ Main Content              │ 320px Inspector  │
 │ Rail │ Sidebar       │                           │ 可按页面隐藏      │

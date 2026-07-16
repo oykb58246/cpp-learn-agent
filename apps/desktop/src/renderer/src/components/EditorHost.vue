@@ -5,6 +5,11 @@ import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js'
 import 'monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution.js'
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker.js?worker'
 
+const FONT_MIN = 11
+const FONT_MAX = 28
+const FONT_DEFAULT = 13
+const FONT_STORAGE_KEY = 'cpppilot.editor.font-size'
+
 const props = defineProps<{
   documentKey: string
   projectId: string
@@ -15,6 +20,7 @@ const props = defineProps<{
   languageEnabled?: boolean
   breakpoints?: number[]
   debugLine?: number | undefined
+  fontSize?: number
 }>()
 const emit = defineEmits<{
   change: [value: string]
@@ -22,6 +28,7 @@ const emit = defineEmits<{
   definition: [location: { relativePath: string; line: number; column: number }]
   toggleBreakpoint: [line: number]
   languageFailed: [reason: string]
+  'font-size-change': [size: number]
 }>()
 const host = ref<HTMLElement | null>(null)
 const models = new Map<string, monaco.editor.ITextModel>()
@@ -32,6 +39,7 @@ let languageSyncTimer: ReturnType<typeof setTimeout> | undefined
 let languageFailureReported = false
 let editorDecorations: monaco.editor.IEditorDecorationsCollection | null = null
 const languageProviders: monaco.IDisposable[] = []
+let currentFontSize = FONT_DEFAULT
 
 ;(globalThis as unknown as { MonacoEnvironment: { getWorker(): Worker } }).MonacoEnvironment = {
   getWorker: () => new EditorWorker()
@@ -201,6 +209,50 @@ function switchModel() {
   editor.focus()
 }
 
+function clampFontSize(size: number) {
+  return Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(size)))
+}
+
+function lineHeightFor(size: number) {
+  return Math.round(size * 1.62)
+}
+
+function readStoredFontSize() {
+  try {
+    const raw = localStorage.getItem(FONT_STORAGE_KEY)
+    if (!raw) return FONT_DEFAULT
+    return clampFontSize(Number(raw) || FONT_DEFAULT)
+  } catch {
+    return FONT_DEFAULT
+  }
+}
+
+function applyFontSize(size: number, emitChange = true) {
+  currentFontSize = clampFontSize(size)
+  editor?.updateOptions({
+    fontSize: currentFontSize,
+    lineHeight: lineHeightFor(currentFontSize)
+  })
+  try {
+    localStorage.setItem(FONT_STORAGE_KEY, String(currentFontSize))
+  } catch {
+    /* ignore */
+  }
+  if (emitChange) emit('font-size-change', currentFontSize)
+}
+
+function zoomIn() {
+  applyFontSize(currentFontSize + 1)
+}
+
+function zoomOut() {
+  applyFontSize(currentFontSize - 1)
+}
+
+function zoomReset() {
+  applyFontSize(FONT_DEFAULT)
+}
+
 function reveal(line: number, column = 1) {
   editor?.setPosition({ lineNumber: line, column })
   editor?.revealLineInCenter(line)
@@ -212,19 +264,21 @@ function position() {
   return value ? { line: value.lineNumber, column: value.column } : { line: 1, column: 1 }
 }
 
-defineExpose({ reveal, position })
+defineExpose({ reveal, position, zoomIn, zoomOut, zoomReset, getFontSize: () => currentFontSize })
 
 onMounted(() => {
   applyTheme()
+  currentFontSize = clampFontSize(props.fontSize ?? readStoredFontSize())
   editor = monaco.editor.create(host.value!, {
     model: null,
     automaticLayout: true,
     fontFamily: 'Cascadia Code, Consolas, monospace',
-    fontSize: 13,
-    lineHeight: 21,
+    fontSize: currentFontSize,
+    lineHeight: lineHeightFor(currentFontSize),
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
     smoothScrolling: true,
+    mouseWheelZoom: true,
     padding: { top: 12, bottom: 12 },
     tabSize: 4,
     insertSpaces: true,
@@ -247,15 +301,37 @@ onMounted(() => {
     const line = event.target.position?.lineNumber
     if (line) emit('toggleBreakpoint', line)
   })
+  // Ctrl/Cmd + 滚轮缩放（Monaco mouseWheelZoom 已开，这里同步状态到外层）
+  editor.onDidChangeConfiguration(event => {
+    if (!event.hasChanged(monaco.editor.EditorOption.fontSize)) return
+    const next = clampFontSize(editor?.getOption(monaco.editor.EditorOption.fontSize) ?? currentFontSize)
+    if (next === currentFontSize) return
+    currentFontSize = next
+    try {
+      localStorage.setItem(FONT_STORAGE_KEY, String(currentFontSize))
+    } catch {
+      /* ignore */
+    }
+    emit('font-size-change', currentFontSize)
+  })
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => emit('save'))
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Equal, () => zoomIn())
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.NumpadAdd, () => zoomIn())
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Minus, () => zoomOut())
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.NumpadSubtract, () => zoomOut())
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Digit0, () => zoomReset())
   registerLanguageProviders()
   themeObserver = new MutationObserver(applyTheme)
   themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
   switchModel()
+  emit('font-size-change', currentFontSize)
 })
 
 watch(() => props.documentKey, switchModel)
 watch(() => props.readOnly, value => editor?.updateOptions({ readOnly: value }))
+watch(() => props.fontSize, value => {
+  if (typeof value === 'number' && value !== currentFontSize) applyFontSize(value, false)
+})
 watch(() => props.value, value => {
   const model = models.get(props.documentKey)
   if (!model || model.getValue() === value) return

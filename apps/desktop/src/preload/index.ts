@@ -14,7 +14,10 @@ const api: CppPetApi = {
   project: {
     preview: input => invoke(ipc.projectPreview, input), create: input => invoke(ipc.projectCreate, input),
     previewImport: () => invoke(ipc.projectImportPreview), import: input => invoke(ipc.projectImport, input),
-    list: input => invoke(ipc.projectList, input), open: input => invoke(ipc.projectOpen, input), remove: input => invoke(ipc.projectRemove, input)
+    list: input => invoke(ipc.projectList, input),
+    open: input => invoke(ipc.projectOpen, input),
+    rename: input => invoke(ipc.projectRename, input),
+    remove: input => invoke(ipc.projectRemove, input)
   },
   files: {
     listTree: input => invoke(ipc.filesTree, input), read: input => invoke(ipc.filesRead, input), write: input => invoke(ipc.filesWrite, input),

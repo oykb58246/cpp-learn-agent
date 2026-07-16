@@ -29,7 +29,9 @@ import {
   StepForward,
   Terminal,
   Trash2,
-  X
+  X,
+  ZoomIn,
+  ZoomOut
 } from 'lucide-vue-next'
 import { ElMessageBox } from 'element-plus'
 import type {
@@ -63,6 +65,7 @@ const contextNode = ref<FileTreeNode | null>(null)
 const contextPos = ref({ x: 0, y: 0 })
 const active = computed(() => store.activeTab)
 const editorHost = ref<InstanceType<typeof EditorHost> | null>(null)
+const editorFontSize = ref(13)
 const diffOpen = ref(false)
 const panelOpen = ref(true)
 const panelTab = ref<'output' | 'problems' | 'debug'>('output')
@@ -311,6 +314,7 @@ function resizeWithKeyboard(target: ResizeTarget, event: KeyboardEvent) {
 }
 
 async function switchProject(id: string) {
+  if (!id) return
   if (debugState.value && !['exited', 'error'].includes(debugState.value.status)) await debugCommand('stop')
   await store.openProject(id)
   buildResult.value = null
@@ -375,17 +379,43 @@ async function submitEntryAction() {
   else await store.moveEntry(entryDialog.source, value)
   entryDialog.visible = false
 }
-async function projectCommand(command: 'unregister' | 'delete-files') {
+async function projectCommand(command: 'rename' | 'unregister' | 'delete-files') {
   if (!store.currentProject) return
+  if (command === 'rename') {
+    try {
+      const { value } = await ElMessageBox.prompt('输入新的项目显示名称（不会改动磁盘目录路径）。', '重命名项目', {
+        confirmButtonText: '保存',
+        cancelButtonText: '取消',
+        inputValue: store.currentProject.name,
+        inputPattern: /\S+/,
+        inputErrorMessage: '名称不能为空',
+        inputPlaceholder: '例如：循环练习'
+      })
+      const renamed = await store.renameProject(store.currentProject.id, value.trim())
+      if (renamed) await app.refreshProjects()
+    } catch {
+      /* cancelled */
+    }
+    return
+  }
   if (command === 'unregister') {
     try {
-      await ElMessageBox.confirm('只从应用中移除此项目，磁盘文件保持不变。', '移除项目登记', { confirmButtonText: '移除', cancelButtonText: '取消' })
+      await ElMessageBox.confirm('只从应用中移除此项目，磁盘文件保持不变。', '移除项目登记', { confirmButtonText: '移除', cancelButtonText: '取消', type: 'warning' })
     } catch { return }
   }
+  clearTimeout(autoSaveTimer)
   const done = await store.removeProject(store.currentProject.id, command === 'delete-files')
   if (done) {
+    await app.refreshProjects()
     const next = store.projects[0]
-    next ? await switchProject(next.id) : await router.push('/workspace')
+    if (next) await switchProject(next.id)
+    else {
+      store.currentProject = null
+      store.tree = []
+      store.tabs = []
+      store.activePath = ''
+      await router.push('/home')
+    }
   }
 }
 function edit(value: string) {
@@ -596,13 +626,29 @@ async function overwriteDisk() {
   <div ref="workspaceView" :class="['workspace-view', { 'without-inspector': !inspectorOpen }]" :style="layoutStyle">
     <aside class="workspace-sidebar">
       <div class="sidebar-heading">
-        <select :value="store.currentProject?.id" @change="switchProject(($event.target as HTMLSelectElement).value)">
-          <option value="" disabled>选择项目</option>
-          <option v-for="item in store.projects" :key="item.id" :value="item.id">{{ item.name }}</option>
-        </select>
+        <el-select
+          class="project-picker"
+          :model-value="store.currentProject?.id"
+          placeholder="选择项目"
+          :disabled="!store.projects.length"
+          @change="switchProject"
+        >
+          <el-option
+            v-for="item in store.projects"
+            :key="item.id"
+            :label="item.name"
+            :value="item.id"
+          />
+        </el-select>
         <el-dropdown v-if="store.currentProject" trigger="click" @command="projectCommand">
-          <button class="icon-command" title="项目操作"><MoreHorizontal :size="16" /></button>
-          <template #dropdown><el-dropdown-menu><el-dropdown-item command="unregister">移除项目登记</el-dropdown-item><el-dropdown-item command="delete-files" divided>删除磁盘文件</el-dropdown-item></el-dropdown-menu></template>
+          <button class="icon-command" title="项目管理"><MoreHorizontal :size="16" /></button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="rename">重命名项目</el-dropdown-item>
+              <el-dropdown-item command="unregister" divided>移除项目登记</el-dropdown-item>
+              <el-dropdown-item command="delete-files">删除磁盘文件</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
         </el-dropdown>
         <button class="icon-command" title="新建项目" @click="dialog = true"><Plus :size="16" /></button>
       </div>
@@ -664,7 +710,17 @@ async function overwriteDisk() {
           <button class="tool-command" :disabled="!canControlDebug" title="跳出当前函数" @click="debugCommand('step-out')"><ArrowUpFromLine :size="14" />跳出</button>
           <button class="tool-command stop" :disabled="debuggerBusy" title="停止调试" @click="debugCommand('stop')"><Square :size="14" />停止调试</button>
         </template>
-        <select v-model="standard" class="standard-select" title="C++ 标准"><option value="c++17">C++17</option><option value="c++20">C++20</option><option value="c++23">C++23</option></select>
+        <el-select v-model="standard" class="standard-picker" size="small" title="C++ 标准">
+          <el-option label="C++17" value="c++17" />
+          <el-option label="C++20" value="c++20" />
+          <el-option label="C++23" value="c++23" />
+        </el-select>
+        <span class="toolbar-separator" />
+        <div class="editor-zoom" title="编辑器缩放（Ctrl + 滚轮 / Ctrl + ±Ctrl + -）">
+          <button class="icon-command" type="button" title="缩小" :disabled="!active || editorFontSize <= 11" @click="editorHost?.zoomOut()"><ZoomOut :size="15" /></button>
+          <button class="editor-zoom-label" type="button" title="重置缩放（Ctrl+0）" :disabled="!active" @click="editorHost?.zoomReset()">{{ Math.round(editorFontSize / 13 * 100) }}%</button>
+          <button class="icon-command" type="button" title="放大" :disabled="!active || editorFontSize >= 28" @click="editorHost?.zoomIn()"><ZoomIn :size="15" /></button>
+        </div>
         <span class="toolbar-status" :title="languageStatusText">{{ debuggerBusy ? '调试器正在执行…' : debugState?.status === 'stopped' ? `调试暂停：${debugState.reason ?? '断点'}` : executing === 'build' ? '正在编译…' : executing === 'run' ? '程序正在运行…' : executing === 'cmake' ? '正在构建工程…' : executing === 'ctest' ? '正在运行测试…' : executing === 'analysis' ? '正在静态分析…' : active?.dirty ? '等待自动保存' : active ? `${languageAvailable ? 'clangd 已连接' : '基础编辑模式'} · 已保存` : '' }}</span>
         <button class="panel-toggle" @click="panelOpen = !panelOpen"><Terminal :size="15" />{{ panelOpen ? '隐藏面板' : '显示面板' }}</button>
       </div>
@@ -682,6 +738,7 @@ async function overwriteDisk() {
           :relative-path="active.relativePath"
           :original="active.conflictDocument.content"
           :modified="active.draft"
+          :font-size="editorFontSize"
           @change="edit"
         />
         <EditorHost
@@ -696,11 +753,13 @@ async function overwriteDisk() {
           :language-enabled="languageAvailable"
           :breakpoints="currentBreakpoints"
           :debug-line="currentDebugLine"
+          :font-size="editorFontSize"
           @change="edit"
           @save="saveActive"
           @definition="showLocation"
           @toggle-breakpoint="toggleBreakpoint"
           @language-failed="languageFailed"
+          @font-size-change="editorFontSize = $event"
         />
         <div v-else class="editor-empty">
           <div class="cpp-glyph">C++</div>

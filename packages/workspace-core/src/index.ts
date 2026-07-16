@@ -168,6 +168,15 @@ export class WorkspaceService {
     for (const hash of blobs) if (this.db.blobReferenceCount(hash) === 0) rmSync(join(this.snapshotRoot, 'blobs', `${hash}.gz`), { force: true })
     this.event('snapshot.deleted', snapshot.projectId, { snapshotId })
   }
+  renameProject(projectId: string, name: string): Project {
+    const cleanName = name.trim().replace(/[<>:"/\\|?*]/g, '-')
+    if (!cleanName) throw new DomainError('PROJECT_NAME_INVALID', '项目名称无效。', '请输入有效的项目名称。')
+    const { project, workspace } = this.projectRoot(projectId)
+    this.requireTrusted(workspace)
+    const updated = this.db.renameProject(project.id, cleanName)
+    this.event('project.renamed', project.id, { name: cleanName, previousName: project.name })
+    return updated
+  }
   async removeProject(projectId: string, deleteFiles: boolean): Promise<void> {
     const { root, workspace } = this.projectRoot(projectId)
     if (deleteFiles) { this.requireTrusted(workspace); await this.createSnapshot(projectId, '删除项目磁盘内容前', 'before-delete'); rmSync(root, { recursive: true, force: false }) }
@@ -184,7 +193,7 @@ export class WorkspaceService {
 
 function projectFiles(type: Project['type'], mode: Project['creationMode'], statement?: string, description?: string, samples: Array<{ input: string; output: string }> = []) {
   const header = mode === 'description' && description ? `# ${description}\n\n` : '# C++ 学习项目\n\n'
-  const main = '#include <iostream>\n\nint main() {\n    std::cout << "Hello, C++!" << std::endl;\n    return 0;\n}\n'
+  const main = '#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Hello, C++Pilot!" << endl;\n    return 0;\n}\n'
   const files = type === 'single-file' ? [{ relativePath: 'main.cpp', content: main }, { relativePath: 'README.md', content: header }]
     : type === 'multi-file' ? [{ relativePath: 'src/main.cpp', content: main }, { relativePath: 'include/utils.hpp', content: '#pragma once\n' }, { relativePath: 'src/utils.cpp', content: '#include "utils.hpp"\n' }, { relativePath: 'README.md', content: header }]
       : [{ relativePath: 'src/main.cpp', content: main }, { relativePath: 'CMakeLists.txt', content: 'cmake_minimum_required(VERSION 3.20)\nproject(CppPetProject LANGUAGES CXX)\nset(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nadd_executable(cpp_pet src/main.cpp)\nenable_testing()\nadd_test(NAME cpp_pet_runs COMMAND cpp_pet)\n' }, { relativePath: 'README.md', content: header }]

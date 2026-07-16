@@ -30,7 +30,13 @@ async function commit() { if (!draft.value) return; busy.value = true; const res
         <button v-for="item in [{id:'manual',label:'手动',icon:FileCode2},{id:'problem',label:'题目',icon:Sparkles},{id:'description',label:'描述',icon:Folder},{id:'import',label:'导入',icon:Import}]" :key="item.id" :class="{ active: mode === item.id }" @click="mode = item.id as ProjectCreationMode"><component :is="item.icon" :size="16" />{{ item.label }}</button>
       </div>
       <template v-if="mode !== 'import'">
-        <label>工作区</label><div class="field-row"><el-select v-model="form.workspaceId" placeholder="选择已信任工作区"><el-option v-for="item in trusted" :key="item.id" :label="item.name" :value="item.id" /></el-select><el-button @click="selectRoot">选择目录</el-button></div>
+        <label>工作区</label>
+        <div class="field-row">
+          <el-select v-model="form.workspaceId" placeholder="选择已信任工作区">
+            <el-option v-for="item in trusted" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+          <el-button @click="selectRoot">选择目录</el-button>
+        </div>
         <label>项目名称</label><el-input v-model="form.name" maxlength="80" placeholder="例如：循环练习" />
         <label>项目结构</label><el-radio-group v-model="form.type"><el-radio-button value="single-file">单文件</el-radio-button><el-radio-button value="multi-file">多文件</el-radio-button><el-radio-button value="cmake">CMake</el-radio-button></el-radio-group>
         <template v-if="mode === 'problem'"><label>题目内容</label><el-input v-model="form.statement" type="textarea" :rows="5" placeholder="粘贴题面、输入输出和样例" /></template>

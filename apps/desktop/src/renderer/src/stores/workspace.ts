@@ -38,10 +38,44 @@ export const useWorkspaceStore = defineStore('workspace', {
     async restoreSnapshot(id: string) { const result = await window.cppPet.snapshots.restore({ snapshotId: id }); if (result.ok) { this.tabs = []; this.activePath = ''; await Promise.all([this.refreshTree(), this.refreshSnapshots()]) } else this.error = result.error },
     async removeSnapshot(id: string) { const result = await window.cppPet.snapshots.remove({ snapshotId: id }); result.ok ? await this.refreshSnapshots() : this.error = result.error },
     async preview(input: ProjectDraftInput): Promise<ProjectDraft | null> { const result = await window.cppPet.project.preview(input); if (result.ok) return result.data; this.error = result.error; return null },
-    async commit(draftId: string): Promise<Project | null> { const result = await window.cppPet.project.create({ draftId }); if (!result.ok) { this.error = result.error; return null } await this.loadProjects(); return result.data },
+    async commit(draftId: string): Promise<Project | null> {
+      const result = await window.cppPet.project.create({ draftId })
+      if (!result.ok) { this.error = result.error; return null }
+      await this.loadProjects()
+      // 立即插入列表，避免 UI 依赖后续刷新时机
+      if (!this.projects.some(item => item.id === result.data.id)) this.projects = [result.data, ...this.projects]
+      return result.data
+    },
     async importPreview(): Promise<ProjectDraft | null> { const result = await window.cppPet.project.previewImport(); if (result.ok) return result.data; this.error = result.error; return null },
-    async commitImport(draftId: string): Promise<Project | null> { const result = await window.cppPet.project.import({ draftId }); if (!result.ok) { this.error = result.error; return null } await this.loadProjects(); return result.data },
-    async removeProject(projectId: string, deleteFiles: boolean) { const result = await window.cppPet.project.remove({ projectId, deleteFiles }); if (!result.ok) { this.error = result.error; return false } this.tabs = []; this.activePath = ''; if (this.currentProject?.id === projectId) this.currentProject = null; await this.loadProjects(); return true },
+    async commitImport(draftId: string): Promise<Project | null> {
+      const result = await window.cppPet.project.import({ draftId })
+      if (!result.ok) { this.error = result.error; return null }
+      await this.loadProjects()
+      if (!this.projects.some(item => item.id === result.data.id)) this.projects = [result.data, ...this.projects]
+      return result.data
+    },
+    async renameProject(projectId: string, name: string) {
+      const result = await window.cppPet.project.rename({ projectId, name })
+      if (!result.ok) { this.error = result.error; return null }
+      this.projects = this.projects.map(item => item.id === projectId ? result.data : item)
+      if (this.currentProject?.id === projectId) this.currentProject = result.data
+      return result.data
+    },
+    async removeProject(projectId: string, deleteFiles: boolean) {
+      const result = await window.cppPet.project.remove({ projectId, deleteFiles })
+      if (!result.ok) { this.error = result.error; return false }
+      // 用户在“删除磁盘文件”确认框点了取消
+      if (result.data && 'removed' in result.data && result.data.removed === false) return false
+      this.tabs = []
+      this.activePath = ''
+      this.tree = []
+      this.snapshots = []
+      this.searchResults = []
+      if (this.currentProject?.id === projectId) this.currentProject = null
+      this.projects = this.projects.filter(item => item.id !== projectId)
+      await this.loadProjects()
+      return true
+    },
     handleExternal(event: { projectId?: string; relativePath?: string }) {
       if (event.projectId !== this.currentProject?.id) return
       void this.refreshTree()

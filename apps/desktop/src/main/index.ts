@@ -90,10 +90,18 @@ function registerIpc(): void {
     sidebarWidth: z.number().min(180).max(480).optional(),
     inspectorWidth: z.number().min(220).max(480).optional(),
     bottomPanelHeight: z.number().min(120).max(560).optional(),
+    cursorStyle: z.enum(['system', 'classic', 'mascot']).optional(),
+    customCursor: z.boolean().optional(),
     onboardingCompleted: z.boolean().optional(),
     onboardingStatus: z.enum(['pending', 'completed', 'skipped']).optional(),
     onboardingReminderDismissed: z.boolean().optional()
-  }), input => { const { database } = requiredServices(); const settings = database.updateSettings(input as Partial<AppSettings>); nativeTheme.themeSource = settings.theme; return settings })
+  }), input => {
+    const { database } = requiredServices()
+    const settings = database.updateSettings(input as Partial<AppSettings>)
+    nativeTheme.themeSource = settings.theme
+    applyWindowChrome(settings.theme)
+    return settings
+  })
   handle(ipc.workspaceSelect, empty, async () => { const result = await dialog.showOpenDialog({ title: '选择学习工作区', properties: ['openDirectory', 'createDirectory'] }); if (result.canceled || !result.filePaths[0]) return null; return requiredServices().workspaceService.registerWorkspace(result.filePaths[0]) })
   handle(ipc.workspaceList, empty, () => requiredServices().database.listWorkspaces())
   handle(ipc.workspaceOpen, z.object({ workspaceId: z.string().uuid() }), input => requiredServices().database.touchWorkspace(input.workspaceId))
@@ -105,7 +113,23 @@ function registerIpc(): void {
   handle(ipc.projectImport, z.object({ draftId: z.string().uuid() }), input => requiredServices().workspaceService.commitDraft(input.draftId))
   handle(ipc.projectList, z.object({ workspaceId: z.string().uuid().optional() }).optional(), input => requiredServices().database.listProjects(input?.workspaceId))
   handle(ipc.projectOpen, z.object({ projectId: z.string().uuid() }), input => { const { database, workspaceService } = requiredServices(); const project = database.touchProject(input.projectId); stopWatching?.(); stopWatching = workspaceService.watchProject(project.id, event => mainWindow?.webContents.send(ipc.workspaceChanged, event)); return project })
-  handle(ipc.projectRemove, z.object({ projectId: z.string().uuid(), deleteFiles: z.boolean() }), async input => { if (input.deleteFiles) { const result = await dialog.showMessageBox(mainWindow!, { type: 'warning', buttons: ['取消', '删除磁盘文件'], defaultId: 0, cancelId: 0, title: '删除项目文件', message: '项目目录将从磁盘删除', detail: '删除前会创建快照，但此操作仍具有风险。' }); if (result.response !== 1) return } await requiredServices().workspaceService.removeProject(input.projectId, input.deleteFiles) })
+  handle(ipc.projectRename, z.object({ projectId: z.string().uuid(), name: z.string().min(1).max(80) }), input => requiredServices().workspaceService.renameProject(input.projectId, input.name))
+  handle(ipc.projectRemove, z.object({ projectId: z.string().uuid(), deleteFiles: z.boolean() }), async input => {
+    if (input.deleteFiles) {
+      const result = await dialog.showMessageBox(mainWindow!, {
+        type: 'warning',
+        buttons: ['取消', '删除磁盘文件'],
+        defaultId: 0,
+        cancelId: 0,
+        title: '删除项目文件',
+        message: '项目目录将从磁盘删除',
+        detail: '删除前会创建快照，但此操作仍具有风险。'
+      })
+      if (result.response !== 1) return { removed: false as const }
+    }
+    await requiredServices().workspaceService.removeProject(input.projectId, input.deleteFiles)
+    return { removed: true as const }
+  })
   handle(ipc.filesTree, z.object({ projectId: z.string().uuid() }), input => requiredServices().workspaceService.listTree(input.projectId))
   handle(ipc.filesRead, z.object({ projectId: z.string().uuid(), relativePath: z.string() }), input => requiredServices().workspaceService.readFile(input.projectId, input.relativePath))
   handle(ipc.filesWrite, fileRevisionSchema, input => requiredServices().workspaceService.writeFile(input.projectId, input.relativePath, input.content, input.expectedHash, input.createSnapshot))
@@ -404,10 +428,10 @@ function registerIpc(): void {
       if (oldest && oldest.status !== 'running') environmentInstallTasks.delete(oldest.taskId)
     }
     const command = [
-      `Write-Host 'CppPet 正在启动 ${target.label} 安装...' -ForegroundColor Cyan`,
+      `Write-Host 'CppPilot 正在启动 ${target.label} 安装...' -ForegroundColor Cyan`,
       `$exitCode = 1`,
       `try { winget install --id '${target.packageId}' --exact --source winget --interactive --accept-source-agreements --accept-package-agreements; $exitCode = $LASTEXITCODE } catch { Write-Error $_; $exitCode = 1 }`,
-      `if ($exitCode -eq 0) { Write-Host '安装完成，宠码学伴将自动重新检测环境。' -ForegroundColor Green } else { Write-Host \"安装未成功，退出码: $exitCode\" -ForegroundColor Red }`,
+      `if ($exitCode -eq 0) { Write-Host '安装完成，CppPilot 将自动重新检测环境。' -ForegroundColor Green } else { Write-Host \"安装未成功，退出码: $exitCode\" -ForegroundColor Red }`,
       `Start-Sleep -Seconds 3`,
       `exit $exitCode`
     ].join('; ')
@@ -597,9 +621,58 @@ function registerIpc(): void {
   })
 }
 
+function resolveIsDark(theme: AppSettings['theme']): boolean {
+  if (theme === 'light') return false
+  if (theme === 'dark') return true
+  return nativeTheme.shouldUseDarkColors
+}
+
+function windowChrome(theme: AppSettings['theme']) {
+  const dark = resolveIsDark(theme)
+  return {
+    dark,
+    backgroundColor: dark ? '#121820' : '#f5f7fb',
+    titleBarOverlay: dark
+      ? { color: '#1a2230', symbolColor: '#eef3fb', height: 48 }
+      : { color: '#ffffff', symbolColor: '#142033', height: 48 }
+  }
+}
+
+function applyWindowChrome(theme: AppSettings['theme'] = database?.getSettings().theme ?? 'system'): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const chrome = windowChrome(theme)
+  mainWindow.setTitleBarOverlay(chrome.titleBarOverlay)
+  mainWindow.setBackgroundColor(chrome.backgroundColor)
+}
+
 function createWindow(): void {
-  mainWindow = new BrowserWindow({ width: 1440, height: 900, minWidth: 1024, minHeight: 720, show: false, autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#252523', symbolColor: '#f3f3ef', height: 36 }, backgroundColor: '#1e1e1c', webPreferences: { preload: join(__dirname, '../preload/index.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } })
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
+  const theme = database?.getSettings().theme ?? 'system'
+  const chrome = windowChrome(theme)
+  const iconPath = join(__dirname, '../../build/icon.ico')
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 1024,
+    minHeight: 720,
+    show: false,
+    autoHideMenuBar: true,
+    title: 'CppPilot：带桌面宠物的 C++ 学习 Agent',
+    icon: existsSync(iconPath) ? iconPath : undefined,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: chrome.titleBarOverlay,
+    backgroundColor: chrome.backgroundColor,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true
+    }
+  })
+  mainWindow.once('ready-to-show', () => {
+    applyWindowChrome(theme)
+    mainWindow?.show()
+  })
   mainWindow.webContents.setWindowOpenHandler(({ url }) => { if (/^https:\/\//.test(url)) void shell.openExternal(url); return { action: 'deny' } })
   mainWindow.webContents.on('will-navigate', event => event.preventDefault())
   if (process.env.ELECTRON_RENDERER_URL) void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -617,7 +690,10 @@ app.whenReady().then(() => {
     const draft = workspaceService.previewProject({ mode: 'manual', workspaceId: workspace.id, name: '边界练习', type: 'single-file' })
     workspaceService.commitDraft(draft.draftId)
   }
-  nativeTheme.themeSource = database.getSettings().theme; registerIpc(); createWindow()
+  nativeTheme.themeSource = database.getSettings().theme
+  registerIpc()
+  createWindow()
+  nativeTheme.on('updated', () => applyWindowChrome())
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

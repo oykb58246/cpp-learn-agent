@@ -41,6 +41,8 @@ export * from './future'
 
 export const themeSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themeSchema>
+export const cursorStyleSchema = z.enum(['system', 'classic', 'mascot'])
+export type CursorStyle = z.infer<typeof cursorStyleSchema>
 export const trustStateSchema = z.enum(['inspection', 'trusted', 'revoked'])
 export type TrustState = z.infer<typeof trustStateSchema>
 export const projectTypeSchema = z.enum(['single-file', 'multi-file', 'cmake'])
@@ -161,6 +163,13 @@ export interface AppSettings {
   sidebarWidth: number
   inspectorWidth: number
   bottomPanelHeight: number
+  /**
+   * 鼠标光标样式：
+   * - system: 系统默认
+   * - classic: 经典代码箭头
+   * - mascot: 桌宠光标（默认）
+   */
+  cursorStyle: CursorStyle
   onboardingCompleted: boolean
   onboardingStatus: 'pending' | 'completed' | 'skipped'
   onboardingReminderDismissed: boolean
@@ -193,7 +202,8 @@ export interface CppPetApi {
     import(input: { draftId: string }): Promise<ApiResult<Project>>
     list(input?: { workspaceId?: string }): Promise<ApiResult<Project[]>>
     open(input: { projectId: string }): Promise<ApiResult<Project>>
-    remove(input: { projectId: string; deleteFiles: boolean }): Promise<ApiResult<void>>
+    rename(input: { projectId: string; name: string }): Promise<ApiResult<Project>>
+    remove(input: { projectId: string; deleteFiles: boolean }): Promise<ApiResult<{ removed: boolean }>>
   }
   files: {
     listTree(input: { projectId: string }): Promise<ApiResult<FileTreeNode[]>>

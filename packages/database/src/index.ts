@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import type { AppSettings, DomainEvent, Project, SnapshotManifest, ToolchainProfile, Workspace } from '@cpp-pet/contracts'
+import type { AppSettings, CursorStyle, DomainEvent, Project, SnapshotManifest, ToolchainProfile, Workspace } from '@cpp-pet/contracts'
 
 const foundationSql = `
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
@@ -110,15 +110,17 @@ export class AppDatabase {
       sidebarWidth: 260,
       inspectorWidth: 320,
       bottomPanelHeight: 190,
+      cursorStyle: 'mascot',
       onboardingCompleted: false,
       onboardingStatus: 'pending',
       onboardingReminderDismissed: false
     }
-    const saved = JSON.parse(row.value_json) as Partial<AppSettings>
+    const saved = JSON.parse(row.value_json) as Partial<AppSettings> & { customCursor?: boolean }
     const onboardingCompleted = typeof saved.onboardingCompleted === 'boolean' ? saved.onboardingCompleted : true
     const onboardingStatus = saved.onboardingStatus === 'pending' || saved.onboardingStatus === 'completed' || saved.onboardingStatus === 'skipped'
       ? saved.onboardingStatus
       : onboardingCompleted ? 'completed' : 'pending'
+    const cursorStyle = resolveCursorStyle(saved)
     return {
       theme: 'system',
       sidebarWidth: 260,
@@ -127,12 +129,14 @@ export class AppDatabase {
       onboardingCompleted,
       onboardingReminderDismissed: false,
       ...saved,
+      cursorStyle,
       onboardingStatus
     }
   }
   updateSettings(patch: Partial<AppSettings>): AppSettings {
     this.ensureWritable()
     const next = { ...this.getSettings(), ...patch }
+    if (patch.cursorStyle) next.cursorStyle = patch.cursorStyle
     this.db.prepare('INSERT OR REPLACE INTO settings(key, value_json) VALUES(?, ?)').run('app', JSON.stringify(next))
     return next
   }
@@ -220,6 +224,11 @@ export class AppDatabase {
   saveProject(project: Project, problem?: { id: string; statement: string; constraints: string[]; samples: Array<{ input: string; output: string }>; createdAt: string }): Project {
     this.ensureWritable()
     this.db.transaction(() => {
+      // 释放同路径已软删除记录占用的 UNIQUE 槽位（保留行与快照外键）
+      this.db.prepare(`UPDATE projects
+        SET relative_root = relative_root || '::__legacy__' || id
+        WHERE workspace_id = ? AND relative_root = ? AND removed_at IS NOT NULL`)
+        .run(project.workspaceId, project.relativeRoot)
       if (problem) this.db.prepare('INSERT INTO problems(id,statement,constraints_json,samples_json,created_at) VALUES(@id,@statement,@constraintsJson,@samplesJson,@createdAt)').run({ ...problem, constraintsJson: JSON.stringify(problem.constraints), samplesJson: JSON.stringify(problem.samples) })
       this.db.prepare(`INSERT INTO projects(id,workspace_id,name,type,creation_mode,relative_root,problem_id,created_at,updated_at,last_opened_at)
         VALUES(@id,@workspaceId,@name,@type,@creationMode,@relativeRoot,@problemId,@createdAt,@updatedAt,@lastOpenedAt)`).run({ ...project, problemId: project.problemId ?? null })
@@ -227,7 +236,23 @@ export class AppDatabase {
     return project
   }
   touchProject(id: string): Project { if (!this.recoveryMode) { const now = new Date().toISOString(); this.db.prepare('UPDATE projects SET last_opened_at = ?, updated_at = ? WHERE id = ?').run(now, now, id) }; const p = this.getProject(id); if (!p) throw new Error('Project not found'); return p }
-  removeProject(id: string): void { this.ensureWritable(); this.db.prepare('UPDATE projects SET removed_at = ? WHERE id = ?').run(new Date().toISOString(), id) }
+  renameProject(id: string, name: string): Project {
+    this.ensureWritable()
+    const now = new Date().toISOString()
+    this.db.prepare('UPDATE projects SET name = ?, updated_at = ? WHERE id = ? AND removed_at IS NULL').run(name, now, id)
+    const project = this.getProject(id)
+    if (!project) throw new Error('Project not found')
+    return project
+  }
+  removeProject(id: string): void {
+    this.ensureWritable()
+    const row = this.db.prepare('SELECT relative_root FROM projects WHERE id = ?').get(id) as { relative_root: string } | undefined
+    if (!row) return
+    // 释放 UNIQUE(workspace_id, relative_root)，避免软删除后无法用同名再建
+    const tombstoneRoot = `${row.relative_root}::__removed__${id}`
+    this.db.prepare('UPDATE projects SET removed_at = ?, relative_root = ?, updated_at = ? WHERE id = ?')
+      .run(new Date().toISOString(), tombstoneRoot, new Date().toISOString(), id)
+  }
 
   saveSnapshot(snapshot: SnapshotRecord): void {
     this.ensureWritable()
@@ -282,3 +307,10 @@ const mapToolchainProfile = (r: any): ToolchainProfile => ({
   capabilities: JSON.parse(r.capabilities_json),
   verifiedAt: r.verified_at
 })
+
+function resolveCursorStyle(saved: Partial<AppSettings> & { customCursor?: boolean }): CursorStyle {
+  if (saved.cursorStyle === 'system' || saved.cursorStyle === 'classic' || saved.cursorStyle === 'mascot') return saved.cursorStyle
+  // 兼容旧版 boolean 开关：关闭 -> 系统光标，开启/缺失 -> 新版桌宠光标
+  if (saved.customCursor === false) return 'system'
+  return 'mascot'
+}

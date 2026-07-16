@@ -1,5 +1,12 @@
 import { defineStore } from 'pinia'
-import type { AppBootstrap, AppError, AppSettings, MockDashboard, Workspace } from '@cpp-pet/contracts'
+import type { AppBootstrap, AppError, AppSettings, CursorStyle, MockDashboard, Workspace } from '@cpp-pet/contracts'
+import classicCursorUrl from '../assets/cursor-classic.png'
+import mascotCursorUrl from '../assets/cursor-mascot.png'
+
+const cursorAssets: Record<Exclude<CursorStyle, 'system'>, { url: string; hotspot: string }> = {
+  classic: { url: classicCursorUrl, hotspot: '7 3' },
+  mascot: { url: mascotCursorUrl, hotspot: '6 4' }
+}
 
 export const useAppStore = defineStore('app', {
   state: () => ({ bootstrap: null as AppBootstrap | null, dashboard: null as MockDashboard | null, loading: true, error: null as AppError | null }),
@@ -9,6 +16,7 @@ export const useAppStore = defineStore('app', {
       sidebarWidth: 260,
       inspectorWidth: 320,
       bottomPanelHeight: 190,
+      cursorStyle: 'mascot',
       onboardingCompleted: false,
       onboardingStatus: 'pending',
       onboardingReminderDismissed: false
@@ -20,13 +28,27 @@ export const useAppStore = defineStore('app', {
     async init() {
       this.loading = true
       const [boot, dash] = await Promise.all([window.cppPet.app.getBootstrap(), window.cppPet.mocks.getDashboard()])
-      if (boot.ok) { this.bootstrap = boot.data; applyTheme(boot.data.settings.theme) } else this.error = boot.error
+      if (boot.ok) {
+        this.bootstrap = boot.data
+        applyAppearance(boot.data.settings)
+      } else this.error = boot.error
       if (dash.ok) this.dashboard = dash.data
       this.loading = false
     },
     async updateSettings(patch: Partial<AppSettings>) {
+      // 先本地应用，保证设置页点击/预览立即有反馈
+      if (this.bootstrap && patch) {
+        this.bootstrap.settings = { ...this.bootstrap.settings, ...patch }
+        applyAppearance(this.bootstrap.settings)
+      }
       const result = await window.cppPet.settings.update(patch)
-      if (result.ok && this.bootstrap) { this.bootstrap.settings = result.data; applyTheme(result.data.theme) } else if (!result.ok) this.error = result.error
+      if (result.ok && this.bootstrap) {
+        this.bootstrap.settings = {
+          ...result.data,
+          cursorStyle: result.data.cursorStyle ?? patch.cursorStyle ?? this.bootstrap.settings.cursorStyle ?? 'mascot'
+        }
+        applyAppearance(this.bootstrap.settings)
+      } else if (!result.ok) this.error = result.error
     },
     async refreshProjects() { const result = await window.cppPet.project.list(); if (result.ok && this.bootstrap) this.bootstrap.recentProjects = result.data; else if (!result.ok) this.error = result.error },
     async refreshWorkspaces() { const result = await window.cppPet.workspace.list(); if (result.ok && this.bootstrap) this.bootstrap.workspaces = result.data; else if (!result.ok) this.error = result.error },
@@ -36,7 +58,25 @@ export const useAppStore = defineStore('app', {
   }
 })
 
-function applyTheme(theme: AppSettings['theme']) {
-  const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
-  document.documentElement.classList.toggle('dark', dark)
+function applyAppearance(settings: Pick<AppSettings, 'theme' | 'cursorStyle'>) {
+  const dark = settings.theme === 'dark' || (settings.theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
+  const root = document.documentElement
+  root.classList.toggle('dark', dark)
+
+  const style: CursorStyle = settings.cursorStyle === 'classic' || settings.cursorStyle === 'system' || settings.cursorStyle === 'mascot'
+    ? settings.cursorStyle
+    : 'mascot'
+  root.dataset.cursor = style
+
+  if (style === 'system') {
+    root.style.removeProperty('--app-cursor')
+    root.style.removeProperty('--app-cursor-pointer')
+    return
+  }
+
+  const asset = cursorAssets[style]
+  const value = `url("${asset.url}") ${asset.hotspot}`
+  root.style.setProperty('--app-cursor', `${value}, auto`)
+  root.style.setProperty('--app-cursor-pointer', `${value}, pointer`)
 }
+

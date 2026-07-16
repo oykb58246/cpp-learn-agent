@@ -1,5 +1,5 @@
-appId: com.cpppet.agent
-productName: 宠码学伴
+appId: com.cpppilot.agent
+productName: CppPilot
 directories:
   output: ../../release
 files:
