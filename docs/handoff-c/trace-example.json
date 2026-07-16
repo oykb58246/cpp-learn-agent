@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "capturedFrom": "apps/desktop/src/main/agent-integration.test.ts",
+  "workflows": [
+    {
+      "name": "environment",
+      "mode": "environment",
+      "intent": "environment-setup",
+      "status": "completed",
+      "contextSources": ["learning"],
+      "plan": ["detect", "probe", "bind", "respond"],
+      "timeline": [
+        { "kind": "intent", "status": "completed", "summary": "environment-setup" },
+        { "kind": "context", "status": "completed", "summary": "使用本地学习画像" },
+        { "kind": "plan", "status": "completed", "summary": "检测 -> 探测 -> 绑定 -> 回答" },
+        { "kind": "policy", "status": "completed", "decision": "allow" },
+        { "kind": "tool", "toolName": "toolchain.detect_compilers", "status": "completed" },
+        { "kind": "tool", "toolName": "toolchain.probe_compiler", "status": "completed" },
+        { "kind": "approval", "toolName": "toolchain.bind_compiler", "risk": "L2", "status": "approved" },
+        { "kind": "tool", "toolName": "toolchain.bind_compiler", "status": "completed" },
+        { "kind": "validation", "status": "completed", "summary": "计划步骤已完成" },
+        { "kind": "learning", "status": "completed", "rewardPolicy": "reproducible-evidence-only" },
+        { "kind": "response", "status": "completed" }
+      ],
+      "learningEvents": [{ "type": "environment-ready", "xp": 10, "evidenceKind": "build" }],
+      "validation": { "evidence": "真实 Hello World 探测后绑定", "passed": true }
+    },
+    {
+      "name": "project",
+      "mode": "project",
+      "intent": "create-project",
+      "status": "completed",
+      "contextSources": ["learning"],
+      "plan": ["parse", "create", "build", "respond"],
+      "timeline": [
+        { "kind": "intent", "status": "completed", "summary": "create-project" },
+        { "kind": "context", "status": "completed", "summary": "项目描述与学习画像" },
+        { "kind": "plan", "status": "completed" },
+        { "kind": "policy", "status": "completed", "decision": "allow" },
+        { "kind": "tool", "toolName": "problem.parse", "status": "completed" },
+        { "kind": "approval", "toolName": "project.create", "risk": "L2", "status": "approved" },
+        { "kind": "tool", "toolName": "project.create", "status": "completed" },
+        { "kind": "validation", "toolName": "compiler.build", "status": "completed", "exitCode": 0 },
+        { "kind": "validation", "status": "completed", "summary": "真实编译通过" },
+        { "kind": "learning", "status": "completed", "rewardPolicy": "reproducible-evidence-only" },
+        { "kind": "response", "status": "completed" }
+      ],
+      "learningEvents": [
+        { "type": "build-succeeded", "xp": 10, "evidenceKind": "build" },
+        { "type": "project-completed", "xp": 30, "evidenceKind": "project" }
+      ],
+      "validation": { "evidence": "Agent 创建的 main.cpp 真实 GCC 编译通过", "passed": true }
+    },
+    {
+      "name": "selection",
+      "mode": "explain",
+      "intent": "explain-selection",
+      "status": "completed",
+      "contextSources": ["selection", "diagnostic", "learning"],
+      "excludedSources": ["complete-file"],
+      "plan": ["respond"],
+      "timeline": [
+        { "kind": "intent", "status": "completed", "summary": "explain-selection" },
+        { "kind": "context", "status": "completed", "summary": "selection + diagnostic + learning" },
+        { "kind": "plan", "status": "completed", "summary": "按已学概念解释" },
+        { "kind": "policy", "status": "completed", "decision": "allow" },
+        { "kind": "validation", "status": "completed", "summary": "教学回答已生成" },
+        { "kind": "learning", "status": "completed", "rewardPolicy": "reproducible-evidence-only", "xp": 0 },
+        { "kind": "response", "status": "completed", "summary": "解释 return 的教学语义" }
+      ],
+      "validation": { "evidence": "Runtime 回答来自 respond.summary，未读取完整文件", "passed": true }
+    },
+    {
+      "name": "compile-error",
+      "mode": "diagnose",
+      "intent": "diagnose-compile-error",
+      "status": "completed",
+      "contextSources": ["file", "learning"],
+      "plan": ["read", "build-failure", "patch", "rebuild", "learning", "respond"],
+      "timeline": [
+        { "kind": "intent", "status": "completed" },
+        { "kind": "context", "status": "completed" },
+        { "kind": "plan", "status": "completed" },
+        { "kind": "policy", "status": "completed", "decision": "allow" },
+        { "kind": "tool", "toolName": "workspace.read_file", "status": "completed" },
+        { "kind": "tool", "toolName": "compiler.build", "status": "completed", "expectedFailure": true, "errorCode": "BUILD_FAILED" },
+        { "kind": "approval", "toolName": "workspace.apply_patch", "risk": "L2", "status": "approved", "diff": true },
+        { "kind": "tool", "toolName": "workspace.apply_patch", "status": "completed" },
+        { "kind": "validation", "toolName": "compiler.build", "status": "completed", "exitCode": 0 },
+        { "kind": "approval", "toolName": "learning.record_error", "risk": "L2", "status": "approved" },
+        { "kind": "learning", "toolName": "learning.record_error", "status": "completed" },
+        { "kind": "validation", "status": "completed", "summary": "真实重编译通过" },
+        { "kind": "learning", "status": "completed", "rewardPolicy": "reproducible-evidence-only" },
+        { "kind": "response", "status": "completed" }
+      ],
+      "learningEvents": [{ "type": "error-resolved", "xp": 20, "evidenceKind": "build" }],
+      "validation": { "evidence": "缺分号 Patch 后真实 GCC 重编译通过", "passed": true }
+    },
+    {
+      "name": "logic-error",
+      "mode": "solve",
+      "intent": "find-logic-error",
+      "status": "completed",
+      "contextSources": ["file", "learning"],
+      "plan": ["read", "build", "generate", "cases-before", "patch", "cases-after", "learning", "respond"],
+      "timeline": [
+        { "kind": "intent", "status": "completed" },
+        { "kind": "context", "status": "completed" },
+        { "kind": "plan", "status": "completed" },
+        { "kind": "policy", "status": "completed", "decision": "allow" },
+        { "kind": "tool", "toolName": "compiler.build", "status": "completed", "exitCode": 0 },
+        { "kind": "tool", "toolName": "tests.generate_cases", "status": "completed" },
+        { "kind": "approval", "toolName": "tests.run_cases", "risk": "L2", "status": "approved" },
+        { "kind": "tool", "toolName": "tests.run_cases", "status": "completed", "expectedFailure": true, "errorCode": "TEST_CASES_FAILED" },
+        { "kind": "approval", "toolName": "workspace.apply_patch", "risk": "L2", "status": "approved", "diff": true },
+        { "kind": "tool", "toolName": "workspace.apply_patch", "status": "completed" },
+        { "kind": "validation", "toolName": "tests.run_cases", "status": "completed", "passed": true },
+        { "kind": "learning", "toolName": "learning.record_error", "status": "completed" },
+        { "kind": "validation", "status": "completed", "summary": "边界回归全部通过" },
+        { "kind": "learning", "status": "completed", "rewardPolicy": "reproducible-evidence-only" },
+        { "kind": "response", "status": "completed" }
+      ],
+      "learningEvents": [{ "type": "error-resolved", "xp": 20, "evidenceKind": "test" }],
+      "validation": { "evidence": "最小反例失败，边界 Patch 后全部回归通过", "passed": true }
+    },
+    {
+      "name": "screenshot",
+      "mode": "explain",
+      "source": "screenshot",
+      "intent": "explain-screenshot",
+      "status": "completed",
+      "contextSources": ["screenshot-metadata", "learning"],
+      "plan": ["screenshot-approval", "respond"],
+      "timeline": [
+        { "kind": "intent", "status": "completed" },
+        { "kind": "context", "status": "completed", "summary": "只含 ScreenshotRef 元数据" },
+        { "kind": "plan", "status": "completed" },
+        { "kind": "policy", "status": "completed", "decision": "allow" },
+        { "kind": "approval", "toolName": "policy.screenshot-approval", "risk": "L3", "status": "approved", "sideEffects": ["remote-request"] },
+        { "kind": "validation", "status": "completed", "summary": "截图范围已经明确审批" },
+        { "kind": "learning", "status": "completed", "rewardPolicy": "reproducible-evidence-only", "xp": 0 },
+        { "kind": "response", "status": "completed", "summary": "H4 截图提供器接入后可发送像素内容" }
+      ],
+      "validation": { "evidence": "未经 L3 审批不接受截图范围；H3 不采集屏幕", "passed": true }
+    },
+    {
+      "name": "review",
+      "mode": "review",
+      "intent": "review-learning",
+      "status": "completed",
+      "contextSources": ["learning"],
+      "plan": ["state", "update", "respond"],
+      "timeline": [
+        { "kind": "intent", "status": "completed" },
+        { "kind": "context", "status": "completed" },
+        { "kind": "plan", "status": "completed" },
+        { "kind": "policy", "status": "completed", "decision": "allow" },
+        { "kind": "tool", "toolName": "learning.get_state", "status": "completed" },
+        { "kind": "approval", "toolName": "learning.update_state", "risk": "L2", "status": "approved" },
+        { "kind": "learning", "toolName": "learning.update_state", "status": "completed" },
+        { "kind": "validation", "status": "completed", "summary": "复习证据已记录" },
+        { "kind": "learning", "status": "completed", "rewardPolicy": "reproducible-evidence-only" },
+        { "kind": "response", "status": "completed" }
+      ],
+      "learningEvents": [
+        { "type": "review-completed", "xp": 10, "evidenceKind": "review" },
+        { "type": "concept-verified", "xp": 10, "evidenceKind": "review" }
+      ],
+      "validation": { "evidence": "pending ReviewItem + passed outcome，间隔推进且重复 evidence 幂等", "passed": true }
+    }
+  ]
+}
