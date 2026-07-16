@@ -2,7 +2,27 @@ import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import type { AppSettings, CursorStyle, DomainEvent, Project, SnapshotManifest, ToolchainProfile, Workspace } from '@cpp-pet/contracts'
+import type {
+  AgentRun,
+  AgentRunDetail,
+  Approval,
+  AppSettings,
+  CursorStyle,
+  DomainEvent,
+  ErrorBookEntry,
+  KnowledgeNode,
+  LearnerAchievement,
+  LearnerKnowledge,
+  LearnerSummary,
+  LearningEvent,
+  Project,
+  ReviewItem,
+  SnapshotManifest,
+  TimelineEvent,
+  ToolchainProfile,
+  Workspace
+} from '@cpp-pet/contracts'
+import { h3Migrations } from './h3'
 
 const foundationSql = `
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
@@ -61,7 +81,7 @@ export class AppDatabase {
   readonly recoveryMode: boolean
 
   constructor(readonly filePath: string, additionalMigrations: Migration[] = []) {
-    const migrations = [foundationMigration, projectMetadataMigration, toolchainMigration, ...additionalMigrations]
+    const migrations = [foundationMigration, projectMetadataMigration, toolchainMigration, ...h3Migrations, ...additionalMigrations]
     mkdirSync(dirname(filePath), { recursive: true })
     this.db = new Database(filePath)
     this.db.pragma('foreign_keys = ON')
@@ -287,6 +307,220 @@ export class AppDatabase {
     const rows = this.db.prepare('SELECT * FROM domain_events ORDER BY occurred_at DESC LIMIT ?').all(limit) as Array<{ event_id: string; type: string; occurred_at: string; actor: DomainEvent['actor']; project_id: string | null; payload_json: string }>
     return rows.map(row => ({ eventId: row.event_id, type: row.type, version: 1, occurredAt: row.occurred_at, actor: row.actor, ...(row.project_id ? { projectId: row.project_id } : {}), payload: JSON.parse(row.payload_json) as unknown }))
   }
+
+  createAgentRun(run: AgentRun): AgentRun {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO agent_runs(
+      id,request_id,source,mode,message,project_id,active_file,status,intent,plan_summary,response,
+      validation_summary,error_code,error_message,steps_json,pending_approval_json,created_at,updated_at,completed_at
+    ) VALUES(
+      @id,@requestId,@source,@mode,@message,@projectId,@activeFile,@status,@intent,@planSummary,@response,
+      @validationSummary,@errorCode,@errorMessage,@stepsJson,@pendingApprovalJson,@createdAt,@updatedAt,@completedAt
+    )`).run(agentRunParams(run))
+    this.replaceAgentSteps(run)
+    return run
+  }
+
+  updateAgentRun(run: AgentRun): AgentRun {
+    this.ensureWritable()
+    const result = this.db.prepare(`UPDATE agent_runs SET
+      source=@source,mode=@mode,message=@message,project_id=@projectId,active_file=@activeFile,status=@status,
+      intent=@intent,plan_summary=@planSummary,response=@response,validation_summary=@validationSummary,
+      error_code=@errorCode,error_message=@errorMessage,steps_json=@stepsJson,
+      pending_approval_json=@pendingApprovalJson,updated_at=@updatedAt,completed_at=@completedAt
+      WHERE id=@id`).run(agentRunParams(run))
+    if (result.changes === 0) throw new Error('Agent run not found')
+    this.replaceAgentSteps(run)
+    return run
+  }
+
+  getAgentRun(id: string): AgentRunDetail | undefined {
+    const row = this.db.prepare('SELECT * FROM agent_runs WHERE id = ?').get(id) as any
+    if (!row) return undefined
+    const timeline = (this.db.prepare('SELECT * FROM timeline_events WHERE run_id = ? ORDER BY sequence').all(id) as any[]).map(mapTimelineEvent)
+    const approvals = (this.db.prepare('SELECT * FROM approvals WHERE run_id = ? ORDER BY created_at').all(id) as any[]).map(mapApproval)
+    return { ...mapAgentRun(row), timeline, approvals }
+  }
+
+  listAgentRuns(input: { status?: AgentRun['status']; projectId?: string; limit?: number } = {}): AgentRun[] {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (input.status) { where.push('status = ?'); params.push(input.status) }
+    if (input.projectId) { where.push('project_id = ?'); params.push(input.projectId) }
+    const limit = Math.max(1, Math.min(input.limit ?? 50, 200))
+    const rows = this.db.prepare(`SELECT * FROM agent_runs ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY updated_at DESC LIMIT ?`).all(...params, limit) as any[]
+    return rows.map(mapAgentRun)
+  }
+
+  appendTimeline(event: TimelineEvent): TimelineEvent {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO timeline_events(id,run_id,sequence,kind,status,title,summary,occurred_at,step_id,data_json)
+      VALUES(@id,@runId,@sequence,@kind,@status,@title,@summary,@occurredAt,@stepId,@dataJson)`).run({
+      ...event,
+      stepId: event.stepId ?? null,
+      dataJson: event.data ? JSON.stringify(event.data) : null
+    })
+    return event
+  }
+
+  saveApproval(approval: Approval): Approval {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO approvals(
+      id,run_id,step_id,tool_name,risk,title,description,parameter_summary_json,side_effects_json,
+      status,decision_reason,created_at,decided_at
+    ) VALUES(
+      @id,@runId,@stepId,@toolName,@risk,@title,@description,@parameterSummaryJson,@sideEffectsJson,
+      @status,@decisionReason,@createdAt,@decidedAt
+    ) ON CONFLICT(id) DO UPDATE SET status=excluded.status,decision_reason=excluded.decision_reason,decided_at=excluded.decided_at`).run({
+      ...approval,
+      parameterSummaryJson: JSON.stringify(approval.parameterSummary),
+      sideEffectsJson: JSON.stringify(approval.sideEffects),
+      decisionReason: approval.decisionReason ?? null,
+      decidedAt: approval.decidedAt ?? null
+    })
+    return approval
+  }
+
+  seedKnowledge(nodes: KnowledgeNode[]): void {
+    this.ensureWritable()
+    this.db.transaction(() => {
+      const insertNode = this.db.prepare(`INSERT INTO knowledge_nodes(id,title,description,category,difficulty,prerequisites_json,tags_json)
+        VALUES(@id,@title,@description,@category,@difficulty,@prerequisitesJson,@tagsJson)
+        ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,category=excluded.category,
+        difficulty=excluded.difficulty,prerequisites_json=excluded.prerequisites_json,tags_json=excluded.tags_json`)
+      for (const node of nodes) insertNode.run({ ...node, prerequisitesJson: JSON.stringify(node.prerequisites), tagsJson: JSON.stringify(node.tags) })
+      const insertEdge = this.db.prepare('INSERT OR IGNORE INTO knowledge_edges(prerequisite_id,concept_id) VALUES(?,?)')
+      for (const node of nodes) for (const prerequisite of node.prerequisites) insertEdge.run(prerequisite, node.id)
+    })()
+  }
+
+  listKnowledgeNodes(): KnowledgeNode[] {
+    return (this.db.prepare('SELECT * FROM knowledge_nodes ORDER BY id').all() as any[]).map(mapKnowledgeNode)
+  }
+
+  upsertLearnerKnowledge(state: LearnerKnowledge): LearnerKnowledge {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO learner_knowledge(user_id,concept_id,status,confidence,verified_at,last_evidence_id,updated_at)
+      VALUES(@userId,@conceptId,@status,@confidence,@verifiedAt,@lastEvidenceId,@updatedAt)
+      ON CONFLICT(user_id,concept_id) DO UPDATE SET status=excluded.status,confidence=excluded.confidence,
+      verified_at=excluded.verified_at,last_evidence_id=excluded.last_evidence_id,updated_at=excluded.updated_at`).run({
+      ...state,
+      verifiedAt: state.verifiedAt ?? null,
+      lastEvidenceId: state.lastEvidenceId ?? null
+    })
+    return state
+  }
+
+  listLearnerKnowledge(userId: string): LearnerKnowledge[] {
+    return (this.db.prepare('SELECT * FROM learner_knowledge WHERE user_id = ? ORDER BY concept_id').all(userId) as any[]).map(mapLearnerKnowledge)
+  }
+
+  saveErrorBookEntry(entry: ErrorBookEntry): ErrorBookEntry {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO error_book_entries(
+      id,user_id,project_id,relative_path,category,title,evidence,concept_ids_json,status,occurrences,
+      first_seen_at,last_seen_at,resolved_at,next_review_at
+    ) VALUES(
+      @id,@userId,@projectId,@relativePath,@category,@title,@evidence,@conceptIdsJson,@status,@occurrences,
+      @firstSeenAt,@lastSeenAt,@resolvedAt,@nextReviewAt
+    ) ON CONFLICT(id) DO UPDATE SET title=excluded.title,evidence=excluded.evidence,status=excluded.status,
+      occurrences=excluded.occurrences,last_seen_at=excluded.last_seen_at,resolved_at=excluded.resolved_at,
+      next_review_at=excluded.next_review_at`).run({
+      ...entry,
+      projectId: entry.projectId ?? null,
+      relativePath: entry.relativePath ?? null,
+      conceptIdsJson: JSON.stringify(entry.conceptIds),
+      resolvedAt: entry.resolvedAt ?? null,
+      nextReviewAt: entry.nextReviewAt ?? null
+    })
+    return entry
+  }
+
+  listErrorBookEntries(userId: string, status?: ErrorBookEntry['status']): ErrorBookEntry[] {
+    const rows = status
+      ? this.db.prepare('SELECT * FROM error_book_entries WHERE user_id = ? AND status = ? ORDER BY last_seen_at DESC').all(userId, status)
+      : this.db.prepare('SELECT * FROM error_book_entries WHERE user_id = ? ORDER BY last_seen_at DESC').all(userId)
+    return (rows as any[]).map(mapErrorBookEntry)
+  }
+
+  saveReviewItem(item: ReviewItem): ReviewItem {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO review_items(
+      id,user_id,error_book_entry_id,concept_id,prompt,expected_evidence,interval_index,due_at,status,completed_at
+    ) VALUES(
+      @id,@userId,@errorBookEntryId,@conceptId,@prompt,@expectedEvidence,@intervalIndex,@dueAt,@status,@completedAt
+    ) ON CONFLICT(id) DO UPDATE SET interval_index=excluded.interval_index,due_at=excluded.due_at,
+      status=excluded.status,completed_at=excluded.completed_at`).run({
+      ...item,
+      errorBookEntryId: item.errorBookEntryId ?? null,
+      completedAt: item.completedAt ?? null
+    })
+    return item
+  }
+
+  listReviewItems(userId: string, dueOnly = false, now = new Date()): ReviewItem[] {
+    const rows = dueOnly
+      ? this.db.prepare("SELECT * FROM review_items WHERE user_id = ? AND status = 'pending' AND due_at <= ? ORDER BY due_at").all(userId, now.toISOString())
+      : this.db.prepare('SELECT * FROM review_items WHERE user_id = ? ORDER BY due_at').all(userId)
+    return (rows as any[]).map(mapReviewItem)
+  }
+
+  applyLearningEvent(event: LearningEvent): boolean {
+    this.ensureWritable()
+    return this.db.transaction(() => {
+      const inserted = this.db.prepare(`INSERT OR IGNORE INTO learning_events(
+        id,source_event_id,user_id,type,concept_ids_json,xp,evidence_json,occurred_at
+      ) VALUES(@id,@sourceEventId,@userId,@type,@conceptIdsJson,@xp,@evidenceJson,@occurredAt)`).run({
+        ...event,
+        conceptIdsJson: JSON.stringify(event.conceptIds),
+        evidenceJson: JSON.stringify(event.evidence)
+      })
+      if (inserted.changes === 0) return false
+      this.db.prepare(`INSERT INTO learner_progress(user_id,xp,updated_at) VALUES(?,?,?)
+        ON CONFLICT(user_id) DO UPDATE SET xp=xp+excluded.xp,updated_at=excluded.updated_at`)
+        .run(event.userId, event.xp, event.occurredAt)
+      return true
+    })()
+  }
+
+  getLearnerSummary(userId: string): LearnerSummary {
+    const progress = this.db.prepare('SELECT xp FROM learner_progress WHERE user_id = ?').get(userId) as { xp: number } | undefined
+    const xp = progress?.xp ?? 0
+    const verifiedConcepts = (this.db.prepare("SELECT COUNT(*) count FROM learner_knowledge WHERE user_id = ? AND status = 'verified'").get(userId) as { count: number }).count
+    const learningConcepts = (this.db.prepare("SELECT COUNT(*) count FROM learner_knowledge WHERE user_id = ? AND status IN ('learning','self-claimed')").get(userId) as { count: number }).count
+    const openErrors = (this.db.prepare("SELECT COUNT(*) count FROM error_book_entries WHERE user_id = ? AND status != 'resolved'").get(userId) as { count: number }).count
+    const dueReviews = (this.db.prepare("SELECT COUNT(*) count FROM review_items WHERE user_id = ? AND status = 'pending' AND due_at <= ?").get(userId, new Date().toISOString()) as { count: number }).count
+    const achievements = (this.db.prepare('SELECT * FROM learner_achievements WHERE user_id = ? ORDER BY unlocked_at DESC').all(userId) as any[]).map(mapLearnerAchievement)
+    const recentEvents = (this.db.prepare('SELECT * FROM learning_events WHERE user_id = ? ORDER BY occurred_at DESC LIMIT 20').all(userId) as any[]).map(mapLearningEvent)
+    return {
+      userId,
+      xp,
+      level: Math.floor(xp / 100) + 1,
+      growthStage: xp >= 1_000 ? 4 : xp >= 500 ? 3 : xp >= 200 ? 2 : 1,
+      verifiedConcepts,
+      learningConcepts,
+      openErrors,
+      dueReviews,
+      achievements,
+      recentEvents
+    }
+  }
+
+  private replaceAgentSteps(run: AgentRun): void {
+    this.db.prepare('DELETE FROM agent_steps WHERE run_id = ?').run(run.id)
+    const insert = this.db.prepare(`INSERT INTO agent_steps(
+      run_id,id,sequence,kind,status,title,tool_name,summary,started_at,finished_at
+    ) VALUES(@runId,@id,@sequence,@kind,@status,@title,@toolName,@summary,@startedAt,@finishedAt)`)
+    for (const step of run.steps) insert.run({
+      runId: run.id,
+      ...step,
+      toolName: step.toolName ?? null,
+      summary: step.summary ?? null,
+      startedAt: step.startedAt ?? null,
+      finishedAt: step.finishedAt ?? null
+    })
+  }
+
   private ensureWritable(): void { if (this.recoveryMode) throw new Error('Database is in read-only recovery mode') }
 }
 
@@ -306,6 +540,140 @@ const mapToolchainProfile = (r: any): ToolchainProfile => ({
   ...(r.compile_commands_path ? { compileCommandsPath: r.compile_commands_path } : {}),
   capabilities: JSON.parse(r.capabilities_json),
   verifiedAt: r.verified_at
+})
+
+const agentRunParams = (run: AgentRun) => ({
+  ...run,
+  projectId: run.projectId ?? null,
+  activeFile: run.activeFile ?? null,
+  intent: run.intent ?? null,
+  planSummary: run.planSummary ?? null,
+  response: run.response ?? null,
+  validationSummary: run.validationSummary ?? null,
+  errorCode: run.errorCode ?? null,
+  errorMessage: run.errorMessage ?? null,
+  stepsJson: JSON.stringify(run.steps),
+  pendingApprovalJson: run.pendingApproval ? JSON.stringify(run.pendingApproval) : null,
+  completedAt: run.completedAt ?? null
+})
+
+const mapAgentRun = (r: any): AgentRun => ({
+  id: r.id,
+  requestId: r.request_id,
+  source: r.source,
+  mode: r.mode,
+  message: r.message,
+  ...(r.project_id ? { projectId: r.project_id } : {}),
+  ...(r.active_file ? { activeFile: r.active_file } : {}),
+  status: r.status,
+  ...(r.intent ? { intent: r.intent } : {}),
+  ...(r.plan_summary ? { planSummary: r.plan_summary } : {}),
+  ...(r.response ? { response: r.response } : {}),
+  ...(r.validation_summary ? { validationSummary: r.validation_summary } : {}),
+  ...(r.error_code ? { errorCode: r.error_code } : {}),
+  ...(r.error_message ? { errorMessage: r.error_message } : {}),
+  steps: JSON.parse(r.steps_json),
+  ...(r.pending_approval_json ? { pendingApproval: JSON.parse(r.pending_approval_json) } : {}),
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+  ...(r.completed_at ? { completedAt: r.completed_at } : {})
+})
+
+const mapTimelineEvent = (r: any): TimelineEvent => ({
+  id: r.id,
+  runId: r.run_id,
+  sequence: r.sequence,
+  kind: r.kind,
+  status: r.status,
+  title: r.title,
+  summary: r.summary,
+  occurredAt: r.occurred_at,
+  ...(r.step_id ? { stepId: r.step_id } : {}),
+  ...(r.data_json ? { data: JSON.parse(r.data_json) } : {})
+})
+
+const mapApproval = (r: any): Approval => ({
+  id: r.id,
+  runId: r.run_id,
+  stepId: r.step_id,
+  toolName: r.tool_name,
+  risk: r.risk,
+  title: r.title,
+  description: r.description,
+  parameterSummary: JSON.parse(r.parameter_summary_json),
+  sideEffects: JSON.parse(r.side_effects_json),
+  status: r.status,
+  ...(r.decision_reason ? { decisionReason: r.decision_reason } : {}),
+  createdAt: r.created_at,
+  ...(r.decided_at ? { decidedAt: r.decided_at } : {})
+})
+
+const mapKnowledgeNode = (r: any): KnowledgeNode => ({
+  id: r.id,
+  title: r.title,
+  description: r.description,
+  category: r.category,
+  difficulty: r.difficulty,
+  prerequisites: JSON.parse(r.prerequisites_json),
+  tags: JSON.parse(r.tags_json)
+})
+
+const mapLearnerKnowledge = (r: any): LearnerKnowledge => ({
+  userId: r.user_id,
+  conceptId: r.concept_id,
+  status: r.status,
+  confidence: r.confidence,
+  ...(r.verified_at ? { verifiedAt: r.verified_at } : {}),
+  ...(r.last_evidence_id ? { lastEvidenceId: r.last_evidence_id } : {}),
+  updatedAt: r.updated_at
+})
+
+const mapErrorBookEntry = (r: any): ErrorBookEntry => ({
+  id: r.id,
+  userId: r.user_id,
+  ...(r.project_id ? { projectId: r.project_id } : {}),
+  ...(r.relative_path ? { relativePath: r.relative_path } : {}),
+  category: r.category,
+  title: r.title,
+  evidence: r.evidence,
+  conceptIds: JSON.parse(r.concept_ids_json),
+  status: r.status,
+  occurrences: r.occurrences,
+  firstSeenAt: r.first_seen_at,
+  lastSeenAt: r.last_seen_at,
+  ...(r.resolved_at ? { resolvedAt: r.resolved_at } : {}),
+  ...(r.next_review_at ? { nextReviewAt: r.next_review_at } : {})
+})
+
+const mapReviewItem = (r: any): ReviewItem => ({
+  id: r.id,
+  userId: r.user_id,
+  ...(r.error_book_entry_id ? { errorBookEntryId: r.error_book_entry_id } : {}),
+  conceptId: r.concept_id,
+  prompt: r.prompt,
+  expectedEvidence: r.expected_evidence,
+  intervalIndex: r.interval_index,
+  dueAt: r.due_at,
+  status: r.status,
+  ...(r.completed_at ? { completedAt: r.completed_at } : {})
+})
+
+const mapLearningEvent = (r: any): LearningEvent => ({
+  id: r.id,
+  sourceEventId: r.source_event_id,
+  userId: r.user_id,
+  type: r.type,
+  conceptIds: JSON.parse(r.concept_ids_json),
+  xp: r.xp,
+  evidence: JSON.parse(r.evidence_json),
+  occurredAt: r.occurred_at
+})
+
+const mapLearnerAchievement = (r: any): LearnerAchievement => ({
+  userId: r.user_id,
+  achievementId: r.achievement_id,
+  sourceEventId: r.source_event_id,
+  unlockedAt: r.unlocked_at
 })
 
 function resolveCursorStyle(saved: Partial<AppSettings> & { customCursor?: boolean }): CursorStyle {
