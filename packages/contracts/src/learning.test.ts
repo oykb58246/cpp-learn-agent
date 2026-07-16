@@ -46,6 +46,18 @@ describe('H3 learning contracts', () => {
     expect(learningEventSchema.safeParse({ ...event, evidence: undefined }).success).toBe(false)
   })
 
+  it('records failed review evidence without awarding XP', () => {
+    const event = learningEventSchema.parse({
+      id: crypto.randomUUID(), sourceEventId: 'review-failed-1', userId: 'local-user',
+      type: 'review-failed', conceptIds: ['control.loops'], xp: 0,
+      evidence: { kind: 'review', referenceId: 'review-1', summary: '边界条件回答不完整' },
+      occurredAt: now
+    })
+
+    expect(event.type).toBe('review-failed')
+    expect(event.xp).toBe(0)
+  })
+
   it('validates error book evidence and deterministic achievements', () => {
     expect(errorBookEntrySchema.safeParse({
       id: crypto.randomUUID(),

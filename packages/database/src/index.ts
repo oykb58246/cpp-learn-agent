@@ -1,10 +1,10 @@
-import Database from 'better-sqlite3'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import type {
   AgentRun,
   AgentRunDetail,
+  AchievementDefinition,
   Approval,
   AppSettings,
   CursorStyle,
@@ -15,14 +15,17 @@ import type {
   LearnerKnowledge,
   LearnerSummary,
   LearningEvent,
+  ModelProfile,
   Project,
   ReviewItem,
   SnapshotManifest,
   TimelineEvent,
+  ToolCall,
   ToolchainProfile,
   Workspace
 } from '@cpp-pet/contracts'
 import { h3Migrations } from './h3'
+import { SqliteDatabase } from './sqlite'
 
 const foundationSql = `
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
@@ -55,6 +58,13 @@ CREATE INDEX IF NOT EXISTS idx_events_time ON domain_events(occurred_at DESC);
 `
 
 export interface Migration { version: number; name: string; sql: string }
+export interface StoredProblem {
+  id: string
+  statement: string
+  constraints: string[]
+  samples: Array<{ input: string; output: string }>
+  createdAt: string
+}
 const foundationMigration: Migration = { version: 1, name: 'h1-foundation', sql: foundationSql }
 const projectMetadataMigration: Migration = { version: 2, name: 'h1-user-problem-metadata', sql: `
 CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, nickname TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -77,13 +87,13 @@ const migrationHash = (migration: Migration) => createHash('sha256').update(`${m
 export interface SnapshotRecord extends SnapshotManifest { manifestPath: string; blobHashes: Record<string, string> }
 
 export class AppDatabase {
-  readonly db: Database.Database
+  readonly db: SqliteDatabase
   readonly recoveryMode: boolean
 
   constructor(readonly filePath: string, additionalMigrations: Migration[] = []) {
     const migrations = [foundationMigration, projectMetadataMigration, toolchainMigration, ...h3Migrations, ...additionalMigrations]
     mkdirSync(dirname(filePath), { recursive: true })
-    this.db = new Database(filePath)
+    this.db = new SqliteDatabase(filePath)
     this.db.pragma('foreign_keys = ON')
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('synchronous = NORMAL')
@@ -122,6 +132,11 @@ export class AppDatabase {
   }
 
   close(): void { this.db.pragma('wal_checkpoint(TRUNCATE)'); this.db.close() }
+
+  transaction<T>(action: () => T): T {
+    this.ensureWritable()
+    return this.db.transaction(action)()
+  }
 
   getSettings(): AppSettings {
     const row = this.db.prepare('SELECT value_json FROM settings WHERE key = ?').get('app') as { value_json: string } | undefined
@@ -241,6 +256,16 @@ export class AppDatabase {
     const row = this.db.prepare('SELECT * FROM projects WHERE id = ? AND removed_at IS NULL').get(id) as any
     return row ? mapProject(row) : undefined
   }
+  getProblem(id: string): StoredProblem | undefined {
+    const row = this.db.prepare('SELECT * FROM problems WHERE id = ?').get(id) as any
+    return row ? {
+      id: row.id,
+      statement: row.statement,
+      constraints: JSON.parse(row.constraints_json),
+      samples: JSON.parse(row.samples_json),
+      createdAt: row.created_at
+    } : undefined
+  }
   saveProject(project: Project, problem?: { id: string; statement: string; constraints: string[]; samples: Array<{ input: string; output: string }>; createdAt: string }): Project {
     this.ensureWritable()
     this.db.transaction(() => {
@@ -310,28 +335,32 @@ export class AppDatabase {
 
   createAgentRun(run: AgentRun): AgentRun {
     this.ensureWritable()
-    this.db.prepare(`INSERT INTO agent_runs(
-      id,request_id,source,mode,message,project_id,active_file,status,intent,plan_summary,response,
-      validation_summary,error_code,error_message,steps_json,pending_approval_json,created_at,updated_at,completed_at
-    ) VALUES(
-      @id,@requestId,@source,@mode,@message,@projectId,@activeFile,@status,@intent,@planSummary,@response,
-      @validationSummary,@errorCode,@errorMessage,@stepsJson,@pendingApprovalJson,@createdAt,@updatedAt,@completedAt
-    )`).run(agentRunParams(run))
-    this.replaceAgentSteps(run)
-    return run
+    return this.transaction(() => {
+      this.db.prepare(`INSERT INTO agent_runs(
+        id,request_id,source,mode,message,project_id,active_file,status,intent,plan_summary,response,
+        validation_summary,error_code,error_message,steps_json,pending_approval_json,created_at,updated_at,completed_at
+      ) VALUES(
+        @id,@requestId,@source,@mode,@message,@projectId,@activeFile,@status,@intent,@planSummary,@response,
+        @validationSummary,@errorCode,@errorMessage,@stepsJson,@pendingApprovalJson,@createdAt,@updatedAt,@completedAt
+      )`).run(agentRunParams(run))
+      this.replaceAgentSteps(run)
+      return run
+    })
   }
 
   updateAgentRun(run: AgentRun): AgentRun {
     this.ensureWritable()
-    const result = this.db.prepare(`UPDATE agent_runs SET
-      source=@source,mode=@mode,message=@message,project_id=@projectId,active_file=@activeFile,status=@status,
-      intent=@intent,plan_summary=@planSummary,response=@response,validation_summary=@validationSummary,
-      error_code=@errorCode,error_message=@errorMessage,steps_json=@stepsJson,
-      pending_approval_json=@pendingApprovalJson,updated_at=@updatedAt,completed_at=@completedAt
-      WHERE id=@id`).run(agentRunParams(run))
-    if (result.changes === 0) throw new Error('Agent run not found')
-    this.replaceAgentSteps(run)
-    return run
+    return this.transaction(() => {
+      const result = this.db.prepare(`UPDATE agent_runs SET
+        source=@source,mode=@mode,message=@message,project_id=@projectId,active_file=@activeFile,status=@status,
+        intent=@intent,plan_summary=@planSummary,response=@response,validation_summary=@validationSummary,
+        error_code=@errorCode,error_message=@errorMessage,steps_json=@stepsJson,
+        pending_approval_json=@pendingApprovalJson,updated_at=@updatedAt,completed_at=@completedAt
+        WHERE id=@id`).run(agentRunParams(run))
+      if (result.changes === 0) throw new Error('Agent run not found')
+      this.replaceAgentSteps(run)
+      return run
+    })
   }
 
   getAgentRun(id: string): AgentRunDetail | undefined {
@@ -339,7 +368,8 @@ export class AppDatabase {
     if (!row) return undefined
     const timeline = (this.db.prepare('SELECT * FROM timeline_events WHERE run_id = ? ORDER BY sequence').all(id) as any[]).map(mapTimelineEvent)
     const approvals = (this.db.prepare('SELECT * FROM approvals WHERE run_id = ? ORDER BY created_at').all(id) as any[]).map(mapApproval)
-    return { ...mapAgentRun(row), timeline, approvals }
+    const toolCalls = (this.db.prepare('SELECT * FROM tool_calls WHERE run_id = ? ORDER BY started_at, id').all(id) as any[]).map(mapToolCall)
+    return { ...mapAgentRun(row), timeline, approvals, toolCalls }
   }
 
   listAgentRuns(input: { status?: AgentRun['status']; projectId?: string; limit?: number } = {}): AgentRun[] {
@@ -350,6 +380,49 @@ export class AppDatabase {
     const limit = Math.max(1, Math.min(input.limit ?? 50, 200))
     const rows = this.db.prepare(`SELECT * FROM agent_runs ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY updated_at DESC LIMIT ?`).all(...params, limit) as any[]
     return rows.map(mapAgentRun)
+  }
+
+  recoverInterruptedAgentRuns(recoveredAt = new Date().toISOString()): AgentRun[] {
+    this.ensureWritable()
+    return this.db.transaction(() => {
+      const rows = this.db.prepare("SELECT * FROM agent_runs WHERE status NOT IN ('completed','failed','cancelled') ORDER BY updated_at").all() as any[]
+      const recovered: AgentRun[] = []
+      const update = this.db.prepare(`UPDATE agent_runs SET status=@status,response=@response,error_code=@errorCode,
+        error_message=@errorMessage,steps_json=@stepsJson,pending_approval_json=NULL,updated_at=@updatedAt,completed_at=@completedAt WHERE id=@id`)
+      const expireApprovals = this.db.prepare("UPDATE approvals SET status='expired',decision_reason=?,decided_at=? WHERE run_id=? AND status='pending'")
+      const nextSequence = this.db.prepare('SELECT COALESCE(MAX(sequence), -1) + 1 sequence FROM timeline_events WHERE run_id = ?')
+      const insertTimeline = this.db.prepare(`INSERT INTO timeline_events(id,run_id,sequence,kind,status,title,summary,occurred_at,step_id,data_json)
+        VALUES(@id,@runId,@sequence,'cancelled','cancelled',@title,@summary,@occurredAt,NULL,@dataJson)`)
+      for (const row of rows) {
+        const original = mapAgentRun(row)
+        const { pendingApproval: _pendingApproval, ...originalWithoutPendingApproval } = original
+        const run: AgentRun = {
+          ...originalWithoutPendingApproval,
+          status: 'cancelled',
+          response: '应用在任务执行期间关闭；该记录已恢复为只读，不会自动重放操作。',
+          errorCode: 'RUN_INTERRUPTED',
+          errorMessage: '应用重启中断了未完成任务。',
+          steps: original.steps.map(step => ['completed', 'failed', 'cancelled'].includes(step.status)
+            ? step
+            : { ...step, status: 'cancelled', finishedAt: recoveredAt }),
+          updatedAt: recoveredAt,
+          completedAt: recoveredAt
+        }
+        update.run({
+          id: run.id, status: run.status, response: run.response, errorCode: run.errorCode, errorMessage: run.errorMessage,
+          stepsJson: JSON.stringify(run.steps), updatedAt: recoveredAt, completedAt: recoveredAt
+        })
+        this.replaceAgentSteps(run)
+        expireApprovals.run('应用重启后审批已失效。', recoveredAt, run.id)
+        const sequence = (nextSequence.get(run.id) as { sequence: number }).sequence
+        insertTimeline.run({
+          id: randomUUID(), runId: run.id, sequence, title: '任务在重启后恢复为只读记录',
+          summary: run.response, occurredAt: recoveredAt, dataJson: JSON.stringify({ errorCode: 'RUN_INTERRUPTED' })
+        })
+        recovered.push(run)
+      }
+      return recovered
+    })()
   }
 
   appendTimeline(event: TimelineEvent): TimelineEvent {
@@ -367,18 +440,40 @@ export class AppDatabase {
     this.ensureWritable()
     this.db.prepare(`INSERT INTO approvals(
       id,run_id,step_id,tool_name,risk,title,description,parameter_summary_json,side_effects_json,
-      status,decision_reason,created_at,decided_at
+      diff_text,status,decision_reason,created_at,decided_at
     ) VALUES(
       @id,@runId,@stepId,@toolName,@risk,@title,@description,@parameterSummaryJson,@sideEffectsJson,
-      @status,@decisionReason,@createdAt,@decidedAt
-    ) ON CONFLICT(id) DO UPDATE SET status=excluded.status,decision_reason=excluded.decision_reason,decided_at=excluded.decided_at`).run({
+      @diff,@status,@decisionReason,@createdAt,@decidedAt
+    ) ON CONFLICT(id) DO UPDATE SET diff_text=excluded.diff_text,status=excluded.status,
+      decision_reason=excluded.decision_reason,decided_at=excluded.decided_at`).run({
       ...approval,
       parameterSummaryJson: JSON.stringify(approval.parameterSummary),
       sideEffectsJson: JSON.stringify(approval.sideEffects),
+      diff: approval.diff ?? null,
       decisionReason: approval.decisionReason ?? null,
       decidedAt: approval.decidedAt ?? null
     })
     return approval
+  }
+
+  saveToolCall(call: ToolCall): ToolCall {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO tool_calls(
+      id,run_id,step_id,server_name,tool_name,risk,parameter_summary_json,result_json,status,
+      started_at,finished_at,duration_ms,error_code
+    ) VALUES(
+      @id,@runId,@stepId,@serverName,@toolName,@risk,@parameterSummaryJson,@resultJson,@status,
+      @startedAt,@finishedAt,@durationMs,@errorCode
+    ) ON CONFLICT(id) DO UPDATE SET result_json=excluded.result_json,status=excluded.status,
+      finished_at=excluded.finished_at,duration_ms=excluded.duration_ms,error_code=excluded.error_code`).run({
+      ...call,
+      parameterSummaryJson: JSON.stringify(call.parameterSummary),
+      resultJson: call.result ? JSON.stringify(call.result) : null,
+      finishedAt: call.finishedAt ?? null,
+      durationMs: call.durationMs ?? null,
+      errorCode: call.errorCode ?? null
+    })
+    return call
   }
 
   seedKnowledge(nodes: KnowledgeNode[]): void {
@@ -483,6 +578,32 @@ export class AppDatabase {
     })()
   }
 
+  listLearningEvents(userId: string, limit = 200): LearningEvent[] {
+    return (this.db.prepare('SELECT * FROM learning_events WHERE user_id = ? ORDER BY occurred_at DESC LIMIT ?').all(userId, Math.max(1, Math.min(limit, 1_000))) as any[]).map(mapLearningEvent)
+  }
+
+  seedAchievementDefinitions(definitions: AchievementDefinition[]): void {
+    this.ensureWritable()
+    const statement = this.db.prepare(`INSERT INTO achievement_definitions(id,title,description,icon,rule_json,xp_reward)
+      VALUES(@id,@title,@description,@icon,@ruleJson,@xpReward)
+      ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,icon=excluded.icon,
+      rule_json=excluded.rule_json,xp_reward=excluded.xp_reward`)
+    this.db.transaction(() => {
+      for (const item of definitions) statement.run({ ...item, ruleJson: JSON.stringify(item.rule) })
+    })()
+  }
+
+  listLearnerAchievements(userId: string): LearnerAchievement[] {
+    return (this.db.prepare('SELECT * FROM learner_achievements WHERE user_id = ? ORDER BY unlocked_at DESC').all(userId) as any[]).map(mapLearnerAchievement)
+  }
+
+  awardAchievement(achievement: LearnerAchievement): boolean {
+    this.ensureWritable()
+    const result = this.db.prepare(`INSERT OR IGNORE INTO learner_achievements(user_id,achievement_id,source_event_id,unlocked_at)
+      VALUES(@userId,@achievementId,@sourceEventId,@unlockedAt)`).run(achievement)
+    return result.changes > 0
+  }
+
   getLearnerSummary(userId: string): LearnerSummary {
     const progress = this.db.prepare('SELECT xp FROM learner_progress WHERE user_id = ?').get(userId) as { xp: number } | undefined
     const xp = progress?.xp ?? 0
@@ -504,6 +625,34 @@ export class AppDatabase {
       achievements,
       recentEvents
     }
+  }
+
+  saveModelProfile(profile: ModelProfile): ModelProfile {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO model_profiles(id,name,base_url,model,enabled,timeout_ms,api_key_configured,created_at,updated_at)
+      VALUES(@id,@name,@baseUrl,@model,@enabled,@timeoutMs,@apiKeyConfigured,@createdAt,@updatedAt)
+      ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,model=excluded.model,
+      enabled=excluded.enabled,timeout_ms=excluded.timeout_ms,api_key_configured=excluded.api_key_configured,
+      updated_at=excluded.updated_at`).run({
+      ...profile,
+      enabled: profile.enabled ? 1 : 0,
+      apiKeyConfigured: profile.apiKeyConfigured ? 1 : 0
+    })
+    return profile
+  }
+
+  listModelProfiles(): ModelProfile[] {
+    return (this.db.prepare('SELECT * FROM model_profiles ORDER BY updated_at DESC').all() as any[]).map(mapModelProfile)
+  }
+
+  getModelProfile(id: string): ModelProfile | undefined {
+    const row = this.db.prepare('SELECT * FROM model_profiles WHERE id = ?').get(id) as any
+    return row ? mapModelProfile(row) : undefined
+  }
+
+  removeModelProfile(id: string): void {
+    this.ensureWritable()
+    this.db.prepare('DELETE FROM model_profiles WHERE id = ?').run(id)
   }
 
   private replaceAgentSteps(run: AgentRun): void {
@@ -601,11 +750,28 @@ const mapApproval = (r: any): Approval => ({
   title: r.title,
   description: r.description,
   parameterSummary: JSON.parse(r.parameter_summary_json),
+  ...(r.diff_text ? { diff: r.diff_text } : {}),
   sideEffects: JSON.parse(r.side_effects_json),
   status: r.status,
   ...(r.decision_reason ? { decisionReason: r.decision_reason } : {}),
   createdAt: r.created_at,
   ...(r.decided_at ? { decidedAt: r.decided_at } : {})
+})
+
+const mapToolCall = (r: any): ToolCall => ({
+  id: r.id,
+  runId: r.run_id,
+  stepId: r.step_id,
+  serverName: r.server_name,
+  toolName: r.tool_name,
+  risk: r.risk,
+  parameterSummary: JSON.parse(r.parameter_summary_json),
+  ...(r.result_json ? { result: JSON.parse(r.result_json) } : {}),
+  status: r.status,
+  startedAt: r.started_at,
+  ...(r.finished_at ? { finishedAt: r.finished_at } : {}),
+  ...(r.duration_ms !== null ? { durationMs: r.duration_ms } : {}),
+  ...(r.error_code ? { errorCode: r.error_code } : {})
 })
 
 const mapKnowledgeNode = (r: any): KnowledgeNode => ({
@@ -674,6 +840,18 @@ const mapLearnerAchievement = (r: any): LearnerAchievement => ({
   achievementId: r.achievement_id,
   sourceEventId: r.source_event_id,
   unlockedAt: r.unlocked_at
+})
+
+const mapModelProfile = (r: any): ModelProfile => ({
+  id: r.id,
+  name: r.name,
+  baseUrl: r.base_url,
+  model: r.model,
+  enabled: Boolean(r.enabled),
+  timeoutMs: r.timeout_ms,
+  apiKeyConfigured: Boolean(r.api_key_configured),
+  createdAt: r.created_at,
+  updatedAt: r.updated_at
 })
 
 function resolveCursorStyle(saved: Partial<AppSettings> & { customCursor?: boolean }): CursorStyle {

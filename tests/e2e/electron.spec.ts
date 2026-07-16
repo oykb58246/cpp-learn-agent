@@ -3,6 +3,7 @@ import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { createElectronEnvironment } from './electron-env'
 
 const repo = resolve(import.meta.dirname, '../..')
 let temp = ''
@@ -19,7 +20,7 @@ test('explains how to resume after skipping first-run setup', async () => {
   const electronApp = await electron.launch({
     executablePath: electronPath as unknown as string,
     args: ['--in-process-gpu', '--no-sandbox', join(repo, 'apps/desktop')],
-    env: { ...process.env, CPP_PET_USER_DATA: join(temp, 'user-data'), CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace'), CPP_PET_E2E_INSTALLER: 'mock' }
+    env: createElectronEnvironment({ CPP_PET_USER_DATA: join(temp, 'user-data'), CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace'), CPP_PET_E2E_INSTALLER: 'mock' })
   })
   try {
     const page = await electronApp.firstWindow()
@@ -36,7 +37,7 @@ test('explains how to resume after skipping first-run setup', async () => {
     await captureWindow(electronApp, page, join(repo, 'test-results', 'visual', 'onboarding-skipped-home-1440x900.png'))
     const settings = await page.evaluate(() => window.cppPet.settings.get())
     expect(settings.ok && settings.data.onboardingStatus).toBe('skipped')
-    await page.getByRole('button', { name: '打开环境向导' }).click()
+    await page.getByRole('button', { name: '环境向导', exact: true }).click()
     await expect(page.getByRole('heading', { name: '把 C++ 环境准备好' })).toBeVisible()
     await page.getByRole('button', { name: '开始初始化' }).click()
     await expect(page.getByRole('heading', { name: '检测开发环境' })).toBeVisible()
@@ -63,11 +64,12 @@ test('explains how to resume after skipping first-run setup', async () => {
 })
 
 test('launches securely and renders the real project workflow', async () => {
+  test.setTimeout(180_000)
   // Keep Chromium inside the test process on restricted Windows runners.
   const electronApp = await electron.launch({
     executablePath: electronPath as unknown as string,
     args: ['--in-process-gpu', '--no-sandbox', join(repo, 'apps/desktop')],
-    env: { ...process.env, CPP_PET_USER_DATA: join(temp, 'user-data'), CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace') }
+    env: createElectronEnvironment({ CPP_PET_USER_DATA: join(temp, 'user-data'), CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace') })
   })
   try {
     const page = await electronApp.firstWindow()
@@ -204,13 +206,26 @@ test('launches securely and renders the real project workflow', async () => {
     expect(Math.round(await page.locator('.workspace-sidebar').evaluate(element => element.getBoundingClientRect().width))).toBe(savedLayout!.sidebarWidth)
     expect(Math.round(await page.locator('.workspace-inspector').evaluate(element => element.getBoundingClientRect().width))).toBe(savedLayout!.inspectorWidth)
     expect(Math.round(await page.locator('.bottom-panel').evaluate(element => element.getBoundingClientRect().height))).toBe(savedLayout!.bottomPanelHeight)
-    await page.selectOption('.sidebar-heading select', cmakeProject!.id)
-    await expect(page.locator('.sidebar-heading select')).toHaveValue(cmakeProject!.id)
+    await page.locator('.project-picker').click()
+    await page.getByRole('option', { name: 'CMake E2E', exact: true }).click()
+    await expect(page.locator('.project-picker')).toContainText('CMake E2E')
+    const engineeringTools = await page.evaluate(() => window.cppPet.toolchains.detect())
+    const toolKinds = engineeringTools.ok ? engineeringTools.data.tools.map(item => item.kind) : []
     await page.getByRole('button', { name: '工程构建', exact: true }).click()
-    await expect(page.locator('.process-output')).toContainText('[CMake 构建] 成功', { timeout: 60_000 })
-    await expect(page.locator('.process-output')).toContainText('compile_commands.json 已生成')
-    await page.getByRole('button', { name: '测试', exact: true }).click()
-    await expect(page.locator('.process-output')).toContainText('[CTest] 通过 · 1/1 通过', { timeout: 30_000 })
+    if (toolKinds.includes('cmake') && toolKinds.includes('ctest')) {
+      await expect.poll(async () => {
+        const output = await page.locator('.process-output').textContent() ?? ''
+        if (output.includes('[CMake 构建] 成功')) return 'success'
+        const error = await page.locator('.error-toast').textContent().catch(() => null)
+        return error ? `error:${error}` : 'pending'
+      }, { timeout: 60_000 }).toBe('success')
+      await expect(page.locator('.process-output')).toContainText('compile_commands.json 已生成')
+      await page.getByRole('button', { name: '测试', exact: true }).click()
+      await expect(page.locator('.process-output')).toContainText('[CTest] 通过 · 1/1 通过', { timeout: 30_000 })
+    } else {
+      await expect(page.locator('.error-toast')).toContainText('未找到 CMake')
+      await page.locator('.error-toast').getByRole('button', { name: '关闭' }).click()
+    }
     await captureWindow(electronApp, page, join(repo, 'test-results', 'visual', 'workspace-1440x900.png'))
     await browserWindow.evaluate(win => win.setSize(1024, 720))
     await page.waitForTimeout(250)

@@ -10,10 +10,11 @@ afterEach(async () => {
   await Promise.all(connected.splice(0).map(item => item.close()))
 })
 
-async function setup() {
+async function setup(execute?: LocalMcpAdapter['execute']) {
   const calls: Array<{ name: string; arguments: Record<string, unknown> }> = []
   const adapter: LocalMcpAdapter = {
-    async execute(name, args): Promise<ToolResult> {
+    async execute(name, args, context): Promise<ToolResult> {
+      if (execute) return execute(name, args, context)
       calls.push({ name, arguments: args })
       return {
         ok: true,
@@ -75,5 +76,47 @@ describe('CppPilot local MCP server', () => {
 
     expect('isError' in result && result.isError).toBe(true)
     expect(calls).toHaveLength(0)
+  })
+
+  it('forwards structured tool progress to the MCP client', async () => {
+    const { client } = await setup(async (_name, _args, context) => {
+      await context.onProgress(1, 2, '完成一半')
+      return { ok: true, exitCode: 0, summary: 'done', diagnostics: [], artifacts: [], sideEffects: [], retryable: false, durationMs: 1 }
+    })
+    const progress: Array<{ progress: number; total?: number | undefined; message?: string | undefined }> = []
+
+    await client.callTool({ name: 'toolchain.detect_compilers', arguments: {} }, undefined, { onprogress: event => progress.push(event) })
+
+    expect(progress).toEqual([{ progress: 1, total: 2, message: '完成一半' }])
+  })
+
+  it('propagates client cancellation to the adapter AbortSignal', async () => {
+    let aborted = false
+    let markStarted!: () => void
+    const started = new Promise<void>(resolve => { markStarted = resolve })
+    const { client } = await setup(async (_name, _args, context) => new Promise<ToolResult>((_resolve, reject) => {
+      markStarted()
+      context.signal.addEventListener('abort', () => { aborted = true; reject(context.signal.reason) }, { once: true })
+    }))
+    const controller = new AbortController()
+
+    const request = client.callTool({ name: 'toolchain.detect_compilers', arguments: {} }, undefined, { signal: controller.signal })
+    await started
+    controller.abort(new Error('cancel test'))
+
+    await expect(request).rejects.toThrow()
+    await expect.poll(() => aborted).toBe(true)
+  })
+
+  it('cancels the adapter when an MCP request times out', async () => {
+    let aborted = false
+    const { client } = await setup(async (_name, _args, context) => new Promise<ToolResult>((_resolve, reject) => {
+      context.signal.addEventListener('abort', () => { aborted = true; reject(context.signal.reason) }, { once: true })
+    }))
+
+    const request = client.callTool({ name: 'toolchain.detect_compilers', arguments: {} }, undefined, { timeout: 20 })
+
+    await expect(request).rejects.toThrow()
+    await expect.poll(() => aborted).toBe(true)
   })
 })

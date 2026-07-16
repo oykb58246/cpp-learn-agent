@@ -58,6 +58,31 @@ export const localToolDefinitions: LocalToolDefinition[] = [
     cases: z.array(z.object({ input: z.string().max(65_536), expectedOutput: z.string().max(65_536) })).min(1).max(100)
   })),
   tool('vscode.open_file', '在 VS Code 打开文件', 'L1', 10_000, z.object({ projectId: uuid, relativePath: relativePath.optional(), line: z.number().int().positive().optional(), column: z.number().int().positive().optional() })),
-  tool('learning.get_state', '读取学习状态', 'L0', 5_000, z.object({ userId: z.string().min(1).max(100).default('local-user') })),
-  tool('learning.update_state', '更新学习状态', 'L2', 5_000, z.object({ userId: z.string().min(1).max(100).default('local-user'), conceptId: z.string().min(1).max(100), status: z.enum(['available', 'learning', 'self-claimed', 'verified', 'review']), evidenceId: z.string().min(1).max(200) }))
+  tool('learning.get_state', '读取学习状态', 'L0', 5_000, z.object({
+    userId: z.string().min(1).max(100).default('local-user'),
+    reviewItemId: uuid.optional()
+  })),
+  tool('learning.record_error', '记录已验证错误', 'L2', 5_000, z.object({
+    userId: z.string().min(1).max(100).default('local-user'),
+    projectId: uuid.optional(),
+    relativePath: relativePath.optional(),
+    category: z.enum(['compile', 'linker', 'runtime', 'logic', 'analysis', 'debug']),
+    title: z.string().min(1).max(200),
+    evidenceId: z.string().min(1).max(200),
+    evidence: z.string().min(1).max(20_000),
+    conceptIds: z.array(z.string().min(1).max(100)).max(100),
+    status: z.enum(['open', 'resolved']).default('resolved')
+  })),
+  tool('learning.update_state', '更新学习状态', 'L2', 5_000, z.object({
+    userId: z.string().min(1).max(100).default('local-user'),
+    conceptId: z.string().min(1).max(100),
+    status: z.enum(['available', 'learning', 'self-claimed', 'verified', 'review']),
+    evidenceId: z.string().min(1).max(200),
+    reviewItemId: uuid.optional(),
+    reviewOutcome: z.enum(['passed', 'failed']).optional()
+  }).superRefine((input, context) => {
+    if (input.status === 'verified' && (!input.reviewItemId || input.reviewOutcome !== 'passed')) {
+      context.addIssue({ code: 'custom', path: ['reviewItemId'], message: '验证知识状态必须引用通过的复习项。' })
+    }
+  }))
 ]

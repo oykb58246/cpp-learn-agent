@@ -103,6 +103,23 @@ export const toolResultSchema = z.object({
 })
 export type ToolResult<T = unknown> = Omit<z.infer<typeof toolResultSchema>, 'structuredContent'> & { structuredContent?: T }
 
+export const toolCallSchema = z.object({
+  id: z.string().uuid(),
+  runId: z.string().uuid(),
+  stepId: z.string().min(1).max(100),
+  serverName: z.string().min(1).max(100),
+  toolName: z.string().min(1).max(120),
+  risk: toolRiskSchema,
+  parameterSummary: z.record(z.string(), jsonValueSchema),
+  result: toolResultSchema.optional(),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled']),
+  startedAt: timestampSchema,
+  finishedAt: timestampSchema.optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  errorCode: z.string().max(100).optional()
+})
+export type ToolCall = z.infer<typeof toolCallSchema>
+
 export const approvalSchema = z.object({
   id: z.string().uuid(),
   runId: z.string().uuid(),
@@ -112,6 +129,7 @@ export const approvalSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().min(1).max(2_000),
   parameterSummary: z.record(z.string(), jsonValueSchema),
+  diff: z.string().max(100_000).optional(),
   sideEffects: z.array(z.string().min(1).max(500)).max(100),
   status: z.enum(['pending', 'approved', 'rejected', 'expired']),
   decisionReason: z.string().max(2_000).optional(),
@@ -167,7 +185,8 @@ export type AgentRun = z.infer<typeof agentRunSchema>
 
 export const agentRunDetailSchema = agentRunSchema.extend({
   timeline: z.array(timelineEventSchema),
-  approvals: z.array(approvalSchema)
+  approvals: z.array(approvalSchema),
+  toolCalls: z.array(toolCallSchema)
 })
 export type AgentRunDetail = z.infer<typeof agentRunDetailSchema>
 
@@ -195,7 +214,17 @@ export const agentStartRequestSchema = z.object({
     endColumn: z.number().int().positive(),
     content: z.string().max(100_000)
   }).optional(),
-  screenshot: screenshotRefSchema.optional()
+  diagnostics: z.array(diagnosticSchema).max(200).optional(),
+  screenshot: screenshotRefSchema.optional(),
+  reviewItemId: z.string().uuid().optional(),
+  reviewOutcome: z.enum(['passed', 'failed']).optional()
+}).superRefine((request, context) => {
+  if (request.mode === 'review' && (!request.reviewItemId || !request.reviewOutcome)) {
+    context.addIssue({ code: 'custom', path: ['reviewItemId'], message: '复习请求必须引用具体复习项和结果。' })
+  }
+  if (request.mode !== 'review' && (request.reviewItemId || request.reviewOutcome)) {
+    context.addIssue({ code: 'custom', path: ['reviewItemId'], message: '只有复习请求可以引用复习项。' })
+  }
 })
 export type AgentStartRequest = z.input<typeof agentStartRequestSchema>
 
@@ -222,4 +251,3 @@ export const modelProfileInputSchema = z.object({
   apiKey: z.string().min(1).max(10_000).optional()
 })
 export type ModelProfileInput = z.input<typeof modelProfileInputSchema>
-

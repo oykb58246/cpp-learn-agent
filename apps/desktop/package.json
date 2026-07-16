@@ -14,12 +14,13 @@
     "package:dir": "pnpm build && electron-builder --dir"
   },
   "dependencies": {
+    "@cpp-pet/agent-runtime": "workspace:*",
     "@cpp-pet/contracts": "workspace:*",
     "@cpp-pet/cpp-local-tools": "workspace:*",
     "@cpp-pet/database": "workspace:*",
     "@cpp-pet/ui-kit": "workspace:*",
     "@cpp-pet/workspace-core": "workspace:*",
-    "better-sqlite3": "^12.11.1",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "element-plus": "^2.14.3",
     "lucide-vue-next": "^0.468.0",
     "monaco-editor": "^0.55.1",

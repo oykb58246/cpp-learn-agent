@@ -94,9 +94,13 @@ CREATE TABLE IF NOT EXISTS model_profiles (
 CREATE INDEX IF NOT EXISTS idx_learning_events_user ON learning_events(user_id, occurred_at DESC);
 `
 
+const approvalDiffSql = `
+ALTER TABLE approvals ADD COLUMN diff_text TEXT;
+`
+
 export const h3Migrations: Migration[] = [
   { version: 4, name: 'h3-agent-runs', sql: agentSql },
   { version: 5, name: 'h3-learning-state', sql: learningSql },
-  { version: 6, name: 'h3-growth-and-models', sql: growthSql }
+  { version: 6, name: 'h3-growth-and-models', sql: growthSql },
+  { version: 7, name: 'h3-approval-diff', sql: approvalDiffSql }
 ]
-

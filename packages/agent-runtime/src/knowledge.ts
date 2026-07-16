@@ -133,3 +133,40 @@ export class KnowledgeGate {
   }
 }
 
+export function transitionKnowledge(
+  userId: string,
+  nodes: KnowledgeNode[],
+  states: LearnerKnowledge[],
+  conceptId: string,
+  requestedStatus: LearnerKnowledge['status'],
+  now = new Date().toISOString()
+): LearnerKnowledge {
+  const node = nodes.find(item => item.id === conceptId)
+  if (!node) throw new Error(`未知知识节点：${conceptId}`)
+  const activeStatuses = new Set<LearnerKnowledge['status']>(['learning', 'self-claimed', 'verified', 'review'])
+  const byId = new Map(states.filter(item => item.userId === userId).map(item => [item.conceptId, item]))
+  const current = byId.get(conceptId)
+  const missing = node.prerequisites.filter(id => !activeStatuses.has(byId.get(id)?.status ?? 'locked'))
+
+  if (requestedStatus === 'learning' || requestedStatus === 'available') {
+    if (missing.length) throw new Error(`请先完成前置概念：${missing.join('、')}`)
+  } else if (requestedStatus === 'self-claimed') {
+    if (current?.status !== 'learning' && current?.status !== 'self-claimed') throw new Error('知识节点必须先进入学习中状态。')
+  } else if (requestedStatus === 'review') {
+    if (!current || !['self-claimed', 'verified', 'review'].includes(current.status)) throw new Error('只有已学习或已验证节点可以进入复习。')
+  } else if (requestedStatus === 'verified') {
+    throw new Error('已验证状态必须来自工具或复习证据。')
+  } else {
+    throw new Error('不能手动锁定知识节点。')
+  }
+
+  return {
+    userId,
+    conceptId,
+    status: requestedStatus,
+    confidence: requestedStatus === 'self-claimed' ? 0.7 : requestedStatus === 'review' ? 0.8 : current?.confidence ?? 0.5,
+    ...(current?.verifiedAt ? { verifiedAt: current.verifiedAt } : {}),
+    ...(current?.lastEvidenceId ? { lastEvidenceId: current.lastEvidenceId } : {}),
+    updatedAt: now
+  }
+}

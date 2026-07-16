@@ -84,6 +84,7 @@ const api: CppPetApi = {
     decide: input => invoke(ipc.approvalDecide, input)
   },
   learning: {
+    catalog: () => invoke(ipc.learningCatalog),
     knowledge: input => invoke(ipc.learningKnowledge, input),
     updateKnowledge: input => invoke(ipc.learningUpdateKnowledge, input),
     errors: input => invoke(ipc.learningErrors, input),
@@ -96,6 +97,13 @@ const api: CppPetApi = {
     remove: input => invoke(ipc.modelRemove, input),
     clearKey: input => invoke(ipc.modelClearKey, input),
     test: input => invoke(ipc.modelTest, input)
+  },
+  pet: {
+    onEvent: listener => {
+      const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
+      ipcRenderer.on(ipc.petChanged, wrapped)
+      return () => ipcRenderer.removeListener(ipc.petChanged, wrapped)
+    }
   },
   mocks: { getDashboard: () => invoke(ipc.mockDashboard) }
 }

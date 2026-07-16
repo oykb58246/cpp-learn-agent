@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { basename, join } from 'node:path'
 import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
@@ -10,6 +10,9 @@ import { GdbMiSession } from '@cpp-pet/cpp-local-tools/debugger'
 import { DomainError, safePath, WorkspaceService } from '@cpp-pet/workspace-core'
 import {
   buildRequestSchema,
+  agentRunStatusSchema,
+  agentStartRequestSchema,
+  approvalDecisionSchema,
   cmakeBuildRequestSchema,
   ctestRunRequestSchema,
   debugCommandRequestSchema,
@@ -22,6 +25,8 @@ import {
   languageDocumentSyncSchema,
   languagePositionRequestSchema,
   languageStatusRequestSchema,
+  knowledgeStatusSchema,
+  modelProfileInputSchema,
   programRunRequestSchema,
   programStopRequestSchema,
   projectDraftInputSchema,
@@ -33,12 +38,31 @@ import {
   type AppSettings,
   type EnvironmentInstallTask
 } from '@cpp-pet/contracts'
+import { achievementDefinitions, AgentRuntime, builtInKnowledge, KnowledgeGate, OpenAiCompatiblePlanner, transitionKnowledge } from '@cpp-pet/agent-runtime'
 import { z } from 'zod'
 import { createWindowOptions } from './window-options'
+import { AgentHost } from './agent-host'
+import { ModelSecretStore } from './model-secret-store'
+import { createMcpWorkerParameters } from './mcp-worker-config'
+import { petEventForRun } from './pet-events'
+import {
+  DatabaseRuntimeStore,
+  DesktopContextBuilder,
+  DesktopMcpAdapter,
+  DesktopPlanner,
+  McpRuntimeToolClient
+} from './agent-integration'
 
 let mainWindow: BrowserWindow | null = null
 let database: AppDatabase | null = null
 let workspaceService: WorkspaceService | null = null
+let agentHost: AgentHost | null = null
+let agentToolClient: McpRuntimeToolClient | null = null
+let modelSecrets: ModelSecretStore | null = null
+let agentTransport: 'starting' | 'stdio' | 'in-memory-fallback' | 'failed' = 'starting'
+let agentStartupError: string | null = null
+let shutdownStarted = false
+let lastLearnerLevel = 1
 const toolchainService = new ToolchainService()
 const activeRuns = new Map<string, AbortController>()
 const buildArtifacts = new Map<string, { path: string; projectId: string; projectRoot: string; artifactName: string }>()
@@ -52,6 +76,13 @@ if (process.env.CPP_PET_USER_DATA) app.setPath('userData', process.env.CPP_PET_U
 const requiredServices = () => {
   if (!database || !workspaceService) throw new Error('Application services are not ready')
   return { database, workspaceService }
+}
+const requiredAgentServices = () => {
+  if (!agentHost || !modelSecrets) {
+    if (agentStartupError) throw new ToolExecutionError('AGENT_STARTUP_FAILED', '本地 Agent 服务启动失败。', `重启应用；若问题持续，请检查 MCP Worker。${agentStartupError}`, true)
+    throw new ToolExecutionError('AGENT_STARTING', '本地 Agent 服务仍在启动。', '稍候几秒后重试。', true)
+  }
+  return { agentHost, modelSecrets, ...requiredServices() }
 }
 const startRun = (runId: string): AbortController => {
   if (activeRuns.has(runId)) throw new ToolExecutionError('RUN_ID_IN_USE', '当前任务标识正在使用。', '等待当前任务结束后重试。', true)
@@ -606,6 +637,87 @@ function registerIpc(): void {
     controller?.abort()
     return { runId: input.runId, stopped: Boolean(controller) }
   })
+  handle(ipc.agentStart, agentStartRequestSchema, input => requiredAgentServices().agentHost.start(input))
+  handle(ipc.agentGet, z.object({ runId: z.string().uuid() }), input => {
+    const run = requiredAgentServices().agentHost.get(input.runId)
+    if (!run) throw new ToolExecutionError('AGENT_RUN_NOT_FOUND', 'Agent 记录不存在。', '刷新 Agent 记录列表。')
+    return run
+  })
+  handle(ipc.agentList, z.object({
+    status: agentRunStatusSchema.optional(),
+    projectId: z.string().uuid().optional(),
+    limit: z.number().int().min(1).max(200).default(50)
+  }).optional(), input => requiredServices().database.listAgentRuns(input ? {
+    ...(input.status ? { status: input.status } : {}),
+    ...(input.projectId ? { projectId: input.projectId } : {}),
+    limit: input.limit
+  } : {}))
+  handle(ipc.agentCancel, z.object({ runId: z.string().uuid() }), input => requiredAgentServices().agentHost.cancel(input.runId))
+  handle(ipc.approvalDecide, approvalDecisionSchema, input => requiredAgentServices().agentHost.decide(input))
+  handle(ipc.learningCatalog, empty, () => requiredServices().database.listKnowledgeNodes())
+  handle(ipc.learningKnowledge, z.object({ userId: z.string().min(1).max(100).default('local-user') }).optional(), input => requiredServices().database.listLearnerKnowledge(input?.userId ?? 'local-user'))
+  handle(ipc.learningUpdateKnowledge, z.object({
+    userId: z.string().min(1).max(100).default('local-user'),
+    conceptId: z.string().min(1).max(100),
+    status: knowledgeStatusSchema
+  }), input => {
+    if (input.status === 'verified') throw new DomainError('LEARNING_VERIFICATION_REQUIRED', '已验证状态只能由工具证据产生。', '先完成编译、测试或复习验证。')
+    const now = new Date().toISOString()
+    const { database } = requiredServices()
+    try {
+      const state = transitionKnowledge(input.userId, builtInKnowledge, database.listLearnerKnowledge(input.userId), input.conceptId, input.status, now)
+      return database.upsertLearnerKnowledge({ ...state, lastEvidenceId: `user:${randomUUID()}` })
+    } catch (error) {
+      throw new DomainError('KNOWLEDGE_PREREQUISITE_REQUIRED', error instanceof Error ? error.message : String(error), '先完成知识树中标出的前置节点。')
+    }
+  })
+  handle(ipc.learningErrors, z.object({
+    userId: z.string().min(1).max(100).default('local-user'),
+    status: z.enum(['open', 'resolved', 'reviewing']).optional()
+  }).optional(), input => requiredServices().database.listErrorBookEntries(input?.userId ?? 'local-user', input?.status))
+  handle(ipc.learningReviews, z.object({ userId: z.string().min(1).max(100).default('local-user'), dueOnly: z.boolean().default(false) }).optional(), input => requiredServices().database.listReviewItems(input?.userId ?? 'local-user', input?.dueOnly ?? false))
+  handle(ipc.learningSummary, z.object({ userId: z.string().min(1).max(100).default('local-user') }).optional(), input => requiredServices().database.getLearnerSummary(input?.userId ?? 'local-user'))
+  handle(ipc.modelList, empty, () => requiredServices().database.listModelProfiles())
+  handle(ipc.modelSave, modelProfileInputSchema, input => {
+    const { database, modelSecrets } = requiredAgentServices()
+    const existing = input.id ? database.getModelProfile(input.id) : undefined
+    const now = new Date().toISOString()
+    const id = input.id ?? randomUUID()
+    if (input.apiKey) modelSecrets.set(id, input.apiKey)
+    const profile = {
+      id,
+      name: input.name,
+      baseUrl: input.baseUrl,
+      model: input.model,
+      enabled: input.enabled,
+      timeoutMs: input.timeoutMs,
+      apiKeyConfigured: modelSecrets.has(id),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    }
+    return database.saveModelProfile(profile)
+  })
+  handle(ipc.modelRemove, z.object({ profileId: z.string().uuid() }), input => {
+    const { database, modelSecrets } = requiredAgentServices()
+    modelSecrets.clear(input.profileId)
+    database.removeModelProfile(input.profileId)
+  })
+  handle(ipc.modelClearKey, z.object({ profileId: z.string().uuid() }), input => {
+    const { database, modelSecrets } = requiredAgentServices()
+    const profile = database.getModelProfile(input.profileId)
+    if (!profile) throw new ToolExecutionError('MODEL_PROFILE_NOT_FOUND', '模型配置不存在。', '刷新模型配置列表。')
+    modelSecrets.clear(input.profileId)
+    return database.saveModelProfile({ ...profile, apiKeyConfigured: false, updatedAt: new Date().toISOString() })
+  })
+  handle(ipc.modelTest, z.object({ profileId: z.string().uuid() }), async input => {
+    const { database, modelSecrets } = requiredAgentServices()
+    const profile = database.getModelProfile(input.profileId)
+    const apiKey = modelSecrets.get(input.profileId)
+    if (!profile || !apiKey) throw new ToolExecutionError('MODEL_NOT_CONFIGURED', '模型配置或 API Key 不完整。', '保存模型地址、模型名和 API Key。')
+    const started = Date.now()
+    await new OpenAiCompatiblePlanner({ profile, apiKey }).plan({ requestId: randomUUID(), source: 'system', mode: 'chat', message: '连接测试' }, { requestId: randomUUID(), sources: [], conceptIds: [], tokenEstimate: 0, truncated: false }, new AbortController().signal)
+    return { ok: true, latencyMs: Date.now() - started, detail: '模型返回了有效结构化计划。' }
+  })
   handle(ipc.mockDashboard, empty, () => {
     const { database } = requiredServices()
     const activeId = database.getSettings().activeToolchainId
@@ -614,7 +726,14 @@ function registerIpc(): void {
       environment: [
         { id: 'vscode', label: 'VS Code', status: 'checking' as const, detail: '前往设置页执行本机环境检测' },
         { id: 'compiler', label: 'C++ 工具链', status: activeProfile ? 'ready' as const : 'checking' as const, detail: activeProfile ? `${activeProfile.family.toUpperCase()} ${activeProfile.version}` : '等待真实编译验证与绑定' },
-        { id: 'agent', label: '教学 Agent', status: 'missing' as const, detail: '成员 C 阶段接入' }
+        {
+          id: 'agent',
+          label: '教学 Agent',
+          status: agentHost ? 'ready' as const : agentTransport === 'failed' ? 'missing' as const : 'checking' as const,
+          detail: agentHost
+            ? agentTransport === 'stdio' ? 'Agent Runtime 与 stdio MCP 已连接' : 'stdio MCP 不可用，已切换进程内本地工具通道'
+            : agentStartupError ?? '正在连接本地 Agent 服务'
+        }
       ],
       learning: { concept: '循环与边界', progress: 42, reviewCount: 3, level: 2 },
       tasks: [{ id: '1', title: '完成第一个 C++ 项目', meta: '工作区基础流程', status: 'todo' as const }, { id: '2', title: '检查循环边界错题', meta: '3 条待复习', status: 'blocked' as const }]
@@ -668,10 +787,11 @@ function createWindow(): void {
   else void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const userData = app.getPath('userData')
   rmSync(join(userData, 'builds'), { recursive: true, force: true })
   database = new AppDatabase(join(userData, 'data', 'cpp-pet.sqlite')); workspaceService = new WorkspaceService(database, join(userData, 'snapshots'))
+  if (!database.recoveryMode) database.recoverInterruptedAgentRuns()
   if (process.env.CPP_PET_E2E_SEED_ROOT && database.listProjects().length === 0) {
     mkdirSync(process.env.CPP_PET_E2E_SEED_ROOT, { recursive: true })
     const workspace = workspaceService.registerWorkspace(process.env.CPP_PET_E2E_SEED_ROOT)
@@ -679,17 +799,72 @@ app.whenReady().then(() => {
     const draft = workspaceService.previewProject({ mode: 'manual', workspaceId: workspace.id, name: '边界练习', type: 'single-file' })
     workspaceService.commitDraft(draft.draftId)
   }
+  database.seedKnowledge(builtInKnowledge)
+  database.seedAchievementDefinitions(achievementDefinitions)
+  lastLearnerLevel = database.getLearnerSummary('local-user').level
+  modelSecrets = new ModelSecretStore(join(userData, 'data', 'model-secrets.json'), {
+    encryptString(value) {
+      if (!safeStorage.isEncryptionAvailable()) throw new ToolExecutionError('SAFE_STORAGE_UNAVAILABLE', '当前系统无法安全保存 API Key。', '使用支持系统密钥保护的 Windows 用户会话。')
+      return safeStorage.encryptString(value)
+    },
+    decryptString(value) {
+      if (!safeStorage.isEncryptionAvailable()) throw new ToolExecutionError('SAFE_STORAGE_UNAVAILABLE', '当前系统无法解密 API Key。', '使用保存该密钥的 Windows 用户会话。')
+      return safeStorage.decryptString(value)
+    }
+  })
   nativeTheme.themeSource = database.getSettings().theme
   registerIpc()
   createWindow()
   nativeTheme.on('updated', () => applyWindowChrome())
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+  try {
+    agentToolClient = await McpRuntimeToolClient.connectStdio(createMcpWorkerParameters(process.execPath, join(__dirname, 'mcp-worker.js'), userData))
+    agentTransport = 'stdio'
+  } catch (error) {
+    agentStartupError = error instanceof Error ? error.message : String(error)
+    try {
+      agentToolClient = await McpRuntimeToolClient.connect(new DesktopMcpAdapter({
+        db: database,
+        workspaceService,
+        toolchainService,
+        buildRoot: join(userData, 'builds', 'agent-fallback')
+      }))
+      agentTransport = 'in-memory-fallback'
+    } catch (fallbackError) {
+      agentTransport = 'failed'
+      agentStartupError = `${agentStartupError}; ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+      return
+    }
+  }
+  const runtime = new AgentRuntime({
+    store: new DatabaseRuntimeStore(database),
+    contextBuilder: new DesktopContextBuilder(workspaceService, database),
+    planner: new DesktopPlanner(database, modelSecrets!),
+    toolClient: agentToolClient,
+    knowledgeGate: new KnowledgeGate(builtInKnowledge)
+  })
+  agentHost = new AgentHost(runtime)
+  agentHost.onChanged(run => {
+    mainWindow?.webContents.send(ipc.agentChanged, run)
+    const currentLevel = database?.getLearnerSummary('local-user').level ?? lastLearnerLevel
+    mainWindow?.webContents.send(ipc.petChanged, petEventForRun(run, lastLearnerLevel, currentLevel))
+    lastLearnerLevel = currentLevel
+  })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('before-quit', () => {
+app.on('before-quit', event => {
+  if (shutdownStarted) return
+  event.preventDefault()
+  shutdownStarted = true
   for (const controller of activeRuns.values()) controller.abort()
-  for (const session of languageSessions.values()) void session.dispose()
-  for (const session of debugSessions.values()) void session.dispose()
-  stopWatching?.()
-  database?.close()
+  void (async () => {
+    await Promise.allSettled(agentHost ? [agentHost.shutdown()] : [])
+    await Promise.allSettled([
+      ...(agentToolClient ? [agentToolClient.close()] : []),
+      ...[...languageSessions.values()].map(session => session.dispose()),
+      ...[...debugSessions.values()].map(session => session.dispose())
+    ])
+    stopWatching?.()
+    database?.close()
+  })().finally(() => app.quit())
 })

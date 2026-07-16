@@ -45,8 +45,10 @@ import type {
   ModelProfile,
   ModelProfileInput
 } from './agent'
+import type { PetEvent } from './future'
 import type {
   ErrorBookEntry,
+  KnowledgeNode,
   KnowledgeStatus,
   LearnerKnowledge,
   LearnerSummary,
@@ -298,6 +300,7 @@ export interface CppPetApi {
     decide(input: ApprovalDecision): Promise<ApiResult<AgentRun>>
   }
   learning: {
+    catalog(): Promise<ApiResult<KnowledgeNode[]>>
     knowledge(input?: { userId?: string }): Promise<ApiResult<LearnerKnowledge[]>>
     updateKnowledge(input: { userId?: string; conceptId: string; status: KnowledgeStatus }): Promise<ApiResult<LearnerKnowledge>>
     errors(input?: { userId?: string; status?: ErrorBookEntry['status'] }): Promise<ApiResult<ErrorBookEntry[]>>
@@ -310,6 +313,9 @@ export interface CppPetApi {
     remove(input: { profileId: string }): Promise<ApiResult<void>>
     clearKey(input: { profileId: string }): Promise<ApiResult<ModelProfile>>
     test(input: { profileId: string }): Promise<ApiResult<{ ok: boolean; latencyMs: number; detail: string }>>
+  }
+  pet: {
+    onEvent(listener: (event: PetEvent) => void): () => void
   }
   mocks: { getDashboard(): Promise<ApiResult<MockDashboard>> }
 }

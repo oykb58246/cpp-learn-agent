@@ -6,15 +6,13 @@
   "packageManager": "pnpm@10.24.0",
   "engines": { "node": ">=22" },
   "scripts": {
-    "dev": "pnpm native:electron && pnpm --filter @cpp-pet/desktop dev",
+    "dev": "pnpm --filter @cpp-pet/desktop dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "native:node": "pnpm --filter @cpp-pet/database exec npm rebuild better-sqlite3 --build-from-source",
-    "native:electron": "pnpm --filter @cpp-pet/desktop exec electron-builder install-app-deps",
-    "test": "pnpm native:node && pnpm -r test",
+    "test": "pnpm -r test",
     "verify": "pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e",
-    "test:e2e": "pnpm --filter @cpp-pet/desktop build && pnpm native:electron && playwright test",
-    "package:dir": "pnpm native:electron && pnpm --filter @cpp-pet/desktop package:dir"
+    "test:e2e": "pnpm --filter @cpp-pet/desktop build && playwright test",
+    "package:dir": "pnpm --filter @cpp-pet/desktop package:dir"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

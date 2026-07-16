@@ -52,6 +52,7 @@ export const learningEventTypeSchema = z.enum([
   'error-recorded',
   'error-resolved',
   'review-completed',
+  'review-failed',
   'project-completed'
 ])
 
@@ -134,4 +135,3 @@ export const learnerSummarySchema = z.object({
   recentEvents: z.array(learningEventSchema)
 })
 export type LearnerSummary = z.infer<typeof learnerSummarySchema>
-

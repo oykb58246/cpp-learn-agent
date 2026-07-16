@@ -4,13 +4,16 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type {
   AgentRun,
+  AchievementDefinition,
   Approval,
   ErrorBookEntry,
   KnowledgeNode,
   LearnerKnowledge,
   LearningEvent,
+  ModelProfile,
   ReviewItem,
-  TimelineEvent
+  TimelineEvent,
+  ToolCall
 } from '@cpp-pet/contracts'
 import { AppDatabase } from './index'
 
@@ -28,6 +31,50 @@ afterEach(() => {
 })
 
 describe('H3 persistence', () => {
+  it('rolls back the run row when creating its steps fails', () => {
+    const { db } = setup()
+    const duplicateStepId = crypto.randomUUID()
+    const run: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'diagnose',
+      message: '原子创建', status: 'planning', createdAt: now, updatedAt: now,
+      steps: [
+        { id: duplicateStepId, sequence: 0, kind: 'tool', status: 'pending', title: '第一步' },
+        { id: duplicateStepId, sequence: 1, kind: 'validate', status: 'pending', title: '重复步骤' }
+      ]
+    }
+
+    expect(() => db.createAgentRun(run)).toThrow()
+    expect(db.db.prepare('SELECT id FROM agent_runs WHERE id = ?').get(run.id)).toBeUndefined()
+    db.close()
+  })
+
+  it('rolls back the run update when replacing its steps fails', () => {
+    const { db } = setup()
+    const originalStepId = crypto.randomUUID()
+    const run: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'diagnose',
+      message: '原子更新', status: 'planning', createdAt: now, updatedAt: now,
+      steps: [{ id: originalStepId, sequence: 0, kind: 'tool', status: 'pending', title: '原始步骤' }]
+    }
+    db.createAgentRun(run)
+    const duplicateStepId = crypto.randomUUID()
+    const invalidUpdate: AgentRun = {
+      ...run,
+      status: 'executing',
+      steps: [
+        { id: duplicateStepId, sequence: 0, kind: 'tool', status: 'running', title: '第一步' },
+        { id: duplicateStepId, sequence: 1, kind: 'validate', status: 'pending', title: '重复步骤' }
+      ]
+    }
+
+    expect(() => db.updateAgentRun(invalidUpdate)).toThrow()
+    expect(db.getAgentRun(run.id)).toMatchObject({
+      status: 'planning',
+      steps: [{ id: originalStepId, title: '原始步骤' }]
+    })
+    db.close()
+  })
+
   it('persists runs, timeline and approvals across restarts', () => {
     const { file, db } = setup()
     const run: AgentRun = {
@@ -41,17 +88,55 @@ describe('H3 persistence', () => {
     const approval: Approval = {
       id: crypto.randomUUID(), runId: run.id, stepId: 'patch', toolName: 'workspace.apply_patch',
       risk: 'L2', title: '应用修复', description: '修改 main.cpp', parameterSummary: { relativePath: 'main.cpp' },
+      diff: '--- a/main.cpp\n+++ b/main.cpp\n@@ -1 +1 @@\n-return 0;\n+return 1;',
       sideEffects: ['write-file'], status: 'pending', createdAt: now
+    }
+    const toolCall: ToolCall = {
+      id: crypto.randomUUID(), runId: run.id, stepId: 'build', serverName: 'cpppilot-local-tools', toolName: 'compiler.build',
+      risk: 'L1', parameterSummary: { relativePath: 'main.cpp' }, status: 'completed',
+      result: { ok: true, exitCode: 0, summary: '编译通过', diagnostics: [], artifacts: [], sideEffects: [], retryable: false, durationMs: 12 },
+      startedAt: now, finishedAt: now, durationMs: 12
     }
 
     db.createAgentRun(run)
     db.appendTimeline(timeline)
     db.saveApproval(approval)
+    db.saveToolCall(toolCall)
     db.close()
 
     const reopened = new AppDatabase(file)
-    expect(reopened.getAgentRun(run.id)).toMatchObject({ id: run.id, timeline: [timeline], approvals: [approval] })
+    expect(reopened.getAgentRun(run.id)).toMatchObject({ id: run.id, timeline: [timeline], approvals: [approval], toolCalls: [toolCall] })
     reopened.close()
+  })
+
+  it('recovers unfinished runs as readable cancelled timelines without replaying work', () => {
+    const { file, db } = setup()
+    const approval: Approval = {
+      id: crypto.randomUUID(), runId: crypto.randomUUID(), stepId: 'patch', toolName: 'workspace.apply_patch', risk: 'L2',
+      title: '应用修改', description: '修改 main.cpp', parameterSummary: { relativePath: 'main.cpp' }, sideEffects: ['write-file'],
+      status: 'pending', createdAt: now
+    }
+    const run: AgentRun = {
+      id: approval.runId, requestId: crypto.randomUUID(), source: 'editor', mode: 'diagnose', message: '修复错误',
+      status: 'waiting-approval', steps: [], pendingApproval: approval, createdAt: now, updatedAt: now
+    }
+    db.createAgentRun(run)
+    db.saveApproval(approval)
+    db.close()
+
+    const reopened = new AppDatabase(file)
+    try {
+      const recovered = reopened.recoverInterruptedAgentRuns('2026-07-17T00:00:00.000Z')
+      const detail = reopened.getAgentRun(run.id)
+
+      expect(recovered).toHaveLength(1)
+      expect(detail).toMatchObject({ status: 'cancelled', errorCode: 'RUN_INTERRUPTED' })
+      expect(detail?.pendingApproval).toBeUndefined()
+      expect(detail?.timeline.at(-1)).toMatchObject({ kind: 'cancelled', status: 'cancelled', title: '任务在重启后恢复为只读记录' })
+      expect(detail?.approvals[0]).toMatchObject({ status: 'expired' })
+    } finally {
+      reopened.close()
+    }
   })
 
   it('persists knowledge, errors and due reviews', () => {
@@ -95,7 +180,30 @@ describe('H3 persistence', () => {
 
     expect(db.applyLearningEvent(event)).toBe(true)
     expect(db.applyLearningEvent({ ...event, id: crypto.randomUUID() })).toBe(false)
+    const definition: AchievementDefinition = {
+      id: 'first-fix', title: '第一次修复', description: '首次验证修复', icon: 'wrench',
+      rule: { eventType: 'error-resolved', threshold: 1 }, xpReward: 10
+    }
+    db.seedAchievementDefinitions([definition])
+    expect(db.awardAchievement({ userId: 'local-user', achievementId: definition.id, sourceEventId: event.sourceEventId, unlockedAt: now })).toBe(true)
+    expect(db.awardAchievement({ userId: 'local-user', achievementId: definition.id, sourceEventId: event.sourceEventId, unlockedAt: now })).toBe(false)
     expect(db.getLearnerSummary('local-user')).toMatchObject({ xp: 20, level: 1, growthStage: 1 })
+    expect(db.getLearnerSummary('local-user').achievements.map(item => item.achievementId)).toContain('first-fix')
+    db.close()
+  })
+
+  it('persists model profiles without storing an API key', () => {
+    const { db } = setup()
+    const profile: ModelProfile = {
+      id: crypto.randomUUID(), name: 'OpenAI compatible', baseUrl: 'https://models.example/v1', model: 'teacher',
+      enabled: true, timeoutMs: 30_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
+    }
+    db.saveModelProfile(profile)
+    expect(db.listModelProfiles()).toEqual([profile])
+    const columns = db.db.pragma('table_info(model_profiles)') as Array<{ name: string }>
+    expect(columns.map(column => column.name)).not.toContain('api_key')
+    db.removeModelProfile(profile.id)
+    expect(db.listModelProfiles()).toEqual([])
     db.close()
   })
 })

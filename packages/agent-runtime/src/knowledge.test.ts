@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LearnerKnowledge } from '@cpp-pet/contracts'
-import { builtInKnowledge, KnowledgeGate, validateKnowledgeGraph } from './knowledge'
+import { builtInKnowledge, KnowledgeGate, transitionKnowledge, validateKnowledgeGraph } from './knowledge'
 
 const now = new Date().toISOString()
 
@@ -30,5 +30,21 @@ describe('KnowledgeGate', () => {
     const result = new KnowledgeGate(builtInKnowledge).check(['control.loops', 'stl.algorithm'], [state], { allowRewrite: true })
     expect(result.decision).toBe('rewrite')
     expect(result.blocked).toContain('stl.algorithm')
+  })
+
+  it('only starts concepts whose prerequisites are already active', () => {
+    expect(transitionKnowledge('local-user', builtInKnowledge, [], 'basics.program', 'learning').status).toBe('learning')
+    expect(() => transitionKnowledge('local-user', builtInKnowledge, [], 'stl.vector', 'learning')).toThrow('前置概念')
+    const prerequisites: LearnerKnowledge[] = [
+      { userId: 'local-user', conceptId: 'generic.templates', status: 'learning', confidence: 0.5, updatedAt: now },
+      { userId: 'local-user', conceptId: 'data.arrays', status: 'verified', confidence: 1, verifiedAt: now, updatedAt: now }
+    ]
+    expect(transitionKnowledge('local-user', builtInKnowledge, prerequisites, 'stl.vector', 'learning').status).toBe('learning')
+  })
+
+  it('allows self-claim only after a concept has entered learning', () => {
+    expect(() => transitionKnowledge('local-user', builtInKnowledge, [], 'basics.program', 'self-claimed')).toThrow('学习中')
+    const learning: LearnerKnowledge = { userId: 'local-user', conceptId: 'basics.program', status: 'learning', confidence: 0.5, updatedAt: now }
+    expect(transitionKnowledge('local-user', builtInKnowledge, [learning], 'basics.program', 'self-claimed').status).toBe('self-claimed')
   })
 })

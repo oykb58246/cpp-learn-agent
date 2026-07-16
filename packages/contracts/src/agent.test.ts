@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   agentRunSchema,
+  agentStartRequestSchema,
   approvalDecisionSchema,
   approvalSchema,
   contextPacketSchema,
   timelineEventSchema,
+  toolCallSchema,
   toolResultSchema
 } from './agent'
 import { ipc } from './ipc'
@@ -17,6 +19,8 @@ describe('H3 agent contracts', () => {
     expect(ipc.agentChanged).toBe('agent:changed')
     expect(ipc.approvalDecide).toBe('approval:decide')
     expect(ipc.learningSummary).toBe('learning:summary')
+    expect(ipc.learningCatalog).toBe('learning:catalog')
+    expect(ipc.petChanged).toBe('pet:changed')
     expect(Object.values(ipc)).not.toContain('mcp:call-tool')
   })
 
@@ -47,12 +51,15 @@ describe('H3 agent contracts', () => {
       title: '修改 main.cpp',
       description: '应用已预览的局部修改',
       parameterSummary: { projectId: 'project', relativePath: 'main.cpp' },
+      diff: '--- a/main.cpp\n+++ b/main.cpp\n@@ -1 +1 @@\n-return 0;\n+return 1;',
       sideEffects: ['write-file'],
       status: 'pending',
       createdAt: now
     })
 
     expect(approval.status).toBe('pending')
+    expect((approval as { diff?: string }).diff).toContain('+return 1;')
+    expect(approvalSchema.safeParse({ ...approval, diff: 'x'.repeat(100_001) }).success).toBe(false)
     expect(approvalDecisionSchema.safeParse({ approvalId: approval.id, decision: 'approved' }).success).toBe(true)
     expect(approvalDecisionSchema.safeParse({ decision: 'approved' }).success).toBe(false)
   })
@@ -86,6 +93,33 @@ describe('H3 agent contracts', () => {
     }).success).toBe(false)
   })
 
+  it('accepts bounded editor diagnostics as request context', () => {
+    const request = agentStartRequestSchema.parse({
+      source: 'editor', mode: 'diagnose', message: '解释当前错误',
+      diagnostics: [{
+        source: 'compiler', severity: 'error', rawMessage: 'expected ;', normalizedMessage: '缺少分号', relatedConceptIds: ['basics.statements']
+      }]
+    })
+
+    expect(request.diagnostics).toHaveLength(1)
+    const diagnostic = request.diagnostics?.[0]
+    expect(diagnostic).toBeDefined()
+    expect(agentStartRequestSchema.safeParse({ ...request, diagnostics: Array.from({ length: 201 }, () => diagnostic!) }).success).toBe(false)
+  })
+
+  it('requires a concrete review item for review requests', () => {
+    const reviewItemId = crypto.randomUUID()
+    const request = agentStartRequestSchema.parse({
+      source: 'main', mode: 'review', message: '复习循环边界', reviewItemId, reviewOutcome: 'passed'
+    })
+
+    expect(request.reviewItemId).toBe(reviewItemId)
+    expect(request.reviewOutcome).toBe('passed')
+    expect(agentStartRequestSchema.safeParse({ source: 'main', mode: 'review', message: '复习循环边界', reviewItemId }).success).toBe(false)
+    expect(agentStartRequestSchema.safeParse({ source: 'main', mode: 'chat', message: '解释循环', reviewItemId }).success).toBe(false)
+    expect(agentStartRequestSchema.safeParse({ source: 'main', mode: 'chat', message: '解释循环', reviewOutcome: 'failed' }).success).toBe(false)
+  })
+
   it('records timeline events with structured evidence', () => {
     const event = timelineEventSchema.parse({
       id: crypto.randomUUID(),
@@ -99,5 +133,17 @@ describe('H3 agent contracts', () => {
       data: { exitCode: 0 }
     })
     expect(event.kind).toBe('validation')
+  })
+
+  it('validates auditable tool calls with bounded parameters and results', () => {
+    const call = toolCallSchema.parse({
+      id: crypto.randomUUID(), runId: crypto.randomUUID(), stepId: 'build', serverName: 'cpppilot-local-tools',
+      toolName: 'compiler.build', risk: 'L1', parameterSummary: { relativePath: 'main.cpp' }, status: 'completed',
+      result: { ok: true, exitCode: 0, summary: '编译通过', diagnostics: [], artifacts: [], sideEffects: [], retryable: false, durationMs: 12 },
+      startedAt: now, finishedAt: now, durationMs: 12
+    })
+
+    expect(call.toolName).toBe('compiler.build')
+    expect(toolCallSchema.safeParse({ ...call, status: 'unknown' }).success).toBe(false)
   })
 })

@@ -23,8 +23,8 @@ export class H3WorkflowPlanner implements RuntimePlanner {
       steps: [
         step('detect', '检测本机工具链', 'tool', 'toolchain.detect_compilers', 'L0', {}),
         step('probe', '验证推荐编译器', 'tool', 'toolchain.probe_compiler', 'L1', { candidateId: ref('detect', 'candidates.0.id') }),
-        step('bind', '绑定已验证工具链', 'tool', 'toolchain.bind_compiler', 'L2', { candidateId: ref('probe', 'candidateId') }, ['persist-state']),
-        { id: 'respond', title: '报告环境结果', kind: 'respond' }
+        step('bind', '绑定已验证工具链', 'tool', 'toolchain.bind_compiler', 'L2', { candidateId: ref('probe', 'candidate.id') }, ['persist-state']),
+        { id: 'respond', title: '报告环境结果', kind: 'respond', summary: '已完成工具链检测、真实编译探测和绑定，当前 C++ 环境可以用于后续学习任务。' }
       ]
     }
   }
@@ -36,15 +36,15 @@ export class H3WorkflowPlanner implements RuntimePlanner {
         step('parse', '解析项目描述', 'tool', 'problem.parse', 'L0', { statement: request.message }),
         step('create', '创建学习项目', 'tool', 'project.create', 'L2', { mode: 'description', name: projectName(request.message), description: request.message }, ['create-file', 'persist-state']),
         step('build', '验证项目骨架', 'validate', 'compiler.build', 'L1', { runId: request.requestId, projectId: ref('create', 'projectId'), relativePath: ref('create', 'relativePath'), standard: 'c++17' }),
-        { id: 'respond', title: '报告项目结果', kind: 'respond' }
+        { id: 'respond', title: '报告项目结果', kind: 'respond', summary: '学习项目骨架已经创建，并通过真实编译验证。' }
       ]
     }
   }
 
   private explain(request: ResolvedAgentRequest): RuntimePlan {
     const steps: RuntimePlanStep[] = []
-    if (request.projectId && request.activeFile) steps.push(step('read', '读取最小文件上下文', 'tool', 'workspace.read_file', 'L0', { projectId: request.projectId, relativePath: request.activeFile }))
-    steps.push({ id: 'respond', title: '按已学概念解释', kind: 'respond' })
+    if (!request.selection && request.projectId && request.activeFile) steps.push(step('read', '读取最小文件上下文', 'tool', 'workspace.read_file', 'L0', { projectId: request.projectId, relativePath: request.activeFile }))
+    steps.push({ id: 'respond', title: '按已学概念解释', kind: 'respond', summary: explainCode(request.selection?.content ?? request.message) })
     return { intent: 'explain-selection', conceptIds: inferConcepts(request.message), successCriteria: ['teaching response produced'], source: 'offline', steps }
   }
 
@@ -57,10 +57,14 @@ export class H3WorkflowPlanner implements RuntimePlanner {
       steps: [
         step('read', '读取当前文件', 'tool', 'workspace.read_file', 'L0', { projectId: request.projectId, relativePath: request.activeFile }),
         { ...step('build-failure', '编译并收集错误', 'tool', 'compiler.build', 'L1', { runId: request.requestId, projectId: request.projectId, relativePath: request.activeFile, standard: 'c++17' }), continueOnFailure: true },
-        step('patch', '应用最小修复', 'tool', 'workspace.apply_patch', 'L2', { projectId: request.projectId, relativePath: request.activeFile, expectedHash: ref('read', 'hash'), content: fixed }, ['write-file']),
+        step('patch', '应用最小修复', 'tool', 'workspace.apply_patch', 'L2', { projectId: request.projectId, relativePath: request.activeFile, expectedHash: ref('read', 'contentHash'), content: fixed }, ['write-file']),
         step('rebuild', '重新编译验证', 'validate', 'compiler.build', 'L1', { runId: request.requestId, projectId: request.projectId, relativePath: request.activeFile, standard: 'c++17' }),
-        { id: 'learning', title: '记录错误修复证据', kind: 'learning' },
-        { id: 'respond', title: '解释根因与修复', kind: 'respond' }
+        step('learning', '记录错误修复证据', 'learning', 'learning.record_error', 'L2', {
+          userId: 'local-user', projectId: request.projectId, relativePath: request.activeFile,
+          category: 'compile', title: '编译错误修复', evidenceId: request.requestId,
+          evidence: '重新编译通过', conceptIds: inferConcepts(`${request.message}\n${source}`), status: 'resolved'
+        }, ['persist-state']),
+        { id: 'respond', title: '解释根因与修复', kind: 'respond', summary: '首次编译证据定位到语句结束符问题；应用最小修改后，重新编译已经通过。' }
       ]
     }
   }
@@ -75,11 +79,15 @@ export class H3WorkflowPlanner implements RuntimePlanner {
         step('read', '读取当前文件', 'tool', 'workspace.read_file', 'L0', { projectId: request.projectId, relativePath: request.activeFile }),
         step('build', '编译当前程序', 'tool', 'compiler.build', 'L1', { runId: request.requestId, projectId: request.projectId, relativePath: request.activeFile, standard: 'c++17' }),
         step('generate', '生成边界测试', 'tool', 'tests.generate_cases', 'L0', { statement: request.message, count: 5 }),
-        step('cases-before', '运行并寻找反例', 'tool', 'tests.run_cases', 'L2', { runId: request.requestId, projectId: request.projectId, relativePath: request.activeFile, cases: ref('generate', 'cases') }, ['run-program']),
-        step('patch', '应用边界修复', 'tool', 'workspace.apply_patch', 'L2', { projectId: request.projectId, relativePath: request.activeFile, expectedHash: ref('read', 'hash'), content: fixed }, ['write-file']),
+        { ...step('cases-before', '运行并寻找反例', 'tool', 'tests.run_cases', 'L2', { runId: request.requestId, projectId: request.projectId, relativePath: request.activeFile, cases: ref('generate', 'cases') }, ['run-program']), continueOnFailure: true },
+        step('patch', '应用边界修复', 'tool', 'workspace.apply_patch', 'L2', { projectId: request.projectId, relativePath: request.activeFile, expectedHash: ref('read', 'contentHash'), content: fixed }, ['write-file']),
         step('cases-after', '执行回归测试', 'validate', 'tests.run_cases', 'L2', { runId: request.requestId, projectId: request.projectId, relativePath: request.activeFile, cases: ref('generate', 'cases') }, ['run-program']),
-        { id: 'learning', title: '记录逻辑修复证据', kind: 'learning' },
-        { id: 'respond', title: '解释最小反例', kind: 'respond' }
+        step('learning', '记录逻辑修复证据', 'learning', 'learning.record_error', 'L2', {
+          userId: 'local-user', projectId: request.projectId, relativePath: request.activeFile,
+          category: 'logic', title: '循环边界逻辑错误', evidenceId: request.requestId,
+          evidence: '边界用例回归通过', conceptIds: inferConcepts(`${request.message}\n${source}`), status: 'resolved'
+        }, ['persist-state']),
+        { id: 'respond', title: '解释最小反例', kind: 'respond', summary: '边界用例暴露了循环终止条件的偏差；收紧边界后，回归用例已经全部通过。' }
       ]
     }
   }
@@ -99,22 +107,31 @@ export class H3WorkflowPlanner implements RuntimePlanner {
   }
 
   private review(request: ResolvedAgentRequest): RuntimePlan {
+    const passed = request.reviewOutcome === 'passed'
     return {
       intent: 'review-learning', conceptIds: ['control.loops'], successCriteria: ['review evidence recorded'], source: 'offline',
       steps: [
-        step('state', '读取知识与错误本', 'tool', 'learning.get_state', 'L0', { userId: 'local-user' }),
-        step('update', '更新已验证学习状态', 'learning', 'learning.update_state', 'L2', { userId: 'local-user', conceptId: 'control.loops', status: 'verified', evidenceId: request.requestId }, ['persist-state']),
-        { id: 'respond', title: '生成复习总结', kind: 'respond' }
+        step('state', '读取知识与错误本', 'tool', 'learning.get_state', 'L0', { userId: 'local-user', reviewItemId: request.reviewItemId }),
+        step('update', '更新已验证学习状态', 'learning', 'learning.update_state', 'L2', {
+          userId: 'local-user', conceptId: ref('state', 'reviews.0.conceptId'), status: passed ? 'verified' : 'review', evidenceId: request.requestId,
+          reviewItemId: request.reviewItemId, reviewOutcome: request.reviewOutcome
+        }, ['persist-state']),
+        {
+          id: 'respond', title: '生成复习总结', kind: 'respond',
+          summary: passed
+            ? '本次复习证据已记录，知识状态、复习间隔和成长进度已经同步更新。'
+            : '本次复习已标记为需巩固，复习计划回到第一个间隔，之后可以再次验证。'
+        }
       ]
     }
   }
 
   private chat(): RuntimePlan {
-    return { intent: 'teaching-chat', conceptIds: [], successCriteria: ['safe response'], source: 'offline', steps: [{ id: 'respond', title: '教学回答', kind: 'respond' }] }
+    return { intent: 'teaching-chat', conceptIds: [], successCriteria: ['safe response'], source: 'offline', steps: [{ id: 'respond', title: '教学回答', kind: 'respond', summary: '请提供具体代码、诊断或题目要求，我会按当前学习范围给出可验证的解释。' }] }
   }
 
   private missingProject(intent: string): RuntimePlan {
-    return { intent, conceptIds: [], successCriteria: ['request project context'], source: 'offline', steps: [{ id: 'respond', title: '请求项目与当前文件', kind: 'respond' }] }
+    return { intent, conceptIds: [], successCriteria: ['request project context'], source: 'offline', steps: [{ id: 'respond', title: '请求项目与当前文件', kind: 'respond', summary: '当前任务缺少项目或活动文件，请先在工作区打开需要分析的 C++ 文件。' }] }
   }
 }
 
@@ -131,7 +148,9 @@ function step(
 }
 
 function sourceContent(context: ContextPacket): string {
-  return context.sources.find(source => source.kind === 'selection' || source.kind === 'file')?.content ?? ''
+  return context.sources.find(source => source.kind === 'file')?.content
+    ?? context.sources.find(source => source.kind === 'selection')?.content
+    ?? ''
 }
 
 function fixCompileError(content: string): string {
@@ -158,4 +177,11 @@ function inferConcepts(text: string): string[] {
 function projectName(description: string): string {
   const normalized = description.trim().replace(/[\\/:*?"<>|]/g, '').slice(0, 24)
   return normalized || 'Agent 学习项目'
+}
+
+function explainCode(content: string): string {
+  if (/\breturn\b/.test(content)) return '`return` 会结束当前函数，并把后面的值作为函数结果交给调用者。'
+  if (/\b(?:for|while)\b/.test(content)) return '这段代码通过循环重复执行语句；判断循环边界时需要确认起点、终点和步长。'
+  if (/\b(?:std::)?cout\b/.test(content)) return '这段代码使用输出流把值写到标准输出，`<<` 表示依次写入内容。'
+  return `当前选区共 ${Math.max(1, content.split(/\r?\n/).length)} 行；可以从表达式求值顺序和变量作用域逐步阅读。`
 }
