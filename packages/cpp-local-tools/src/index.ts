@@ -16,6 +16,8 @@ import type {
   ToolchainProfile
 } from '@cpp-pet/contracts'
 
+export * from './mcp/index'
+
 export class ToolExecutionError extends Error {
   constructor(readonly code: string, message: string, readonly userAction: string, readonly retryable = false) {
     super(message)
