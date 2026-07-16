@@ -1,0 +1,225 @@
+import { z } from 'zod'
+import { diagnosticSchema } from './future'
+
+const timestampSchema = z.string().datetime()
+const jsonPrimitiveSchema = z.union([z.string(), z.number(), z.boolean(), z.null()])
+export const jsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.union([
+  jsonPrimitiveSchema,
+  z.array(jsonValueSchema),
+  z.record(z.string(), jsonValueSchema)
+]))
+
+export const agentRunStatusSchema = z.enum([
+  'queued',
+  'contextualizing',
+  'planning',
+  'policy-check',
+  'waiting-approval',
+  'executing',
+  'validating',
+  'responding',
+  'completed',
+  'failed',
+  'cancelled'
+])
+export type AgentRunStatus = z.infer<typeof agentRunStatusSchema>
+
+export const agentStepKindSchema = z.enum(['reason', 'resource', 'tool', 'approval', 'validate', 'respond', 'learning'])
+export const agentStepStatusSchema = z.enum(['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled'])
+
+export const agentStepSchema = z.object({
+  id: z.string().min(1).max(100),
+  sequence: z.number().int().nonnegative(),
+  title: z.string().min(1).max(200),
+  kind: agentStepKindSchema,
+  status: agentStepStatusSchema,
+  toolName: z.string().min(1).max(120).optional(),
+  summary: z.string().max(20_000).optional(),
+  startedAt: timestampSchema.optional(),
+  finishedAt: timestampSchema.optional()
+})
+export type AgentStep = z.infer<typeof agentStepSchema>
+
+export const contextSourceSchema = z.object({
+  kind: z.enum(['selection', 'file', 'diagnostic', 'problem', 'project-tree', 'learning', 'memory', 'screenshot', 'tool']),
+  label: z.string().min(1).max(500),
+  content: z.string().max(100_000),
+  trusted: z.boolean(),
+  projectId: z.string().uuid().optional(),
+  relativePath: z.string().max(1_024).optional(),
+  metadata: z.record(z.string(), jsonValueSchema).optional()
+})
+export type ContextSource = z.infer<typeof contextSourceSchema>
+
+export const contextPacketSchema = z.object({
+  requestId: z.string().uuid(),
+  sources: z.array(contextSourceSchema).max(32),
+  conceptIds: z.array(z.string().min(1).max(100)).max(100),
+  tokenEstimate: z.number().int().nonnegative().max(100_000),
+  truncated: z.boolean().default(false)
+})
+export type ContextPacket = z.infer<typeof contextPacketSchema>
+
+export const toolRiskSchema = z.enum(['L0', 'L1', 'L2', 'L3'])
+export type ToolRisk = z.infer<typeof toolRiskSchema>
+
+export const toolDescriptorSchema = z.object({
+  name: z.string().min(1).max(120),
+  title: z.string().min(1).max(200),
+  description: z.string().min(1).max(2_000),
+  risk: toolRiskSchema,
+  timeoutMs: z.number().int().positive().max(300_000),
+  owner: z.string().min(1).max(100),
+  inputSchema: z.record(z.string(), jsonValueSchema)
+})
+export type ToolDescriptor = z.infer<typeof toolDescriptorSchema>
+
+export const artifactRefSchema = z.object({
+  id: z.string().min(1).max(200),
+  kind: z.enum(['file', 'build', 'test-report', 'diagnostic', 'snapshot', 'screenshot', 'trace']),
+  label: z.string().min(1).max(500),
+  uri: z.string().max(2_048).optional()
+})
+export type ArtifactRef = z.infer<typeof artifactRefSchema>
+
+export const sideEffectSchema = z.object({
+  kind: z.enum(['write-file', 'create-file', 'delete-file', 'run-program', 'start-debugger', 'persist-state', 'remote-request']),
+  target: z.string().min(1).max(2_048),
+  summary: z.string().min(1).max(2_000)
+})
+export type SideEffect = z.infer<typeof sideEffectSchema>
+
+export const toolResultSchema = z.object({
+  ok: z.boolean(),
+  exitCode: z.number().int().nullable(),
+  summary: z.string().max(20_000),
+  structuredContent: jsonValueSchema.optional(),
+  diagnostics: z.array(diagnosticSchema).max(1_000),
+  artifacts: z.array(artifactRefSchema).max(100),
+  sideEffects: z.array(sideEffectSchema).max(100),
+  retryable: z.boolean(),
+  errorCode: z.string().max(100).optional(),
+  durationMs: z.number().int().nonnegative()
+})
+export type ToolResult<T = unknown> = Omit<z.infer<typeof toolResultSchema>, 'structuredContent'> & { structuredContent?: T }
+
+export const approvalSchema = z.object({
+  id: z.string().uuid(),
+  runId: z.string().uuid(),
+  stepId: z.string().min(1).max(100),
+  toolName: z.string().min(1).max(120),
+  risk: toolRiskSchema,
+  title: z.string().min(1).max(200),
+  description: z.string().min(1).max(2_000),
+  parameterSummary: z.record(z.string(), jsonValueSchema),
+  sideEffects: z.array(z.string().min(1).max(500)).max(100),
+  status: z.enum(['pending', 'approved', 'rejected', 'expired']),
+  decisionReason: z.string().max(2_000).optional(),
+  createdAt: timestampSchema,
+  decidedAt: timestampSchema.optional()
+})
+export type Approval = z.infer<typeof approvalSchema>
+
+export const approvalDecisionSchema = z.object({
+  approvalId: z.string().uuid(),
+  decision: z.enum(['approved', 'rejected']),
+  reason: z.string().max(2_000).optional(),
+  rememberForRun: z.boolean().default(false)
+})
+export type ApprovalDecision = z.input<typeof approvalDecisionSchema>
+
+export const timelineEventSchema = z.object({
+  id: z.string().uuid(),
+  runId: z.string().uuid(),
+  sequence: z.number().int().nonnegative(),
+  kind: z.enum(['request', 'intent', 'context', 'plan', 'policy', 'approval', 'tool', 'progress', 'validation', 'response', 'learning', 'error', 'cancelled']),
+  status: z.enum(['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled']),
+  title: z.string().min(1).max(200),
+  summary: z.string().max(20_000),
+  occurredAt: timestampSchema,
+  stepId: z.string().max(100).optional(),
+  data: z.record(z.string(), jsonValueSchema).optional()
+})
+export type TimelineEvent = z.infer<typeof timelineEventSchema>
+
+export const agentRunSchema = z.object({
+  id: z.string().uuid(),
+  requestId: z.string().uuid(),
+  source: z.enum(['main', 'editor', 'pet', 'screenshot', 'system']),
+  mode: z.enum(['environment', 'explain', 'diagnose', 'solve', 'project', 'review', 'chat']),
+  message: z.string().min(1).max(20_000),
+  projectId: z.string().uuid().optional(),
+  activeFile: z.string().max(1_024).optional(),
+  status: agentRunStatusSchema,
+  intent: z.string().max(200).optional(),
+  planSummary: z.string().max(20_000).optional(),
+  response: z.string().max(100_000).optional(),
+  validationSummary: z.string().max(20_000).optional(),
+  errorCode: z.string().max(100).optional(),
+  errorMessage: z.string().max(20_000).optional(),
+  steps: z.array(agentStepSchema).max(12),
+  pendingApproval: approvalSchema.optional(),
+  createdAt: timestampSchema,
+  updatedAt: timestampSchema,
+  completedAt: timestampSchema.optional()
+})
+export type AgentRun = z.infer<typeof agentRunSchema>
+
+export const agentRunDetailSchema = agentRunSchema.extend({
+  timeline: z.array(timelineEventSchema),
+  approvals: z.array(approvalSchema)
+})
+export type AgentRunDetail = z.infer<typeof agentRunDetailSchema>
+
+export const screenshotRefSchema = z.object({
+  id: z.string().uuid(),
+  previewDataUrl: z.string().startsWith('data:image/').max(5_000_000),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  createdAt: timestampSchema
+})
+export type ScreenshotRef = z.infer<typeof screenshotRefSchema>
+
+export const agentStartRequestSchema = z.object({
+  requestId: z.string().uuid().default(() => crypto.randomUUID()),
+  source: z.enum(['main', 'editor', 'pet', 'screenshot', 'system']),
+  mode: z.enum(['environment', 'explain', 'diagnose', 'solve', 'project', 'review', 'chat']),
+  message: z.string().min(1).max(20_000),
+  projectId: z.string().uuid().optional(),
+  activeFile: z.string().max(1_024).optional(),
+  selection: z.object({
+    startLine: z.number().int().positive(),
+    startColumn: z.number().int().positive(),
+    endLine: z.number().int().positive(),
+    endColumn: z.number().int().positive(),
+    content: z.string().max(100_000)
+  }).optional(),
+  screenshot: screenshotRefSchema.optional()
+})
+export type AgentStartRequest = z.input<typeof agentStartRequestSchema>
+
+export const modelProfileSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  baseUrl: z.string().url().max(2_048),
+  model: z.string().min(1).max(200),
+  enabled: z.boolean(),
+  timeoutMs: z.number().int().min(1_000).max(120_000),
+  apiKeyConfigured: z.boolean(),
+  createdAt: timestampSchema,
+  updatedAt: timestampSchema
+})
+export type ModelProfile = z.infer<typeof modelProfileSchema>
+
+export const modelProfileInputSchema = z.object({
+  id: z.string().uuid().optional(),
+  name: z.string().min(1).max(100),
+  baseUrl: z.string().url().max(2_048),
+  model: z.string().min(1).max(200),
+  enabled: z.boolean().default(true),
+  timeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
+  apiKey: z.string().min(1).max(10_000).optional()
+})
+export type ModelProfileInput = z.input<typeof modelProfileInputSchema>
+

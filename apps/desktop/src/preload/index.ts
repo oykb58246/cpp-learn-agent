@@ -69,6 +69,34 @@ const api: CppPetApi = {
     run: input => invoke(ipc.programRun, input),
     stop: input => invoke(ipc.programStop, input)
   },
+  agent: {
+    start: input => invoke(ipc.agentStart, input),
+    get: input => invoke(ipc.agentGet, input),
+    list: input => invoke(ipc.agentList, input),
+    cancel: input => invoke(ipc.agentCancel, input),
+    onChanged: listener => {
+      const wrapped = (_: unknown, run: Parameters<typeof listener>[0]) => listener(run)
+      ipcRenderer.on(ipc.agentChanged, wrapped)
+      return () => ipcRenderer.removeListener(ipc.agentChanged, wrapped)
+    }
+  },
+  approvals: {
+    decide: input => invoke(ipc.approvalDecide, input)
+  },
+  learning: {
+    knowledge: input => invoke(ipc.learningKnowledge, input),
+    updateKnowledge: input => invoke(ipc.learningUpdateKnowledge, input),
+    errors: input => invoke(ipc.learningErrors, input),
+    reviews: input => invoke(ipc.learningReviews, input),
+    summary: input => invoke(ipc.learningSummary, input)
+  },
+  model: {
+    list: () => invoke(ipc.modelList),
+    save: input => invoke(ipc.modelSave, input),
+    remove: input => invoke(ipc.modelRemove, input),
+    clearKey: input => invoke(ipc.modelClearKey, input),
+    test: input => invoke(ipc.modelTest, input)
+  },
   mocks: { getDashboard: () => invoke(ipc.mockDashboard) }
 }
 contextBridge.exposeInMainWorld('cppPet', api)

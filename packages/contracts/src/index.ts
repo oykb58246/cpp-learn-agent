@@ -36,8 +36,26 @@ import type {
   VscodeOpenRequest,
   VscodeOpenResult
 } from './future'
+import type {
+  AgentRun,
+  AgentRunDetail,
+  AgentRunStatus,
+  AgentStartRequest,
+  ApprovalDecision,
+  ModelProfile,
+  ModelProfileInput
+} from './agent'
+import type {
+  ErrorBookEntry,
+  KnowledgeStatus,
+  LearnerKnowledge,
+  LearnerSummary,
+  ReviewItem
+} from './learning'
 export { ipc } from './ipc'
 export * from './future'
+export * from './agent'
+export * from './learning'
 
 export const themeSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themeSchema>
@@ -268,6 +286,30 @@ export interface CppPetApi {
   program: {
     run(input: ProgramRunRequest): Promise<ApiResult<ProgramRunResult>>
     stop(input: ProgramStopRequest): Promise<ApiResult<ProgramStopResult>>
+  }
+  agent: {
+    start(input: AgentStartRequest): Promise<ApiResult<AgentRun>>
+    get(input: { runId: string }): Promise<ApiResult<AgentRunDetail>>
+    list(input?: { status?: AgentRunStatus; projectId?: string; limit?: number }): Promise<ApiResult<AgentRun[]>>
+    cancel(input: { runId: string }): Promise<ApiResult<AgentRun>>
+    onChanged(listener: (run: AgentRun) => void): () => void
+  }
+  approvals: {
+    decide(input: ApprovalDecision): Promise<ApiResult<AgentRun>>
+  }
+  learning: {
+    knowledge(input?: { userId?: string }): Promise<ApiResult<LearnerKnowledge[]>>
+    updateKnowledge(input: { userId?: string; conceptId: string; status: KnowledgeStatus }): Promise<ApiResult<LearnerKnowledge>>
+    errors(input?: { userId?: string; status?: ErrorBookEntry['status'] }): Promise<ApiResult<ErrorBookEntry[]>>
+    reviews(input?: { userId?: string; dueOnly?: boolean }): Promise<ApiResult<ReviewItem[]>>
+    summary(input?: { userId?: string }): Promise<ApiResult<LearnerSummary>>
+  }
+  model: {
+    list(): Promise<ApiResult<ModelProfile[]>>
+    save(input: ModelProfileInput): Promise<ApiResult<ModelProfile>>
+    remove(input: { profileId: string }): Promise<ApiResult<void>>
+    clearKey(input: { profileId: string }): Promise<ApiResult<ModelProfile>>
+    test(input: { profileId: string }): Promise<ApiResult<{ ok: boolean; latencyMs: number; detail: string }>>
   }
   mocks: { getDashboard(): Promise<ApiResult<MockDashboard>> }
 }

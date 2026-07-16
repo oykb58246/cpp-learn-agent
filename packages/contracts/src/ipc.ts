@@ -25,5 +25,11 @@ export const ipc = {
   languageDefinition: 'language:definition', languageDiagnostics: 'language:diagnostics',
   debugStart: 'debug:start', debugCommand: 'debug:command',
   programRun: 'program:run', programStop: 'program:stop',
+  agentStart: 'agent:start', agentGet: 'agent:get', agentList: 'agent:list', agentCancel: 'agent:cancel',
+  agentChanged: 'agent:changed', approvalDecide: 'approval:decide',
+  learningKnowledge: 'learning:knowledge', learningUpdateKnowledge: 'learning:update-knowledge',
+  learningErrors: 'learning:errors', learningReviews: 'learning:reviews', learningSummary: 'learning:summary',
+  modelList: 'model:list', modelSave: 'model:save', modelRemove: 'model:remove',
+  modelClearKey: 'model:clear-key', modelTest: 'model:test',
   mockDashboard: 'mocks:get-dashboard'
 } as const
