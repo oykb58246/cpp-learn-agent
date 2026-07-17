@@ -29,6 +29,13 @@ export async function startStreamingModelFixture(): Promise<StreamingModelFixtur
       connection: 'close'
     })
     const send = (content: string) => response.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`)
+    if (prompt.includes('Markdown 渲染测试')) {
+      send('## 修复建议\n\n**粗体结论** 和 `inline code`\n\n```cpp\nstd::cout << "ok";\n```\n\n> 引用说明\n\n- 列表项\n\n| 项目 | 状态 |\n| --- | --- |\n| Markdown | 正常 |\n\n')
+      await new Promise(resolve => setTimeout(resolve, 25))
+      send('<img src="x" onerror="document.body.dataset.markdownXss = \'yes\'"><script>document.body.dataset.markdownScript = \'yes\'</script><a href="javascript:alert(1)">恶意链接</a>')
+      response.end('data: [DONE]\n\n')
+      return
+    }
     if (prompt.includes('停止测试') && !slowStopResponseServed) {
       slowStopResponseServed = true
       send('这是一段尚未完成的回答')

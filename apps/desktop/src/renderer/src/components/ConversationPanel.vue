@@ -4,6 +4,7 @@ import { Archive, Bot, MessageSquarePlus, RotateCcw, Settings, X } from 'lucide-
 import { useRouter } from 'vue-router'
 import type { AgentStartRequest, Diagnostic } from '@cpp-pet/contracts'
 import type { AgentEditorSelection } from '../utils/editor-selection'
+import { renderMarkdown } from '../utils/markdown'
 import { useAgentStore } from '../stores/agent'
 import AgentComposer from './AgentComposer.vue'
 
@@ -85,7 +86,8 @@ async function archiveCurrent() {
       </div>
       <article v-for="item in agent.messages" v-else :key="item.id" :class="['conversation-message', item.role, item.status]">
         <div class="message-meta"><strong>{{ item.role === 'user' ? '你' : 'CppPilot' }}</strong><span>{{ item.status === 'streaming' ? '回答中' : item.status === 'stopped' ? '已停止' : item.status === 'failed' ? '请求失败' : item.status === 'interrupted' ? '已中断' : '' }}</span></div>
-        <p v-if="item.content">{{ item.content }}</p>
+        <div v-if="item.content && item.role === 'assistant'" class="message-markdown" v-html="renderMarkdown(item.content)" />
+        <p v-else-if="item.content">{{ item.content }}</p>
         <p v-else-if="item.status === 'pending' || item.status === 'streaming'" class="message-thinking">正在组织回答…</p>
         <div v-if="item.errorMessage" class="message-error">
           <span>{{ item.errorMessage }}</span>

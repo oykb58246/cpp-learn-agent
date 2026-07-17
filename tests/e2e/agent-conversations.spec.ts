@@ -221,6 +221,46 @@ test('persists a grouped diagnostic inbox and explains it in a streamed project 
   await electronApp.close()
 })
 
+test('renders assistant Markdown and removes unsafe HTML', async () => {
+  const electronApp = await launch(join(temp, 'markdown-user-data'))
+  try {
+    const page = await electronApp.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    const prepared = await prepare(page)
+    expect(prepared).toHaveProperty('projectId')
+    await page.evaluate(() => window.cppPet.settings.update({ theme: 'dark' }))
+    await openProject(page, (prepared as { projectId: string }).projectId)
+    await expect(page.locator('html')).toHaveClass(/dark/)
+
+    await page.getByRole('button', { name: /Agent/ }).click()
+    await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('Markdown 渲染测试')
+    await page.getByRole('button', { name: '发送', exact: true }).click()
+
+    const reply = page.locator('.conversation-message.assistant').last()
+    await expect(reply.locator('.message-markdown')).toBeVisible({ timeout: 30_000 })
+    await expect(reply.getByRole('heading', { name: '修复建议' })).toBeVisible()
+    await expect(reply.locator('.message-markdown strong')).toHaveText('粗体结论')
+    await expect(reply.locator('code').filter({ hasText: 'inline code' })).toBeVisible()
+    await expect(reply.locator('pre code.language-cpp')).toContainText('std::cout')
+    await expect(reply.locator('blockquote')).toContainText('引用说明')
+    await expect(reply.locator('li')).toHaveText('列表项')
+    await expect(reply.locator('table')).toContainText('Markdown')
+    await expect(reply.locator('img, script')).toHaveCount(0)
+    await expect(reply.getByText('恶意链接')).not.toHaveAttribute('href', /.+/)
+    expect(await page.evaluate(() => ({ xss: document.body.dataset.markdownXss, script: document.body.dataset.markdownScript }))).toEqual({})
+    await capture(electronApp, page, 'agent-markdown-dark-1440x900.png')
+
+    const browserWindow = await electronApp.browserWindow(page)
+    await browserWindow.evaluate(win => win.setSize(1024, 720))
+    await page.waitForTimeout(250)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    expect(await reply.locator('.message-markdown').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+    await capture(electronApp, page, 'agent-markdown-dark-1024x720.png')
+  } finally {
+    await electronApp.close()
+  }
+})
+
 test('keeps conversations isolated by project and supports stopping then retrying a stream', async () => {
   test.setTimeout(120_000)
   const electronApp = await launch(join(temp, 'isolation-user-data'))

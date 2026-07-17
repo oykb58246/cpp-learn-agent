@@ -38,12 +38,18 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)
+      dompurify:
+        specifier: 3.2.7
+        version: 3.2.7
       element-plus:
         specifier: ^2.14.3
         version: 2.14.3(vue@3.5.39(typescript@5.9.3))
       lucide-vue-next:
         specifier: ^0.468.0
         version: 0.468.0(vue@3.5.39(typescript@5.9.3))
+      marked:
+        specifier: 14.0.0
+        version: 14.0.0
       monaco-editor:
         specifier: ^0.55.1
         version: 0.55.1
