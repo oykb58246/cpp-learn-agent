@@ -8,7 +8,6 @@ import {
   Bot,
   Boxes,
   Bug,
-  Camera,
   CheckCheck,
   CornerDownRight,
   Copy,
@@ -57,6 +56,7 @@ import ApprovalCard from '../components/ApprovalCard.vue'
 import ConversationPanel from '../components/ConversationPanel.vue'
 import DiagnosticInboxPopover from '../components/DiagnosticInboxPopover.vue'
 import RunTimeline from '../components/RunTimeline.vue'
+import SnapshotPopover from '../components/SnapshotPopover.vue'
 import { useAppStore } from '../stores/app'
 import { useAgentStore } from '../stores/agent'
 import { useWorkspaceStore } from '../stores/workspace'
@@ -71,8 +71,7 @@ const router = useRouter()
 const workspaceView = ref<HTMLElement | null>(null)
 const dialog = ref(false)
 const search = ref('')
-const snapshotLabel = ref('')
-const inspectorOpen = ref(true)
+const snapshotOpen = ref(false)
 const contextNode = ref<FileTreeNode | null>(null)
 const contextPos = ref({ x: 0, y: 0 })
 const active = computed(() => store.activeTab)
@@ -236,6 +235,7 @@ watch(
 )
 watch(() => store.currentProject?.id, async id => {
   inboxOpen.value = false
+  snapshotOpen.value = false
   languageDiagnostics.value = {}
   languageAvailable.value = false
   languageStatusText.value = id ? '正在检测 clangd…' : ''
@@ -256,7 +256,7 @@ function clamp(value: number, min: number, max: number) {
 function resizeLimit(target: ResizeTarget) {
   const width = workspaceView.value?.clientWidth ?? window.innerWidth
   const height = workspaceView.value?.clientHeight ?? window.innerHeight
-  if (target === 'sidebar') return { min: 180, max: Math.min(480, width - (inspectorOpen.value ? inspectorWidth.value : 0) - minimumEditorWidth) }
+  if (target === 'sidebar') return { min: 180, max: Math.min(480, width - (agentOpen.value ? inspectorWidth.value : 0) - minimumEditorWidth) }
   if (target === 'inspector') return { min: 220, max: Math.min(480, width - sidebarWidth.value - minimumEditorWidth) }
   return { min: 120, max: Math.min(560, height - 180) }
 }
@@ -274,7 +274,7 @@ function fitLayoutToViewport() {
     bottomPanelHeight.value = app.settings.bottomPanelHeight
   }
   setResizeValue('sidebar', sidebarWidth.value)
-  if (inspectorOpen.value) setResizeValue('inspector', inspectorWidth.value)
+  if (agentOpen.value) setResizeValue('inspector', inspectorWidth.value)
   if (panelOpen.value) setResizeValue('panel', bottomPanelHeight.value)
 }
 function beginResize(target: ResizeTarget, event: PointerEvent) {
@@ -432,7 +432,7 @@ function beginEntryAction(mode: 'rename' | 'copy' | 'move') {
   closeMenu()
 }
 async function remove() { if (contextNode.value) await store.removeEntry(contextNode.value.relativePath); closeMenu() }
-async function snapshot() { await store.createSnapshot(snapshotLabel.value || '手动快照'); snapshotLabel.value = '' }
+async function snapshot(label: string) { await store.createSnapshot(label) }
 async function submitEntryAction() {
   const value = entryDialog.value.trim()
   if (!value) return
@@ -686,7 +686,7 @@ async function overwriteDisk() {
 </script>
 
 <template>
-  <div ref="workspaceView" :class="['workspace-view', { 'without-inspector': !inspectorOpen }]" :style="layoutStyle">
+  <div ref="workspaceView" :class="['workspace-view', { 'without-inspector': !agentOpen }]" :style="layoutStyle">
     <aside class="workspace-sidebar">
       <div class="sidebar-heading">
         <el-select
@@ -752,8 +752,27 @@ async function overwriteDisk() {
         </button>
         <span class="tabs-spacer" />
         <button class="save-command" :disabled="!active?.dirty || store.saving || active?.conflicted" title="保存" @click="saveActive"><Save :size="15" />{{ store.saving ? '保存中' : '保存' }}</button>
-        <button class="icon-command" title="快照" @click="inspectorOpen = !inspectorOpen"><History :size="16" /></button>
+        <button
+          :class="['icon-command snapshot-toggle', { active: snapshotOpen }]"
+          type="button"
+          title="快照"
+          aria-label="快照"
+          aria-controls="workspace-snapshot-popover"
+          :aria-expanded="snapshotOpen"
+          @click.stop="snapshotOpen = !snapshotOpen"
+        ><History :size="16" /></button>
       </div>
+
+      <SnapshotPopover
+        v-if="snapshotOpen"
+        id="workspace-snapshot-popover"
+        :snapshots="store.snapshots"
+        :project="store.currentProject"
+        @close="snapshotOpen = false"
+        @create="snapshot"
+        @restore="store.restoreSnapshot"
+        @remove="store.removeSnapshot"
+      />
 
       <div class="editor-toolbar">
         <button class="tool-command" :disabled="!canBuild" title="编译当前 C++ 文件" @click="build(false)"><Hammer :size="15" />编译</button>
@@ -847,28 +866,6 @@ async function overwriteDisk() {
         </div>
       </div>
 
-      <ConversationPanel
-        v-if="agentOpen"
-        data-tour="workspace-agent-panel"
-        :project-id="store.currentProject?.id"
-        :active-file="active?.relativePath"
-        :selection="agentSelection"
-        :diagnostics="activeDiagnostics"
-        :tool-busy="agentRunning || agent.running"
-        :tool-status="agent.currentRun?.status"
-        @close="agentOpen = false"
-        @tool-submit="submitAgent"
-        @cancel-tool="agent.currentRun && agent.cancel(agent.currentRun.id)"
-      >
-        <template v-if="agent.pendingApproval || agent.currentRun" #tool-status>
-          <ApprovalCard v-if="agent.pendingApproval" :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
-          <div v-else-if="agent.currentRun" class="workspace-agent-evidence">
-            <RunTimeline :events="agentTimeline" />
-            <p v-if="agent.currentRun.response">{{ agent.currentRun.response }}</p>
-          </div>
-        </template>
-      </ConversationPanel>
-
       <div
         v-if="panelOpen"
         class="workspace-resizer workspace-resizer-panel"
@@ -934,34 +931,41 @@ async function overwriteDisk() {
     </section>
 
     <div
-      v-if="inspectorOpen"
+      v-if="agentOpen"
       class="workspace-resizer workspace-resizer-inspector"
       role="separator"
-      aria-label="调整快照侧边栏宽度"
+      aria-label="调整 Agent 侧边栏宽度"
       aria-orientation="vertical"
       :aria-valuenow="inspectorWidth"
       aria-valuemin="220"
       aria-valuemax="480"
       tabindex="0"
-      title="拖动调整快照侧边栏宽度，双击恢复默认"
+      title="拖动调整 Agent 侧边栏宽度，双击恢复默认"
       @pointerdown="beginResize('inspector', $event)"
       @dblclick="resetResize('inspector')"
       @keydown="resizeWithKeyboard('inspector', $event)"
     />
-    <aside v-if="inspectorOpen" class="workspace-inspector">
-      <header><div><Camera :size="17" /><strong>快照</strong></div><button class="icon-command" @click="inspectorOpen = false"><X :size="15" /></button></header>
-      <div class="snapshot-create"><input v-model="snapshotLabel" placeholder="快照标签" /><button @click="snapshot"><Plus :size="15" />创建</button></div>
-      <div class="snapshot-list">
-        <article v-for="item in store.snapshots" :key="item.id">
-          <div><strong>{{ item.label }}</strong><span>{{ item.entries.length }} 个文件 · {{ new Date(item.createdAt).toLocaleString() }}</span></div>
-          <button title="恢复快照" @click="store.restoreSnapshot(item.id)"><RotateCcw :size="15" /></button>
-          <button title="删除快照" @click="store.removeSnapshot(item.id)"><Trash2 :size="15" /></button>
-        </article>
-        <div v-if="!store.snapshots.length" class="inspector-empty">保存文件或手动创建快照后，版本记录会显示在这里。</div>
-      </div>
-      <section class="project-meta" v-if="store.currentProject">
-        <h3>项目</h3><dl><div><dt>类型</dt><dd>{{ store.currentProject.type }}</dd></div><div><dt>来源</dt><dd>{{ store.currentProject.creationMode }}</dd></div><div><dt>Root</dt><dd>{{ store.currentProject.relativeRoot }}</dd></div></dl>
-      </section>
+    <aside v-if="agentOpen" class="workspace-inspector workspace-agent-inspector">
+      <ConversationPanel
+        data-tour="workspace-agent-panel"
+        :project-id="store.currentProject?.id"
+        :active-file="active?.relativePath"
+        :selection="agentSelection"
+        :diagnostics="activeDiagnostics"
+        :tool-busy="agentRunning || agent.running"
+        :tool-status="agent.currentRun?.status"
+        @close="agentOpen = false"
+        @tool-submit="submitAgent"
+        @cancel-tool="agent.currentRun && agent.cancel(agent.currentRun.id)"
+      >
+        <template v-if="agent.pendingApproval || agent.currentRun" #tool-status>
+          <ApprovalCard v-if="agent.pendingApproval" :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
+          <div v-else-if="agent.currentRun" class="workspace-agent-evidence">
+            <RunTimeline :events="agentTimeline" />
+            <p v-if="agent.currentRun.response">{{ agent.currentRun.response }}</p>
+          </div>
+        </template>
+      </ConversationPanel>
     </aside>
 
     <div v-if="contextNode" class="context-menu" :style="{ left: `${contextPos.x}px`, top: `${contextPos.y}px` }">
