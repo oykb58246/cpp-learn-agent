@@ -384,12 +384,12 @@ async function submitAgent(request: AgentStartRequest) {
   await agent.start(request)
 }
 
-function toggleAgentEntry() {
-  if (inboxCount.value) {
-    inboxOpen.value = !inboxOpen.value
-    return
-  }
+function toggleAgentPanel() {
   agentOpen.value = !agentOpen.value
+}
+
+function toggleDiagnosticInbox() {
+  if (inboxCount.value) inboxOpen.value = !inboxOpen.value
 }
 
 async function navigateInboxOccurrence(occurrence: DiagnosticOccurrence) {
@@ -753,6 +753,15 @@ async function overwriteDisk() {
         <span class="tabs-spacer" />
         <button class="save-command" :disabled="!active?.dirty || store.saving || active?.conflicted" title="保存" @click="saveActive"><Save :size="15" />{{ store.saving ? '保存中' : '保存' }}</button>
         <button
+          data-tour="workspace-agent-toggle"
+          :class="['icon-command agent-toggle', { active: agentOpen }]"
+          type="button"
+          title="Agent"
+          aria-label="Agent"
+          :aria-expanded="agentOpen"
+          @click="toggleAgentPanel"
+        ><Bot :size="16" /></button>
+        <button
           :class="['icon-command snapshot-toggle', { active: snapshotOpen }]"
           type="button"
           title="快照"
@@ -761,6 +770,15 @@ async function overwriteDisk() {
           :aria-expanded="snapshotOpen"
           @click.stop="snapshotOpen = !snapshotOpen"
         ><History :size="16" /></button>
+        <button
+          v-if="inboxCount"
+          :class="['icon-command agent-inbox-toggle', { active: inboxOpen, attention: agent.inbox?.attention }]"
+          type="button"
+          title="错误收件箱"
+          aria-label="错误收件箱"
+          :aria-expanded="inboxOpen"
+          @click="toggleDiagnosticInbox"
+        ><AlertCircle :size="16" /><span class="agent-inbox-badge">{{ diagnosticBadgeLabel(inboxCount) }}</span></button>
       </div>
 
       <SnapshotPopover
@@ -805,11 +823,6 @@ async function overwriteDisk() {
         </div>
         <span class="toolbar-status" :title="languageStatusText">{{ debuggerBusy ? '调试器正在执行…' : debugState?.status === 'stopped' ? `调试暂停：${debugState.reason ?? '断点'}` : executing === 'build' ? '正在编译…' : executing === 'run' ? '程序正在运行…' : executing === 'cmake' ? '正在构建工程…' : executing === 'ctest' ? '正在运行测试…' : executing === 'analysis' ? '正在静态分析…' : active?.dirty ? '等待自动保存' : active ? `${languageAvailable ? 'clangd 已连接' : '基础编辑模式'} · 已保存` : '' }}</span>
         <button class="panel-toggle" @click="panelOpen = !panelOpen"><Terminal :size="15" />{{ panelOpen ? '隐藏面板' : '显示面板' }}</button>
-        <button
-          data-tour="workspace-agent-toggle"
-          :class="['panel-toggle agent-toggle', { active: agentOpen || inboxOpen, attention: agent.inbox?.attention }]"
-          @click="toggleAgentEntry"
-        ><Bot :size="15" />Agent<span v-if="inboxCount" class="agent-inbox-badge">{{ diagnosticBadgeLabel(inboxCount) }}</span></button>
       </div>
 
       <DiagnosticInboxPopover

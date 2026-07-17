@@ -172,6 +172,45 @@ test('places Agent in the right sidebar and opens snapshots on demand', async ()
   }
 })
 
+test('keeps the Agent trigger reachable and independent from the diagnostic inbox on narrow windows', async () => {
+  const electronApp = await launch(join(temp, 'agent-trigger-user-data'))
+  try {
+    const page = await electronApp.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    const prepared = await prepare(page)
+    expect(prepared).toHaveProperty('projectId')
+    await openProject(page, (prepared as { projectId: string }).projectId)
+    const browserWindow = await electronApp.browserWindow(page)
+    await browserWindow.evaluate(win => win.setSize(1024, 720))
+    await page.waitForTimeout(250)
+
+    const agentTrigger = page.getByRole('button', { name: 'Agent', exact: true })
+    await expect(agentTrigger).toBeVisible()
+    expect(await agentTrigger.evaluate(element => {
+      const box = element.getBoundingClientRect()
+      const target = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+      return box.left >= 0 && box.right <= window.innerWidth && target instanceof Node && element.contains(target)
+    })).toBe(true)
+
+    await agentTrigger.click()
+    await expect(page.locator('.workspace-agent-inspector')).toBeVisible()
+    await capture(electronApp, page, 'agent-trigger-narrow-1024x720.png')
+    await agentTrigger.click()
+    await expect(page.locator('.workspace-agent-inspector')).toHaveCount(0)
+
+    await page.getByRole('button', { name: '编译', exact: true }).click()
+    await expect(page.locator('.agent-inbox-badge')).toHaveText('1', { timeout: 30_000 })
+    await agentTrigger.click()
+    await expect(page.locator('.workspace-agent-inspector')).toBeVisible()
+    await expect(page.getByRole('dialog', { name: '错误收件箱' })).toHaveCount(0)
+    await agentTrigger.click()
+    await page.getByRole('button', { name: '错误收件箱', exact: true }).click()
+    await expect(page.getByRole('dialog', { name: '错误收件箱' })).toBeVisible()
+  } finally {
+    await electronApp.close()
+  }
+})
+
 test('persists a grouped diagnostic inbox and explains it in a streamed project conversation', async () => {
   test.setTimeout(180_000)
   let electronApp = await launch()
@@ -184,11 +223,11 @@ test('persists a grouped diagnostic inbox and explains it in a streamed project 
 
   await page.getByRole('button', { name: '编译', exact: true }).click()
   await expect(page.locator('.agent-inbox-badge')).toHaveText('1', { timeout: 30_000 })
-  await expect(page.locator('.agent-toggle')).toHaveClass(/attention/)
-  await page.getByRole('button', { name: /Agent/ }).click()
+  await expect(page.locator('.agent-inbox-toggle')).toHaveClass(/attention/)
+  await page.getByRole('button', { name: '错误收件箱', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '错误收件箱' })).toBeVisible()
   await expect(page.locator('.diagnostic-group-summary')).toContainText('2 处')
-  await expect(page.locator('.agent-toggle')).not.toHaveClass(/attention/)
+  await expect(page.locator('.agent-inbox-toggle')).not.toHaveClass(/attention/)
   await expect(page.locator('.agent-inbox-badge')).toHaveText('1')
 
   await electronApp.close()
@@ -197,7 +236,7 @@ test('persists a grouped diagnostic inbox and explains it in a streamed project 
   await page.waitForLoadState('domcontentloaded')
   await openProject(page, projectId)
   await expect(page.locator('.agent-inbox-badge')).toHaveText('1')
-  await page.getByRole('button', { name: /Agent/ }).click()
+  await page.getByRole('button', { name: '错误收件箱', exact: true }).click()
   await page.locator('.diagnostic-group-summary').click()
   await page.getByRole('button', { name: '创建新对话' }).click()
   await expect(page.locator('.workspace-agent-panel')).toBeVisible()

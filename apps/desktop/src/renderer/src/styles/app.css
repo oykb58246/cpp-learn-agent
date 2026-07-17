@@ -1020,10 +1020,11 @@ body.workspace-resizing-y, body.workspace-resizing-y * { cursor: row-resize !imp
 .workspace-agent-evidence > p { margin: 8px 0; padding-left: 12px; overflow: auto; border-left: 1px solid var(--border); color: var(--text-secondary); line-height: 1.5; white-space: pre-wrap; }
 .workspace-agent-error { display: flex; align-items: center; gap: 7px; min-height: 34px; color: var(--danger); }
 .workspace-agent-panel > .approval-card { min-height: 0; overflow: auto; }
-.agent-toggle.active { color: var(--accent); background: var(--selection); }
-.agent-toggle { position: relative; }
+.agent-toggle.active, .agent-inbox-toggle.active { color: var(--accent); background: var(--selection); }
+.agent-toggle, .agent-inbox-toggle { position: relative; }
 .agent-inbox-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font: 10px/1 var(--font-code); }
-.agent-toggle.attention::after { content: ''; position: absolute; inset: 1px; border: 1px solid color-mix(in srgb, var(--danger) 70%, transparent); border-radius: var(--radius-sm); animation: agent-attention 1.4s ease-in-out infinite; pointer-events: none; }
+.agent-inbox-toggle .agent-inbox-badge { position: absolute; top: -5px; right: -5px; }
+.agent-inbox-toggle.attention::after { content: ''; position: absolute; inset: 1px; border: 1px solid color-mix(in srgb, var(--danger) 70%, transparent); border-radius: var(--radius-sm); animation: agent-attention 1.4s ease-in-out infinite; pointer-events: none; }
 @keyframes agent-attention { 50% { opacity: .25; transform: scale(1.04); } }
 
 .diagnostic-inbox-popover { position: absolute; z-index: 45; top: 74px; right: 8px; display: flex; flex-direction: column; width: min(360px, calc(100vw - 24px)); max-height: min(560px, calc(100% - 86px)); overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-overlay); }
