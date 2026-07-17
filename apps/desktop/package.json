@@ -7,8 +7,8 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "dev": "node ../../node_modules/electron-vite/bin/electron-vite.js dev",
+    "build": "node ../../node_modules/electron-vite/bin/electron-vite.js build",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run --passWithNoTests",
     "package:dir": "pnpm build && electron-builder --dir"

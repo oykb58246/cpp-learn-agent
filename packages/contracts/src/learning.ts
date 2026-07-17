@@ -16,6 +16,20 @@ export const knowledgeNodeSchema = z.object({
 })
 export type KnowledgeNode = z.infer<typeof knowledgeNodeSchema>
 
+export const backgroundStartingPointSchema = z.enum(['zero-beginner', 'some-experience'])
+export type BackgroundStartingPoint = z.infer<typeof backgroundStartingPointSchema>
+export const backgroundProfileSchema = z.object({
+  userId: z.string().min(1).max(100),
+  onboardingCompleted: z.boolean(),
+  startingPoint: backgroundStartingPointSchema,
+  studiedConceptIds: z.array(z.string().min(1).max(100)).max(100),
+  focusConceptIds: z.array(z.string().min(1).max(100)).max(100),
+  updatedAt: timestampSchema
+})
+export type BackgroundProfile = z.infer<typeof backgroundProfileSchema>
+export const backgroundProfileInputSchema = backgroundProfileSchema.omit({ userId: true, updatedAt: true })
+export type BackgroundProfileInput = z.input<typeof backgroundProfileInputSchema>
+
 export const learnerKnowledgeSchema = z.object({
   userId: z.string().min(1).max(100),
   conceptId: z.string().min(1).max(100),

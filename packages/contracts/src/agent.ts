@@ -51,10 +51,19 @@ export const contextSourceSchema = z.object({
 })
 export type ContextSource = z.infer<typeof contextSourceSchema>
 
+export const explanationContextSchema = z.object({
+  knownConceptIds: z.array(z.string().min(1).max(100)).max(100),
+  focusConceptIds: z.array(z.string().min(1).max(100)).max(100),
+  unseenConceptIds: z.array(z.string().min(1).max(100)).max(100),
+  instructions: z.string().min(1).max(5_000)
+})
+export type ExplanationContext = z.infer<typeof explanationContextSchema>
+
 export const contextPacketSchema = z.object({
   requestId: z.string().uuid(),
   sources: z.array(contextSourceSchema).max(32),
   conceptIds: z.array(z.string().min(1).max(100)).max(100),
+  explanationContext: explanationContextSchema.optional(),
   tokenEstimate: z.number().int().nonnegative().max(100_000),
   truncated: z.boolean().default(false)
 })

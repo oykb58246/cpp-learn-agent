@@ -107,20 +107,12 @@ export class H3WorkflowPlanner implements RuntimePlanner {
   }
 
   private review(request: ResolvedAgentRequest): RuntimePlan {
-    const passed = request.reviewOutcome === 'passed'
     return {
-      intent: 'review-learning', conceptIds: ['control.loops'], successCriteria: ['review evidence recorded'], source: 'offline',
+      intent: 'explain-follow-up', conceptIds: ['control.loops'], successCriteria: ['follow-up explanation produced'], source: 'offline',
       steps: [
-        step('state', '读取知识与错误本', 'tool', 'learning.get_state', 'L0', { userId: 'local-user', reviewItemId: request.reviewItemId }),
-        step('update', '更新已验证学习状态', 'learning', 'learning.update_state', 'L2', {
-          userId: 'local-user', conceptId: ref('state', 'reviews.0.conceptId'), status: passed ? 'verified' : 'review', evidenceId: request.requestId,
-          reviewItemId: request.reviewItemId, reviewOutcome: request.reviewOutcome
-        }, ['persist-state']),
         {
-          id: 'respond', title: '生成复习总结', kind: 'respond',
-          summary: passed
-            ? '本次复习证据已记录，知识状态、复习间隔和成长进度已经同步更新。'
-            : '本次复习已标记为需巩固，复习计划回到第一个间隔，之后可以再次验证。'
+          id: 'respond', title: '补充解释与建议', kind: 'respond',
+          summary: '我会根据你这次的问题补充解释，并给出可以在项目中继续尝试的下一步；不会记录成绩、复习进度或掌握状态。'
         }
       ]
     }

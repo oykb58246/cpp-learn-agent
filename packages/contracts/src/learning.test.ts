@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   achievementDefinitionSchema,
+  backgroundProfileSchema,
   errorBookEntrySchema,
   knowledgeNodeSchema,
   learnerKnowledgeSchema,
@@ -10,6 +11,21 @@ import {
 const now = new Date().toISOString()
 
 describe('H3 learning contracts', () => {
+  it('validates a self-reported assistant background profile', () => {
+    const profile = backgroundProfileSchema.parse({
+      userId: 'local-user',
+      onboardingCompleted: true,
+      startingPoint: 'some-experience',
+      studiedConceptIds: ['basics.program', 'basics.variables'],
+      focusConceptIds: ['control.loops'],
+      updatedAt: now
+    })
+
+    expect(profile.studiedConceptIds).toEqual(['basics.program', 'basics.variables'])
+    expect(profile.focusConceptIds).toEqual(['control.loops'])
+    expect(backgroundProfileSchema.safeParse({ ...profile, startingPoint: 'verified' }).success).toBe(false)
+  })
+
   it('validates knowledge nodes and learner states', () => {
     const node = knowledgeNodeSchema.parse({
       id: 'control.loops',

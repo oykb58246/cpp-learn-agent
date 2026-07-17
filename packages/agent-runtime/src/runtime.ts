@@ -7,8 +7,6 @@ import {
   type Approval,
   type ApprovalDecision,
   type ContextPacket,
-  type KnowledgeGateResult,
-  type LearnerKnowledge,
   type TimelineEvent,
   type ToolCall,
   type ToolResult,
@@ -65,10 +63,6 @@ export interface RuntimeToolProgress {
   message: string
 }
 
-export interface RuntimeKnowledgeGate {
-  check(conceptIds: string[], states: LearnerKnowledge[], options?: { allowRewrite?: boolean }): KnowledgeGateResult
-}
-
 export interface RuntimeStore {
   create(run: AgentRun): void | Promise<void>
   update(run: AgentRun): void | Promise<void>
@@ -77,7 +71,6 @@ export interface RuntimeStore {
   saveToolCall(call: ToolCall): void | Promise<void>
   get(runId: string): AgentRunDetail | undefined
   list(): AgentRun[]
-  learnerKnowledge(userId: string): LearnerKnowledge[] | Promise<LearnerKnowledge[]>
 }
 
 interface ExecutionState {
@@ -106,7 +99,8 @@ export interface AgentRuntimeOptions {
   contextBuilder: RuntimeContextBuilder
   planner: RuntimePlanner
   toolClient: RuntimeToolClient
-  knowledgeGate: RuntimeKnowledgeGate
+  /** @deprecated Kept for old hosts; it no longer controls task execution. */
+  knowledgeGate?: { check(...args: never[]): unknown }
   maxSteps?: number
   maxToolCalls?: number
   maxRetries?: number
@@ -118,7 +112,6 @@ export class InMemoryRuntimeStore implements RuntimeStore {
   private readonly timeline = new Map<string, TimelineEvent[]>()
   private readonly approvals = new Map<string, Approval[]>()
   private readonly toolCalls = new Map<string, ToolCall[]>()
-  private knowledge: LearnerKnowledge[] = []
 
   create(run: AgentRun): void { this.runs.set(run.id, structuredClone(run)) }
   update(run: AgentRun): void { this.runs.set(run.id, structuredClone(run)) }
@@ -151,8 +144,6 @@ export class InMemoryRuntimeStore implements RuntimeStore {
     } : undefined
   }
   list(): AgentRun[] { return [...this.runs.values()].map(run => structuredClone(run)) }
-  learnerKnowledge(userId: string): LearnerKnowledge[] { return this.knowledge.filter(item => item.userId === userId).map(item => structuredClone(item)) }
-  setLearnerKnowledge(items: LearnerKnowledge[]): void { this.knowledge = structuredClone(items) }
 }
 
 export class AgentRuntime {
@@ -332,13 +323,20 @@ export class AgentRuntime {
     await this.timeline(state, 'plan', 'completed', '生成执行计划', state.run.planSummary, undefined, { successCriteria: state.plan.successCriteria })
 
     await this.setStatus(state, 'policy-check')
-    const learnerState = await this.options.store.learnerKnowledge('local-user')
-    const decision = this.options.knowledgeGate.check(state.plan.conceptIds, learnerState, { allowRewrite: true })
-    await this.timeline(state, 'policy', 'completed', '知识边界检查', decision.explanation, undefined, { decision: decision.decision, blocked: decision.blocked })
-    if (decision.decision !== 'allow') {
-      state.run.response = `${decision.explanation}${decision.suggestedConceptIds.length ? ` 建议先学习：${decision.suggestedConceptIds.join('、')}。` : ''}`
-      await this.complete(state)
-    }
+    const explanationContext = state.context.explanationContext
+    await this.timeline(
+      state,
+      'policy',
+      'completed',
+      '讲解背景已应用',
+      explanationContext?.instructions ?? '未设置学习背景，按当前问题直接讲解。',
+      undefined,
+      {
+        knownConceptIds: explanationContext?.knownConceptIds ?? [],
+        focusConceptIds: explanationContext?.focusConceptIds ?? [],
+        unseenConceptIds: explanationContext?.unseenConceptIds ?? state.plan.conceptIds
+      }
+    )
   }
 
   private async advance(state: ExecutionState): Promise<void> {
@@ -473,12 +471,6 @@ export class AgentRuntime {
       : '验证成功条件'
     await this.timeline(state, 'validation', 'completed', validationTitle, state.run.validationSummary, undefined, {
       successCriteria: state.plan?.successCriteria ?? []
-    })
-    await this.timeline(state, 'learning', 'completed', '检查学习证据', '只有可复现的工具证据会写入学习事件并产生 XP；解释或模型文本本身不奖励。', undefined, {
-      evidenceStepIds: state.run.steps
-        .filter(step => (step.kind === 'tool' || step.kind === 'validate' || step.kind === 'learning') && step.status === 'completed')
-        .map(step => step.id),
-      rewardPolicy: 'reproducible-evidence-only'
     })
     await this.setStatus(state, 'completed')
     state.run.completedAt = state.run.updatedAt

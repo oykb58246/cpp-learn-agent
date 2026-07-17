@@ -23,10 +23,7 @@ const toolRisks: Record<string, ToolRisk> = {
   'project.create': 'L2',
   'tests.generate_cases': 'L0',
   'tests.run_cases': 'L2',
-  'vscode.open_file': 'L1',
-  'learning.get_state': 'L0',
-  'learning.record_error': 'L2',
-  'learning.update_state': 'L2'
+  'vscode.open_file': 'L1'
 }
 
 const planStepSchema = z.object({
@@ -98,6 +95,7 @@ export class OpenAiCompatiblePlanner implements RuntimePlanner {
               context: {
                 sources: context.sources.map(source => ({ kind: source.kind, label: source.label, content: source.content, trusted: source.trusted })),
                 conceptIds: context.conceptIds,
+                explanationContext: context.explanationContext,
                 truncated: context.truncated
               }
             })
@@ -190,8 +188,8 @@ export class DeterministicPlanner implements RuntimePlanner {
         steps: [{ id: 'parse', title: '解析项目描述', kind: 'tool', toolName: 'problem.parse', risk: 'L0', arguments: { statement: request.message } }, { id: 'respond', title: '生成项目计划', kind: 'respond' }]
       },
       review: {
-        intent: 'review-learning', conceptIds: [], successCriteria: ['learning state loaded'],
-        steps: [{ id: 'learning', title: '读取学习状态', kind: 'tool', toolName: 'learning.get_state', risk: 'L0', arguments: { userId: 'local-user' } }, { id: 'respond', title: '生成复习建议', kind: 'respond' }]
+        intent: 'explain-follow-up', conceptIds: [], successCriteria: ['follow-up explanation produced'],
+        steps: [{ id: 'respond', title: '补充解释与建议', kind: 'respond', summary: '我会根据当前问题补充解释，并给出可以在项目中继续尝试的下一步。' }]
       },
       chat: {
         intent: 'teaching-chat', conceptIds: [], successCriteria: ['respond safely'],

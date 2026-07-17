@@ -98,9 +98,71 @@ const approvalDiffSql = `
 ALTER TABLE approvals ADD COLUMN diff_text TEXT;
 `
 
+const assistantBackgroundSql = `
+CREATE TABLE IF NOT EXISTS background_profiles (
+  user_id TEXT PRIMARY KEY,
+  onboarding_completed INTEGER NOT NULL,
+  starting_point TEXT NOT NULL,
+  studied_concept_ids_json TEXT NOT NULL,
+  focus_concept_ids_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`
+
+const conversationsAndDiagnosticsSql = `
+CREATE TABLE IF NOT EXISTS diagnostic_incidents (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  attempt_id TEXT NOT NULL, target_key TEXT NOT NULL, operation TEXT NOT NULL,
+  failure_kinds_json TEXT NOT NULL, status TEXT NOT NULL, acknowledged_at TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS diagnostic_groups (
+  id TEXT PRIMARY KEY, incident_id TEXT NOT NULL REFERENCES diagnostic_incidents(id) ON DELETE CASCADE,
+  fingerprint TEXT NOT NULL, source TEXT NOT NULL, code TEXT, failure_kind TEXT NOT NULL,
+  severity TEXT NOT NULL, title TEXT NOT NULL, normalized_template TEXT NOT NULL,
+  occurrence_count INTEGER NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS diagnostic_occurrences (
+  id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES diagnostic_groups(id) ON DELETE CASCADE,
+  file TEXT, line INTEGER, column_number INTEGER, end_line INTEGER, end_column INTEGER,
+  raw_message TEXT NOT NULL, normalized_message TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_conversations (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+  role TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL,
+  diagnostic_snapshot_json TEXT, error_code TEXT, error_message TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS project_conversation_state (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  conversation_id TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_diagnostic_active_target
+  ON diagnostic_incidents(project_id, target_key, operation) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_diagnostic_project ON diagnostic_incidents(project_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnostic_group_incident ON diagnostic_groups(incident_id, fingerprint);
+CREATE INDEX IF NOT EXISTS idx_diagnostic_occurrence_group ON diagnostic_occurrences(group_id, file, line);
+CREATE INDEX IF NOT EXISTS idx_conversation_project ON agent_conversations(project_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_message_conversation ON agent_messages(conversation_id, created_at, id);
+`
+
+const stableConversationMessageOrderSql = `
+ALTER TABLE agent_messages ADD COLUMN sequence_number INTEGER;
+UPDATE agent_messages SET sequence_number = rowid WHERE sequence_number IS NULL;
+CREATE UNIQUE INDEX idx_message_sequence ON agent_messages(conversation_id, sequence_number);
+`
+
 export const h3Migrations: Migration[] = [
   { version: 4, name: 'h3-agent-runs', sql: agentSql },
   { version: 5, name: 'h3-learning-state', sql: learningSql },
   { version: 6, name: 'h3-growth-and-models', sql: growthSql },
-  { version: 7, name: 'h3-approval-diff', sql: approvalDiffSql }
+  { version: 7, name: 'h3-approval-diff', sql: approvalDiffSql },
+  { version: 8, name: 'assistant-background-profile', sql: assistantBackgroundSql },
+  { version: 9, name: 'agent-conversations-and-diagnostics', sql: conversationsAndDiagnosticsSql },
+  { version: 10, name: 'stable-conversation-message-order', sql: stableConversationMessageOrderSql }
 ]

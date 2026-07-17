@@ -31,8 +31,8 @@ import {
 } from '@cpp-pet/cpp-local-tools'
 import { GdbMiSession } from '@cpp-pet/cpp-local-tools/debugger'
 import {
-  AchievementEngine,
-  achievementDefinitions,
+  buildExplanationContext,
+  builtInKnowledge,
   H3WorkflowPlanner,
   nextReviewDate,
   reviewIntervalsDays,
@@ -96,8 +96,19 @@ export class DesktopContextBuilder implements RuntimeContextBuilder {
         ...(request.activeFile ? { relativePath: request.activeFile } : {})
       })
     }
-    const knowledge = this.db.listLearnerKnowledge('local-user')
-    sources.push({ kind: 'learning', label: '本地学习画像', content: JSON.stringify(knowledge), trusted: true })
+    const backgroundProfile = this.db.getBackgroundProfile('local-user')
+    const explanationContext = buildExplanationContext(builtInKnowledge, backgroundProfile, [])
+    sources.push({
+      kind: 'learning',
+      label: '助教讲解背景',
+      content: JSON.stringify({
+        startingPoint: backgroundProfile?.startingPoint ?? 'zero-beginner',
+        knownConceptIds: explanationContext.knownConceptIds,
+        focusConceptIds: explanationContext.focusConceptIds,
+        instructions: explanationContext.instructions
+      }),
+      trusted: true
+    })
     if (request.screenshot) {
       sources.push({
         kind: 'screenshot',
@@ -107,7 +118,14 @@ export class DesktopContextBuilder implements RuntimeContextBuilder {
       })
     }
     const characters = sources.reduce((sum, source) => sum + source.content.length, 0)
-    return { requestId: request.requestId, sources, conceptIds: knowledge.map(item => item.conceptId), tokenEstimate: Math.ceil(characters / 4), truncated: sources.some(source => source.metadata?.truncated === true) }
+    return {
+      requestId: request.requestId,
+      sources,
+      conceptIds: explanationContext.knownConceptIds,
+      explanationContext,
+      tokenEstimate: Math.ceil(characters / 4),
+      truncated: sources.some(source => source.metadata?.truncated === true)
+    }
   }
 }
 
@@ -629,19 +647,6 @@ export class DesktopMcpAdapter implements LocalMcpAdapter {
     }
     const passedCount = results.filter(item => item.passed).length
     const passed = results.length > 0 && passedCount === results.length
-    if (passed) {
-      const occurredAt = new Date().toISOString()
-      this.applyGrowth({
-        id: stableUuid(`learning-event:local-user:test:${build.buildId}`),
-        sourceEventId: `test:${build.buildId}`,
-        userId: 'local-user',
-        type: 'test-passed',
-        conceptIds: [],
-        xp: 15,
-        evidence: { kind: 'test', referenceId: build.buildId, summary: `${results.length} 个回归用例全部通过。` },
-        occurredAt
-      })
-    }
     return { passed, total: results.length, passedCount, failedCount: results.length - passedCount, results, buildId: build.buildId }
   }
 
@@ -678,39 +683,7 @@ export class DesktopMcpAdapter implements LocalMcpAdapter {
     }
     this.options.db.upsertLearnerKnowledge(state)
     const evidenceId = String(args.evidenceId)
-    let reviewApplied = false
     if (review && reviewOutcome) {
-      reviewApplied = this.applyGrowth({
-        id: stableUuid(`learning-event:${state.userId}:${evidenceId}:review`),
-        sourceEventId: `${evidenceId}:review`,
-        userId: state.userId,
-        type: reviewOutcome === 'passed' ? 'review-completed' : 'review-failed',
-        conceptIds: [state.conceptId],
-        xp: reviewOutcome === 'passed' ? 10 : 0,
-        evidence: { kind: 'review', referenceId: review.id, summary: `复习结果：${reviewOutcome}` },
-        occurredAt: now
-      })
-      if (reviewOutcome === 'passed') {
-        this.applyGrowth({
-          id: stableUuid(`learning-event:${state.userId}:${evidenceId}:concept`),
-          sourceEventId: `${evidenceId}:concept`,
-          userId: state.userId,
-          type: 'concept-verified',
-          conceptIds: [state.conceptId],
-          xp: 10,
-          evidence: { kind: 'review', referenceId: review.id, summary: `知识状态更新为 ${state.status}` },
-          occurredAt: now
-        })
-      }
-    } else {
-      this.applyGrowth({
-        id: randomUUID(), sourceEventId: evidenceId, userId: state.userId, type: 'concept-started',
-        conceptIds: [state.conceptId], xp: 5,
-        evidence: { kind: 'user-confirmation', referenceId: evidenceId, summary: `知识状态更新为 ${state.status}` },
-        occurredAt: now
-      })
-    }
-    if (review && reviewApplied) {
       if (reviewOutcome === 'failed') {
         this.options.db.saveReviewItem({
           ...review,
@@ -757,32 +730,15 @@ export class DesktopMcpAdapter implements LocalMcpAdapter {
       occurrences: 1,
       firstSeenAt: now.toISOString(),
       lastSeenAt: now.toISOString(),
-      ...(status === 'resolved' ? { resolvedAt: now.toISOString() } : {}),
-      nextReviewAt: nextReviewDate(now, 0).toISOString()
-    })
-    if (conceptIds[0]) this.options.db.saveReviewItem({
-      id: stableUuid(`learning-review:${entry.id}:${conceptIds[0]}`), userId: entry.userId, errorBookEntryId: entry.id, conceptId: conceptIds[0],
-      prompt: `重新分析：${entry.title}`, expectedEvidence: '编译或测试验证通过', intervalIndex: 0,
-      dueAt: entry.nextReviewAt!, status: 'pending'
-    })
-    if (status === 'resolved') this.applyGrowth({
-      id: stableUuid(`learning-event:${entry.userId}:${evidenceId}`), sourceEventId: evidenceId, userId: entry.userId,
-      type: 'error-resolved', conceptIds, xp: 20,
-      evidence: { kind: entry.category === 'logic' ? 'test' : 'build', referenceId: evidenceId, summary: entry.evidence },
-      occurredAt: now.toISOString()
+      ...(status === 'resolved' ? { resolvedAt: now.toISOString() } : {})
     })
     return { entry, summary: this.options.db.getLearnerSummary(entry.userId) }
   }
 
   private applyGrowth(event: Parameters<AppDatabase['applyLearningEvent']>[0]): boolean {
-    return this.options.db.transaction(() => {
-      if (!this.options.db.applyLearningEvent(event)) return false
-      const prior = this.options.db.listLearningEvents(event.userId).filter(item => item.sourceEventId !== event.sourceEventId)
-      const unlocked = this.options.db.listLearnerAchievements(event.userId)
-      const awards = new AchievementEngine(achievementDefinitions).evaluate(event, prior, unlocked)
-      for (const award of awards) this.options.db.awardAchievement({ userId: event.userId, achievementId: award.id, sourceEventId: event.sourceEventId, unlockedAt: event.occurredAt })
-      return true
-    })
+    // Historical learning tables remain readable, but assistant work no longer writes scores, badges, or review progress.
+    void event
+    return false
   }
 }
 

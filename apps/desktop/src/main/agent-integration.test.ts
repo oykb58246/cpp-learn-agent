@@ -248,7 +248,7 @@ describe('desktop H3 integration', () => {
     expect(result.diagnostics).toHaveLength(1)
   })
 
-  it('records environment readiness only after a toolchain is really bound', async () => {
+  it('does not create learning rewards when a toolchain is bound', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-environment-growth-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -267,11 +267,11 @@ describe('desktop H3 integration', () => {
     })
 
     expect(result.ok).toBe(true)
-    expect(db.listLearningEvents('local-user').map(item => item.type)).toContain('environment-ready')
-    expect(db.getLearnerSummary('local-user').achievements.map(item => item.achievementId)).toContain('environment-ready')
+    expect(db.listLearningEvents('local-user')).toEqual([])
+    expect(db.getLearnerSummary('local-user').achievements).toEqual([])
   })
 
-  it('rolls back error, review and XP writes when achievement persistence fails', async () => {
+  it('records an error without creating a review or growth entry', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-learning-rollback-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -284,14 +284,14 @@ describe('desktop H3 integration', () => {
       evidence: '重新编译通过', conceptIds: ['control.loops'], status: 'resolved'
     }, { signal: new AbortController().signal, onProgress: async () => undefined })
 
-    expect(result.ok).toBe(false)
-    expect(db.listErrorBookEntries('local-user')).toEqual([])
+    expect(result.ok).toBe(true)
+    expect(db.listErrorBookEntries('local-user')).toHaveLength(1)
     expect(db.listReviewItems('local-user')).toEqual([])
     expect(db.listLearningEvents('local-user')).toEqual([])
     expect(db.getLearnerSummary('local-user').xp).toBe(0)
   })
 
-  it('records verified build and project completion events after an Agent-created project builds', async () => {
+  it('does not turn a project build into a learning reward', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-project-growth-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -324,11 +324,11 @@ describe('desktop H3 integration', () => {
     }, context)
 
     expect(build.ok).toBe(true)
-    expect(db.listLearningEvents('local-user').map(item => item.type)).toEqual(expect.arrayContaining(['build-succeeded', 'project-completed']))
-    expect(db.getLearnerSummary('local-user').achievements.map(item => item.achievementId)).toEqual(expect.arrayContaining(['first-build', 'project-first']))
+    expect(db.listLearningEvents('local-user')).toEqual([])
+    expect(db.getLearnerSummary('local-user').achievements).toEqual([])
   })
 
-  it('records a test event only after real cases pass', async () => {
+  it('does not turn passed cases into a learning reward', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-test-growth-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -360,11 +360,11 @@ describe('desktop H3 integration', () => {
     }, { signal: new AbortController().signal, onProgress: async () => undefined })
 
     expect(result.ok).toBe(true)
-    expect(db.listLearningEvents('local-user').map(item => item.type)).toContain('test-passed')
-    expect(db.getLearnerSummary('local-user').achievements.map(item => item.achievementId)).toContain('first-test')
+    expect(db.listLearningEvents('local-user')).toEqual([])
+    expect(db.getLearnerSummary('local-user').achievements).toEqual([])
   })
 
-  it('records one idempotent error, review, XP reward and achievement from verified evidence', async () => {
+  it('records one idempotent error without a review, XP reward, or achievement', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-learning-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -386,9 +386,9 @@ describe('desktop H3 integration', () => {
     expect(first.ok).toBe(true)
     expect(replay.ok).toBe(true)
     expect(db.listErrorBookEntries('local-user')).toHaveLength(1)
-    expect(db.listReviewItems('local-user')).toHaveLength(1)
-    expect(summary.xp).toBe(20)
-    expect(summary.achievements.map(item => item.achievementId)).toContain('first-fix')
+    expect(db.listReviewItems('local-user')).toHaveLength(0)
+    expect(summary.xp).toBe(0)
+    expect(summary.achievements).toEqual([])
   })
 
   it('advances a passed review through the spaced repetition schedule', async () => {
@@ -416,8 +416,8 @@ describe('desktop H3 integration', () => {
     expect(result.ok).toBe(true)
     expect(review).toMatchObject({ id: reviewItemId, intervalIndex: 1, status: 'pending' })
     expect(new Date(review!.dueAt).getTime()).toBeGreaterThan(new Date(dueAt).getTime())
-    expect(db.listLearningEvents('local-user').map(item => item.type)).toEqual(expect.arrayContaining(['review-completed', 'concept-verified']))
-    expect(db.getLearnerSummary('local-user').achievements.map(item => item.achievementId)).toEqual(expect.arrayContaining(['review-first', 'first-concept']))
+    expect(db.listLearningEvents('local-user')).toEqual([])
+    expect(db.getLearnerSummary('local-user').achievements).toEqual([])
   })
 
   it('resets a failed review without awarding XP', async () => {
@@ -442,7 +442,7 @@ describe('desktop H3 integration', () => {
 
     expect(result.ok).toBe(true)
     expect(db.listReviewItems('local-user')[0]).toMatchObject({ intervalIndex: 0, status: 'pending' })
-    expect(db.listLearningEvents('local-user')[0]).toMatchObject({ type: 'review-failed', xp: 0 })
+    expect(db.listLearningEvents('local-user')).toEqual([])
     expect(db.getLearnerSummary('local-user').xp).toBe(0)
   })
 
@@ -579,17 +579,11 @@ describe('desktop H3 integration', () => {
       requestId: crypto.randomUUID(), source: 'screenshot', mode: 'explain', message: '解释截图中的代码',
       screenshot: { id: crypto.randomUUID(), previewDataUrl: 'data:image/png;base64,AA==', mimeType: 'image/png', width: 10, height: 10, createdAt: new Date().toISOString() }
     })
-    const reviewItem = db.listReviewItems('local-user')[0]!
-    db.saveReviewItem({ ...reviewItem, dueAt: new Date(Date.now() - 1_000).toISOString() })
-    const review = await complete({
-      requestId: crypto.randomUUID(), source: 'main', mode: 'review', message: reviewItem.prompt, reviewItemId: reviewItem.id, reviewOutcome: 'passed'
-    })
-
-    const details = [environment, createdProject, explain, diagnose, logic, screenshot, review]
-    expect(details).toHaveLength(7)
+    const details = [environment, createdProject, explain, diagnose, logic, screenshot]
+    expect(details).toHaveLength(6)
     for (const detail of details) {
       expect(detail.timeline.map(item => item.kind)).toEqual(expect.arrayContaining([
-        'intent', 'context', 'plan', 'policy', 'validation', 'learning', 'response'
+        'intent', 'context', 'plan', 'policy', 'validation', 'response'
       ]))
     }
     expect(environment.toolCalls.map(item => item.toolName)).toEqual(expect.arrayContaining(['toolchain.detect_compilers', 'toolchain.probe_compiler', 'toolchain.bind_compiler']))
@@ -598,6 +592,5 @@ describe('desktop H3 integration', () => {
     expect(diagnose.timeline.some(item => item.kind === 'validation')).toBe(true)
     expect(logic.timeline.some(item => item.kind === 'validation')).toBe(true)
     expect(screenshot.approvals.some(item => item.risk === 'L3' && item.status === 'approved')).toBe(true)
-    expect(review.timeline.some(item => item.kind === 'learning')).toBe(true)
   }, 120_000)
 })

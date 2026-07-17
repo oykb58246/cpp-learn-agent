@@ -42,6 +42,8 @@ import type {
   DebugCommand,
   DebugSessionState,
   Diagnostic,
+  DiagnosticExplanationSnapshot,
+  DiagnosticOccurrence,
   AgentStartRequest,
   FileTreeNode,
   ProgramRunResult,
@@ -51,13 +53,15 @@ import DiffEditorHost from '../components/DiffEditorHost.vue'
 import EditorHost from '../components/EditorHost.vue'
 import FileTree from '../components/FileTree.vue'
 import ProjectDialog from '../components/ProjectDialog.vue'
-import AgentComposer from '../components/AgentComposer.vue'
 import ApprovalCard from '../components/ApprovalCard.vue'
+import ConversationPanel from '../components/ConversationPanel.vue'
+import DiagnosticInboxPopover from '../components/DiagnosticInboxPopover.vue'
 import RunTimeline from '../components/RunTimeline.vue'
 import { useAppStore } from '../stores/app'
 import { useAgentStore } from '../stores/agent'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { AgentEditorSelection } from '../utils/editor-selection'
+import { diagnosticBadgeLabel } from '../utils/diagnostic-inbox'
 
 const app = useAppStore()
 const store = useWorkspaceStore()
@@ -75,6 +79,7 @@ const active = computed(() => store.activeTab)
 const editorHost = ref<InstanceType<typeof EditorHost> | null>(null)
 const editorFontSize = ref(13)
 const agentOpen = ref(false)
+const inboxOpen = ref(false)
 const agentSelection = ref<AgentEditorSelection>()
 const diffOpen = ref(false)
 const panelOpen = ref(true)
@@ -141,6 +146,8 @@ const activeDiagnostics = computed(() => {
 })
 const agentTimeline = computed(() => agent.currentRun && 'timeline' in agent.currentRun ? agent.currentRun.timeline.slice(-6) : [])
 const agentRunning = computed(() => Boolean(agent.currentRun && !['completed', 'failed', 'cancelled'].includes(agent.currentRun.status)))
+const inboxGroups = computed(() => agent.inbox?.groups ?? [])
+const inboxCount = computed(() => inboxGroups.value.length)
 const outputText = computed(() => {
   const chunks: string[] = []
   if (buildResult.value) {
@@ -228,10 +235,12 @@ watch(
   { immediate: true }
 )
 watch(() => store.currentProject?.id, async id => {
+  inboxOpen.value = false
   languageDiagnostics.value = {}
   languageAvailable.value = false
   languageStatusText.value = id ? '正在检测 clangd…' : ''
   if (!id) return
+  await agent.loadProjectAgent(id)
   const result = await window.cppPet.language.status({ projectId: id })
   if (!result.ok) {
     languageStatusText.value = result.error.message
@@ -373,6 +382,31 @@ function languageFailed(reason: string) {
 async function submitAgent(request: AgentStartRequest) {
   agentOpen.value = true
   await agent.start(request)
+}
+
+function toggleAgentEntry() {
+  if (inboxCount.value) {
+    inboxOpen.value = !inboxOpen.value
+    return
+  }
+  agentOpen.value = !agentOpen.value
+}
+
+async function navigateInboxOccurrence(occurrence: DiagnosticOccurrence) {
+  if (!occurrence.file || !occurrence.line) return
+  inboxOpen.value = false
+  await showLocation({ relativePath: occurrence.file, line: occurrence.line, column: occurrence.column ?? 1 })
+}
+
+async function explainDiagnostic(snapshot: DiagnosticExplanationSnapshot, createNew: boolean) {
+  inboxOpen.value = false
+  agentOpen.value = true
+  if (createNew || !agent.currentConversationId) await agent.createConversation(snapshot.title)
+  await agent.sendMessage({
+    message: `请结合我的 C++ 学习背景，解释这个错误：${snapshot.title}`,
+    diagnostic: snapshot,
+    ...(active.value?.relativePath ? { activeFile: active.value.relativePath } : {})
+  })
 }
 
 async function decideAgent(decision: 'approved' | 'rejected') {
@@ -752,8 +786,21 @@ async function overwriteDisk() {
         </div>
         <span class="toolbar-status" :title="languageStatusText">{{ debuggerBusy ? '调试器正在执行…' : debugState?.status === 'stopped' ? `调试暂停：${debugState.reason ?? '断点'}` : executing === 'build' ? '正在编译…' : executing === 'run' ? '程序正在运行…' : executing === 'cmake' ? '正在构建工程…' : executing === 'ctest' ? '正在运行测试…' : executing === 'analysis' ? '正在静态分析…' : active?.dirty ? '等待自动保存' : active ? `${languageAvailable ? 'clangd 已连接' : '基础编辑模式'} · 已保存` : '' }}</span>
         <button class="panel-toggle" @click="panelOpen = !panelOpen"><Terminal :size="15" />{{ panelOpen ? '隐藏面板' : '显示面板' }}</button>
-        <button :class="['panel-toggle agent-toggle', { active: agentOpen }]" @click="agentOpen = !agentOpen"><Bot :size="15" />Agent</button>
+        <button
+          data-tour="workspace-agent-toggle"
+          :class="['panel-toggle agent-toggle', { active: agentOpen || inboxOpen, attention: agent.inbox?.attention }]"
+          @click="toggleAgentEntry"
+        ><Bot :size="15" />Agent<span v-if="inboxCount" class="agent-inbox-badge">{{ diagnosticBadgeLabel(inboxCount) }}</span></button>
       </div>
+
+      <DiagnosticInboxPopover
+        v-if="inboxOpen && inboxCount"
+        :groups="inboxGroups"
+        @acknowledge="agent.acknowledgeInbox()"
+        @close="inboxOpen = false"
+        @navigate="navigateInboxOccurrence"
+        @explain="explainDiagnostic"
+      />
 
       <div v-if="active?.conflicted" class="conflict-band">
         <AlertCircle :size="15" /><span>磁盘版本已变化，当前未保存内容尚未覆盖。</span>
@@ -800,28 +847,27 @@ async function overwriteDisk() {
         </div>
       </div>
 
-      <section v-if="agentOpen" class="workspace-agent-panel">
-        <header>
-          <div><Bot :size="16" /><strong>CppPilot Agent</strong><span v-if="agent.currentRun">{{ agent.currentRun.status }}</span><span v-else>就绪</span></div>
-          <button class="icon-command" title="关闭 Agent 面板" @click="agentOpen = false"><X :size="14" /></button>
-        </header>
-        <div v-if="agent.error" class="workspace-agent-error"><AlertCircle :size="15" /><span>{{ agent.error.message }}</span></div>
-        <ApprovalCard v-if="agent.pendingApproval" :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
-        <div v-else-if="agent.currentRun" class="workspace-agent-evidence">
-          <RunTimeline :events="agentTimeline" />
-          <p v-if="agent.currentRun.response">{{ agent.currentRun.response }}</p>
-        </div>
-        <AgentComposer
-          source="editor"
-          :project-id="store.currentProject?.id"
-          :active-file="active?.relativePath"
-          :selection="agentSelection"
-          :diagnostics="activeDiagnostics"
-          :busy="agentRunning || agent.running"
-          @submit="submitAgent"
-          @cancel="agent.currentRun && agent.cancel(agent.currentRun.id)"
-        />
-      </section>
+      <ConversationPanel
+        v-if="agentOpen"
+        data-tour="workspace-agent-panel"
+        :project-id="store.currentProject?.id"
+        :active-file="active?.relativePath"
+        :selection="agentSelection"
+        :diagnostics="activeDiagnostics"
+        :tool-busy="agentRunning || agent.running"
+        :tool-status="agent.currentRun?.status"
+        @close="agentOpen = false"
+        @tool-submit="submitAgent"
+        @cancel-tool="agent.currentRun && agent.cancel(agent.currentRun.id)"
+      >
+        <template v-if="agent.pendingApproval || agent.currentRun" #tool-status>
+          <ApprovalCard v-if="agent.pendingApproval" :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
+          <div v-else-if="agent.currentRun" class="workspace-agent-evidence">
+            <RunTimeline :events="agentTimeline" />
+            <p v-if="agent.currentRun.response">{{ agent.currentRun.response }}</p>
+          </div>
+        </template>
+      </ConversationPanel>
 
       <div
         v-if="panelOpen"

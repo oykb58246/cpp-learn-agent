@@ -13,10 +13,18 @@ import {
   agentRunStatusSchema,
   agentStartRequestSchema,
   approvalDecisionSchema,
+  backgroundProfileInputSchema,
   cmakeBuildRequestSchema,
   ctestRunRequestSchema,
+  conversationArchiveInputSchema,
+  conversationCreateInputSchema,
+  conversationMessagesInputSchema,
+  conversationRetryInputSchema,
+  conversationSendInputSchema,
+  conversationStopInputSchema,
   debugCommandRequestSchema,
   debugStartRequestSchema,
+  diagnosticsProjectInputSchema,
   environmentInstallRequestSchema,
   environmentOpenDownloadRequestSchema,
   failure,
@@ -36,15 +44,19 @@ import {
   type ApiResult,
   type AppError,
   type AppSettings,
+  type CppStandard,
   type EnvironmentInstallTask
 } from '@cpp-pet/contracts'
-import { achievementDefinitions, AgentRuntime, builtInKnowledge, KnowledgeGate, OpenAiCompatiblePlanner, transitionKnowledge } from '@cpp-pet/agent-runtime'
+import { achievementDefinitions, AgentRuntime, builtInKnowledge, KnowledgeGate, OpenAiCompatiblePlanner, StreamingModelGateway, transitionKnowledge } from '@cpp-pet/agent-runtime'
 import { z } from 'zod'
 import { createWindowOptions } from './window-options'
 import { AgentHost } from './agent-host'
 import { ModelSecretStore } from './model-secret-store'
 import { createMcpWorkerParameters } from './mcp-worker-config'
 import { petEventForRun } from './pet-events'
+import { installationVerificationFailure, visiblePowerShellTerminalArguments } from './environment-install'
+import { DiagnosticIncidentService } from './diagnostic-incident-service'
+import { ConversationService } from './conversation-service'
 import {
   DatabaseRuntimeStore,
   DesktopContextBuilder,
@@ -59,13 +71,15 @@ let workspaceService: WorkspaceService | null = null
 let agentHost: AgentHost | null = null
 let agentToolClient: McpRuntimeToolClient | null = null
 let modelSecrets: ModelSecretStore | null = null
+let diagnosticIncidentService: DiagnosticIncidentService | null = null
+let conversationService: ConversationService | null = null
 let agentTransport: 'starting' | 'stdio' | 'in-memory-fallback' | 'failed' = 'starting'
 let agentStartupError: string | null = null
 let shutdownStarted = false
 let lastLearnerLevel = 1
 const toolchainService = new ToolchainService()
 const activeRuns = new Map<string, AbortController>()
-const buildArtifacts = new Map<string, { path: string; projectId: string; projectRoot: string; artifactName: string }>()
+const buildArtifacts = new Map<string, { path: string; projectId: string; projectRoot: string; artifactName: string; relativePath: string; standard: CppStandard }>()
 const cmakeBuilds = new Map<string, { directory: string; sourceDirectory: string; projectId: string; configuration: 'Debug' | 'Release' }>()
 const languageSessions = new Map<string, ClangdSession>()
 const debugSessions = new Map<string, GdbMiSession>()
@@ -83,6 +97,14 @@ const requiredAgentServices = () => {
     throw new ToolExecutionError('AGENT_STARTING', '本地 Agent 服务仍在启动。', '稍候几秒后重试。', true)
   }
   return { agentHost, modelSecrets, ...requiredServices() }
+}
+const requiredDiagnosticService = () => {
+  if (!diagnosticIncidentService) throw new Error('Diagnostic service is not ready')
+  return diagnosticIncidentService
+}
+const requiredConversationService = () => {
+  if (!conversationService) throw new Error('Conversation service is not ready')
+  return conversationService
 }
 const startRun = (runId: string): AbortController => {
   if (activeRuns.has(runId)) throw new ToolExecutionError('RUN_ID_IN_USE', '当前任务标识正在使用。', '等待当前任务结束后重试。', true)
@@ -126,7 +148,10 @@ function registerIpc(): void {
     customCursor: z.boolean().optional(),
     onboardingCompleted: z.boolean().optional(),
     onboardingStatus: z.enum(['pending', 'completed', 'skipped']).optional(),
-    onboardingReminderDismissed: z.boolean().optional()
+    onboardingReminderDismissed: z.boolean().optional(),
+    productTourStatus: z.enum(['pending', 'in-progress', 'completed', 'dismissed']).optional(),
+    productTourStep: z.number().int().min(0).max(5).optional(),
+    productTourWelcomeSeen: z.boolean().optional()
   }), input => {
     const { database } = requiredServices()
     const settings = database.updateSettings(input as Partial<AppSettings>)
@@ -225,7 +250,10 @@ function registerIpc(): void {
         signal: controller.signal
       })
       const artifactName = basename(result.artifactPath)
-      if (result.success) buildArtifacts.set(buildId, { path: result.artifactPath, projectId: input.projectId, projectRoot: root, artifactName })
+      if (result.success) buildArtifacts.set(buildId, {
+        path: result.artifactPath, projectId: input.projectId, projectRoot: root, artifactName,
+        relativePath: input.relativePath, standard: input.standard
+      })
       database.addEvent({
         eventId: randomUUID(),
         type: result.success ? 'compiler.build.succeeded' : 'compiler.build.failed',
@@ -235,7 +263,7 @@ function registerIpc(): void {
         projectId: input.projectId,
         payload: { runId: input.runId, buildId, relativePath: input.relativePath, profileId: profile.id, diagnostics: result.diagnostics.length }
       })
-      return {
+      const response = {
         runId: input.runId,
         buildId,
         projectId: input.projectId,
@@ -247,6 +275,8 @@ function registerIpc(): void {
         diagnostics: result.diagnostics,
         builtAt: new Date().toISOString()
       }
+      requiredDiagnosticService().recordBuild(input, response)
+      return response
     } finally {
       activeRuns.delete(input.runId)
     }
@@ -464,29 +494,39 @@ function registerIpc(): void {
       `$exitCode = 1`,
       `try { winget install --id '${target.packageId}' --exact --source winget --interactive --accept-source-agreements --accept-package-agreements; $exitCode = $LASTEXITCODE } catch { Write-Error $_; $exitCode = 1 }`,
       `if ($exitCode -eq 0) { Write-Host '安装完成，CppPilot 将自动重新检测环境。' -ForegroundColor Green } else { Write-Host \"安装未成功，退出码: $exitCode\" -ForegroundColor Red }`,
+      `if ($exitCode -ne 0) { Read-Host 'Installation failed. Press Enter to close.' }`,
       `Start-Sleep -Seconds 3`,
       `exit $exitCode`
     ].join('; ')
-    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', command], {
+    const child = spawn(process.env.ComSpec ?? 'cmd.exe', visiblePowerShellTerminalArguments(`CppPilot install ${target.label}`, command), {
       detached: true,
       stdio: 'ignore',
       windowsHide: false
     })
     let finished = false
-    const finishTask = (status: EnvironmentInstallTask['status'], exitCode: number | null) => {
+    const finishTask = async (status: EnvironmentInstallTask['status'], exitCode: number | null) => {
       if (finished) return
       finished = true
+      let verificationFailure: string | undefined
+      if (status === 'succeeded') {
+        try {
+          verificationFailure = installationVerificationFailure(task.target, await toolchainService.detect())
+        } catch {
+          verificationFailure = 'WinGet 已结束，但 CppPilot 无法验证安装结果。请重新检测环境。'
+        }
+      }
       const completed: EnvironmentInstallTask = {
         ...task,
-        status,
+        status: verificationFailure ? 'failed' : status,
         finishedAt: new Date().toISOString(),
-        exitCode
+        exitCode,
+        ...(verificationFailure ? { verificationFailure } : {})
       }
       environmentInstallTasks.set(task.taskId, completed)
       mainWindow?.webContents.send(ipc.environmentInstallChanged, completed)
     }
-    child.once('error', () => finishTask('failed', null))
-    child.once('close', code => finishTask(code === 0 ? 'succeeded' : 'failed', code))
+    child.once('error', () => { void finishTask('failed', null) })
+    child.once('close', code => { void finishTask(code === 0 ? 'succeeded' : 'failed', code) })
     mainWindow?.webContents.send(ipc.environmentInstallChanged, task)
     child.unref()
     return { launched: true, target: input.target, packageId: target.packageId, task }
@@ -627,6 +667,9 @@ function registerIpc(): void {
         projectId: artifact.projectId,
         payload: { runId: input.runId, buildId: input.buildId, exitCode: process.exitCode, timedOut: process.timedOut }
       })
+      requiredDiagnosticService().recordRun({
+        projectId: artifact.projectId, relativePath: artifact.relativePath, standard: artifact.standard
+      }, result)
       return result
     } finally {
       activeRuns.delete(input.runId)
@@ -637,6 +680,15 @@ function registerIpc(): void {
     controller?.abort()
     return { runId: input.runId, stopped: Boolean(controller) }
   })
+  handle(ipc.diagnosticsListActive, diagnosticsProjectInputSchema, input => requiredDiagnosticService().list(input.projectId))
+  handle(ipc.diagnosticsAcknowledge, diagnosticsProjectInputSchema, input => requiredDiagnosticService().acknowledge(input.projectId))
+  handle(ipc.conversationsList, diagnosticsProjectInputSchema, input => requiredConversationService().list(input))
+  handle(ipc.conversationsCreate, conversationCreateInputSchema, input => requiredConversationService().create(input))
+  handle(ipc.conversationsArchive, conversationArchiveInputSchema, input => requiredConversationService().archive(input))
+  handle(ipc.conversationsMessages, conversationMessagesInputSchema, input => requiredConversationService().messages(input))
+  handle(ipc.conversationsSend, conversationSendInputSchema, input => requiredConversationService().send(input))
+  handle(ipc.conversationsStop, conversationStopInputSchema, input => requiredConversationService().stop(input))
+  handle(ipc.conversationsRetry, conversationRetryInputSchema, input => requiredConversationService().retry(input))
   handle(ipc.agentStart, agentStartRequestSchema, input => requiredAgentServices().agentHost.start(input))
   handle(ipc.agentGet, z.object({ runId: z.string().uuid() }), input => {
     const run = requiredAgentServices().agentHost.get(input.runId)
@@ -655,6 +707,40 @@ function registerIpc(): void {
   handle(ipc.agentCancel, z.object({ runId: z.string().uuid() }), input => requiredAgentServices().agentHost.cancel(input.runId))
   handle(ipc.approvalDecide, approvalDecisionSchema, input => requiredAgentServices().agentHost.decide(input))
   handle(ipc.learningCatalog, empty, () => requiredServices().database.listKnowledgeNodes())
+  handle(ipc.learningBackgroundGet, z.object({ userId: z.string().min(1).max(100).default('local-user') }).optional(), input => {
+    const { database } = requiredServices()
+    const userId = input?.userId ?? 'local-user'
+    const saved = database.getBackgroundProfile(userId)
+    if (saved) return saved
+    const legacyStates = database.listLearnerKnowledge(userId)
+    if (!legacyStates.length) return null
+    const studiedConceptIds = legacyStates
+      .filter(item => ['learning', 'self-claimed', 'verified', 'review'].includes(item.status))
+      .map(item => item.conceptId)
+    const focusConceptIds = [...new Set(database.listErrorBookEntries(userId, 'open').flatMap(item => item.conceptIds))]
+    return database.saveBackgroundProfile({
+      userId,
+      onboardingCompleted: true,
+      startingPoint: 'some-experience',
+      studiedConceptIds,
+      focusConceptIds,
+      updatedAt: new Date().toISOString()
+    })
+  })
+  handle(ipc.learningBackgroundSave, backgroundProfileInputSchema.extend({ userId: z.string().min(1).max(100).optional() }), input => {
+    const { database } = requiredServices()
+    const known = new Set(database.listKnowledgeNodes().map(node => node.id))
+    const studiedConceptIds = [...new Set(input.studiedConceptIds.filter(id => known.has(id)))]
+    const focusConceptIds = [...new Set(input.focusConceptIds.filter(id => known.has(id)))]
+    return database.saveBackgroundProfile({
+      userId: input.userId ?? 'local-user',
+      onboardingCompleted: input.onboardingCompleted,
+      startingPoint: input.startingPoint,
+      studiedConceptIds,
+      focusConceptIds,
+      updatedAt: new Date().toISOString()
+    })
+  })
   handle(ipc.learningKnowledge, z.object({ userId: z.string().min(1).max(100).default('local-user') }).optional(), input => requiredServices().database.listLearnerKnowledge(input?.userId ?? 'local-user'))
   handle(ipc.learningUpdateKnowledge, z.object({
     userId: z.string().min(1).max(100).default('local-user'),
@@ -734,9 +820,7 @@ function registerIpc(): void {
             ? agentTransport === 'stdio' ? 'Agent Runtime 与 stdio MCP 已连接' : 'stdio MCP 不可用，已切换进程内本地工具通道'
             : agentStartupError ?? '正在连接本地 Agent 服务'
         }
-      ],
-      learning: { concept: '循环与边界', progress: 42, reviewCount: 3, level: 2 },
-      tasks: [{ id: '1', title: '完成第一个 C++ 项目', meta: '工作区基础流程', status: 'todo' as const }, { id: '2', title: '检查循环边界错题', meta: '3 条待复习', status: 'blocked' as const }]
+      ]
     }
   })
 }
@@ -791,6 +875,8 @@ app.whenReady().then(async () => {
   const userData = app.getPath('userData')
   rmSync(join(userData, 'builds'), { recursive: true, force: true })
   database = new AppDatabase(join(userData, 'data', 'cpp-pet.sqlite')); workspaceService = new WorkspaceService(database, join(userData, 'snapshots'))
+  diagnosticIncidentService = new DiagnosticIncidentService(database)
+  diagnosticIncidentService.onChanged(event => mainWindow?.webContents.send(ipc.diagnosticsChanged, event))
   if (!database.recoveryMode) database.recoverInterruptedAgentRuns()
   if (process.env.CPP_PET_E2E_SEED_ROOT && database.listProjects().length === 0) {
     mkdirSync(process.env.CPP_PET_E2E_SEED_ROOT, { recursive: true })
@@ -812,6 +898,15 @@ app.whenReady().then(async () => {
       return safeStorage.decryptString(value)
     }
   })
+  conversationService = new ConversationService({
+    db: database,
+    workspace: workspaceService,
+    secrets: modelSecrets,
+    gateway: new StreamingModelGateway(),
+    nodes: builtInKnowledge
+  })
+  conversationService.onDelta(event => mainWindow?.webContents.send(ipc.conversationsDelta, event))
+  conversationService.onChanged(event => mainWindow?.webContents.send(ipc.conversationsChanged, event))
   nativeTheme.themeSource = database.getSettings().theme
   registerIpc()
   createWindow()
@@ -856,7 +951,8 @@ app.on('before-quit', event => {
   if (shutdownStarted) return
   event.preventDefault()
   shutdownStarted = true
-  for (const controller of activeRuns.values()) controller.abort()
+    for (const controller of activeRuns.values()) controller.abort()
+  conversationService?.shutdown()
   void (async () => {
     await Promise.allSettled(agentHost ? [agentHost.shutdown()] : [])
     await Promise.allSettled([

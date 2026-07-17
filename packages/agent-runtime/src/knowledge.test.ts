@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { LearnerKnowledge } from '@cpp-pet/contracts'
-import { builtInKnowledge, KnowledgeGate, transitionKnowledge, validateKnowledgeGraph } from './knowledge'
+import type { BackgroundProfile, LearnerKnowledge } from '@cpp-pet/contracts'
+import { buildExplanationContext, builtInKnowledge, KnowledgeGate, transitionKnowledge, validateKnowledgeGraph } from './knowledge'
 
 const now = new Date().toISOString()
 
@@ -46,5 +46,25 @@ describe('KnowledgeGate', () => {
     expect(() => transitionKnowledge('local-user', builtInKnowledge, [], 'basics.program', 'self-claimed')).toThrow('学习中')
     const learning: LearnerKnowledge = { userId: 'local-user', conceptId: 'basics.program', status: 'learning', confidence: 0.5, updatedAt: now }
     expect(transitionKnowledge('local-user', builtInKnowledge, [learning], 'basics.program', 'self-claimed').status).toBe('self-claimed')
+  })
+})
+
+describe('explanation context', () => {
+  it('marks unfamiliar requested concepts for introduction without blocking the explanation', () => {
+    const profile: BackgroundProfile = {
+      userId: 'local-user',
+      onboardingCompleted: true,
+      startingPoint: 'some-experience',
+      studiedConceptIds: ['basics.program', 'basics.variables'],
+      focusConceptIds: ['control.loops'],
+      updatedAt: now
+    }
+
+    const context = buildExplanationContext(builtInKnowledge, profile, ['data.arrays'])
+
+    expect(context.knownConceptIds).toEqual(['basics.program', 'basics.variables'])
+    expect(context.focusConceptIds).toEqual(['control.loops'])
+    expect(context.unseenConceptIds).toEqual(['data.arrays'])
+    expect(context.instructions).toContain('先用简短定义介绍未接触概念')
   })
 })

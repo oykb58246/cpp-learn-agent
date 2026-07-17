@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type {
   AgentRun,
+  BackgroundProfile,
   AchievementDefinition,
   Approval,
   ErrorBookEntry,
@@ -31,6 +32,22 @@ afterEach(() => {
 })
 
 describe('H3 persistence', () => {
+  it('persists an editable assistant background profile', () => {
+    const { db } = setup()
+    const profile: BackgroundProfile = {
+      userId: 'local-user',
+      onboardingCompleted: true,
+      startingPoint: 'some-experience',
+      studiedConceptIds: ['basics.program'],
+      focusConceptIds: ['control.loops'],
+      updatedAt: now
+    }
+
+    db.saveBackgroundProfile(profile)
+    expect(db.getBackgroundProfile('local-user')).toEqual(profile)
+    db.close()
+  })
+
   it('rolls back the run row when creating its steps fails', () => {
     const { db } = setup()
     const duplicateStepId = crypto.randomUUID()

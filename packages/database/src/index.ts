@@ -4,12 +4,17 @@ import { dirname, join, resolve } from 'node:path'
 import type {
   AgentRun,
   AgentRunDetail,
+  AgentConversation,
+  AgentMessage,
   AchievementDefinition,
+  BackgroundProfile,
   Approval,
   AppSettings,
   CursorStyle,
   DomainEvent,
   ErrorBookEntry,
+  DiagnosticFailureKind,
+  DiagnosticIncidentDetail,
   KnowledgeNode,
   LearnerAchievement,
   LearnerKnowledge,
@@ -129,6 +134,7 @@ export class AppDatabase {
       recovery = true
     }
     this.recoveryMode = recovery
+    if (!recovery) this.recoverInterruptedMessages(new Date().toISOString())
   }
 
   close(): void { this.db.pragma('wal_checkpoint(TRUNCATE)'); this.db.close() }
@@ -148,13 +154,25 @@ export class AppDatabase {
       cursorStyle: 'mascot',
       onboardingCompleted: false,
       onboardingStatus: 'pending',
-      onboardingReminderDismissed: false
+      onboardingReminderDismissed: false,
+      productTourStatus: 'pending',
+      productTourStep: 0,
+      productTourWelcomeSeen: false
     }
     const saved = JSON.parse(row.value_json) as Partial<AppSettings> & { customCursor?: boolean }
     const onboardingCompleted = typeof saved.onboardingCompleted === 'boolean' ? saved.onboardingCompleted : true
     const onboardingStatus = saved.onboardingStatus === 'pending' || saved.onboardingStatus === 'completed' || saved.onboardingStatus === 'skipped'
       ? saved.onboardingStatus
       : onboardingCompleted ? 'completed' : 'pending'
+    const productTourStatus = saved.productTourStatus === 'in-progress'
+      || saved.productTourStatus === 'completed'
+      || saved.productTourStatus === 'dismissed'
+      ? saved.productTourStatus
+      : 'pending'
+    const productTourStep = Number.isInteger(saved.productTourStep) && Number(saved.productTourStep) >= 0
+      ? Number(saved.productTourStep)
+      : 0
+    const productTourWelcomeSeen = saved.productTourWelcomeSeen === true
     const cursorStyle = resolveCursorStyle(saved)
     return {
       theme: 'system',
@@ -165,7 +183,10 @@ export class AppDatabase {
       onboardingReminderDismissed: false,
       ...saved,
       cursorStyle,
-      onboardingStatus
+      onboardingStatus,
+      productTourStatus,
+      productTourStep,
+      productTourWelcomeSeen
     }
   }
   updateSettings(patch: Partial<AppSettings>): AppSettings {
@@ -510,6 +531,27 @@ export class AppDatabase {
     return (this.db.prepare('SELECT * FROM learner_knowledge WHERE user_id = ? ORDER BY concept_id').all(userId) as any[]).map(mapLearnerKnowledge)
   }
 
+  saveBackgroundProfile(profile: BackgroundProfile): BackgroundProfile {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO background_profiles(
+      user_id,onboarding_completed,starting_point,studied_concept_ids_json,focus_concept_ids_json,updated_at
+    ) VALUES(@userId,@onboardingCompleted,@startingPoint,@studiedConceptIdsJson,@focusConceptIdsJson,@updatedAt)
+    ON CONFLICT(user_id) DO UPDATE SET onboarding_completed=excluded.onboarding_completed,
+      starting_point=excluded.starting_point,studied_concept_ids_json=excluded.studied_concept_ids_json,
+      focus_concept_ids_json=excluded.focus_concept_ids_json,updated_at=excluded.updated_at`).run({
+      ...profile,
+      onboardingCompleted: profile.onboardingCompleted ? 1 : 0,
+      studiedConceptIdsJson: JSON.stringify([...new Set(profile.studiedConceptIds)]),
+      focusConceptIdsJson: JSON.stringify([...new Set(profile.focusConceptIds)])
+    })
+    return profile
+  }
+
+  getBackgroundProfile(userId: string): BackgroundProfile | undefined {
+    const row = this.db.prepare('SELECT * FROM background_profiles WHERE user_id = ?').get(userId) as any
+    return row ? mapBackgroundProfile(row) : undefined
+  }
+
   saveErrorBookEntry(entry: ErrorBookEntry): ErrorBookEntry {
     this.ensureWritable()
     this.db.prepare(`INSERT INTO error_book_entries(
@@ -655,6 +697,158 @@ export class AppDatabase {
     this.db.prepare('DELETE FROM model_profiles WHERE id = ?').run(id)
   }
 
+  saveDiagnosticIncident(incident: DiagnosticIncidentDetail): DiagnosticIncidentDetail {
+    this.ensureWritable()
+    return this.db.transaction(() => {
+      this.db.prepare(`UPDATE diagnostic_incidents SET status='superseded',updated_at=?
+        WHERE project_id=? AND target_key=? AND operation=? AND status='active'`)
+        .run(incident.updatedAt, incident.projectId, incident.targetKey, incident.operation)
+      this.db.prepare(`INSERT INTO diagnostic_incidents(
+        id,project_id,attempt_id,target_key,operation,failure_kinds_json,status,acknowledged_at,created_at,updated_at,resolved_at
+      ) VALUES(@id,@projectId,@attemptId,@targetKey,@operation,@failureKindsJson,@status,@acknowledgedAt,@createdAt,@updatedAt,@resolvedAt)`).run({
+        ...incident,
+        failureKindsJson: JSON.stringify(incident.failureKinds),
+        acknowledgedAt: incident.acknowledgedAt ?? null,
+        resolvedAt: incident.resolvedAt ?? null
+      })
+      const insertGroup = this.db.prepare(`INSERT INTO diagnostic_groups(
+        id,incident_id,fingerprint,source,code,failure_kind,severity,title,normalized_template,occurrence_count,created_at
+      ) VALUES(@id,@incidentId,@fingerprint,@source,@code,@failureKind,@severity,@title,@normalizedTemplate,@occurrenceCount,@createdAt)`)
+      const insertOccurrence = this.db.prepare(`INSERT INTO diagnostic_occurrences(
+        id,group_id,file,line,column_number,end_line,end_column,raw_message,normalized_message
+      ) VALUES(@id,@groupId,@file,@line,@column,@endLine,@endColumn,@rawMessage,@normalizedMessage)`)
+      for (const group of incident.groups) {
+        insertGroup.run({ ...group, code: group.code ?? null })
+        for (const occurrence of group.occurrences) insertOccurrence.run({
+          ...occurrence,
+          file: occurrence.file ?? null,
+          line: occurrence.line ?? null,
+          column: occurrence.column ?? null,
+          endLine: occurrence.endLine ?? null,
+          endColumn: occurrence.endColumn ?? null
+        })
+      }
+      return incident
+    })()
+  }
+
+  listActiveDiagnosticIncidents(projectId: string): DiagnosticIncidentDetail[] {
+    const rows = this.db.prepare("SELECT * FROM diagnostic_incidents WHERE project_id=? AND status='active' ORDER BY updated_at DESC").all(projectId) as any[]
+    return rows.map(row => this.mapDiagnosticIncident(row))
+  }
+
+  acknowledgeDiagnosticIncidents(projectId: string, ids: string[], at: string): void {
+    this.ensureWritable()
+    const update = this.db.prepare("UPDATE diagnostic_incidents SET acknowledged_at=?,updated_at=? WHERE id=? AND project_id=? AND status='active'")
+    this.db.transaction(() => { for (const id of ids) update.run(at, at, id, projectId) })()
+  }
+
+  resolveDiagnosticIncidents(projectId: string, targetKey: string, kinds: DiagnosticFailureKind[], at: string): void {
+    this.ensureWritable()
+    const rows = this.db.prepare("SELECT id,failure_kinds_json FROM diagnostic_incidents WHERE project_id=? AND target_key=? AND status='active'")
+      .all(projectId, targetKey) as Array<{ id: string; failure_kinds_json: string }>
+    const update = this.db.prepare("UPDATE diagnostic_incidents SET status='resolved',resolved_at=?,updated_at=? WHERE id=?")
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const stored = JSON.parse(row.failure_kinds_json) as DiagnosticFailureKind[]
+        if (stored.some(kind => kinds.includes(kind))) update.run(at, at, row.id)
+      }
+    })()
+  }
+
+  createConversation(conversation: AgentConversation): AgentConversation {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO agent_conversations(id,project_id,title,status,created_at,updated_at)
+      VALUES(@id,@projectId,@title,@status,@createdAt,@updatedAt)`).run(conversation)
+    return conversation
+  }
+
+  listConversations(projectId: string): AgentConversation[] {
+    return (this.db.prepare("SELECT * FROM agent_conversations WHERE project_id=? AND status='active' ORDER BY updated_at DESC").all(projectId) as any[])
+      .map(mapAgentConversation)
+  }
+
+  updateConversation(conversation: AgentConversation): AgentConversation {
+    this.ensureWritable()
+    const result = this.db.prepare(`UPDATE agent_conversations SET title=?,status=?,updated_at=? WHERE id=? AND project_id=?`)
+      .run(conversation.title, conversation.status, conversation.updatedAt, conversation.id, conversation.projectId)
+    if (!result.changes) throw new Error('Conversation not found')
+    return conversation
+  }
+
+  archiveConversation(projectId: string, conversationId: string): AgentConversation {
+    this.ensureWritable()
+    const now = new Date().toISOString()
+    const result = this.db.prepare("UPDATE agent_conversations SET status='archived',updated_at=? WHERE id=? AND project_id=?").run(now, conversationId, projectId)
+    if (!result.changes) throw new Error('Conversation not found')
+    const row = this.db.prepare('SELECT * FROM agent_conversations WHERE id=?').get(conversationId) as any
+    return mapAgentConversation(row)
+  }
+
+  saveAgentMessage(message: AgentMessage): AgentMessage {
+    this.ensureWritable()
+    const stored = this.db.prepare('SELECT sequence_number FROM agent_messages WHERE id=?').get(message.id) as { sequence_number: number } | undefined
+    const sequenceNumber = stored?.sequence_number ?? (this.db.prepare(
+      'SELECT COALESCE(MAX(sequence_number), 0) + 1 AS next FROM agent_messages WHERE conversation_id=?'
+    ).get(message.conversationId) as { next: number }).next
+    this.db.prepare(`INSERT INTO agent_messages(
+      id,conversation_id,role,kind,content,status,diagnostic_snapshot_json,error_code,error_message,created_at,updated_at,completed_at,sequence_number
+    ) VALUES(@id,@conversationId,@role,@kind,@content,@status,@diagnosticSnapshotJson,@errorCode,@errorMessage,@createdAt,@updatedAt,@completedAt,@sequenceNumber)
+    ON CONFLICT(id) DO UPDATE SET content=excluded.content,status=excluded.status,error_code=excluded.error_code,
+      error_message=excluded.error_message,updated_at=excluded.updated_at,completed_at=excluded.completed_at`).run({
+      ...message,
+      diagnosticSnapshotJson: message.diagnosticSnapshot ? JSON.stringify(message.diagnosticSnapshot) : null,
+      errorCode: message.errorCode ?? null,
+      errorMessage: message.errorMessage ?? null,
+      completedAt: message.completedAt ?? null,
+      sequenceNumber
+    })
+    return message
+  }
+
+  listAgentMessages(projectId: string, conversationId: string): AgentMessage[] {
+    return (this.db.prepare(`SELECT m.* FROM agent_messages m JOIN agent_conversations c ON c.id=m.conversation_id
+      WHERE c.project_id=? AND c.id=? ORDER BY m.sequence_number`).all(projectId, conversationId) as any[]).map(mapAgentMessage)
+  }
+
+  setCurrentConversation(projectId: string, conversationId: string): void {
+    this.ensureWritable()
+    const owned = this.db.prepare('SELECT id FROM agent_conversations WHERE id=? AND project_id=?').get(conversationId, projectId)
+    if (!owned) throw new Error('Conversation not found')
+    this.db.prepare(`INSERT INTO project_conversation_state(project_id,conversation_id,updated_at) VALUES(?,?,?)
+      ON CONFLICT(project_id) DO UPDATE SET conversation_id=excluded.conversation_id,updated_at=excluded.updated_at`)
+      .run(projectId, conversationId, new Date().toISOString())
+  }
+
+  getCurrentConversationId(projectId: string): string | undefined {
+    return (this.db.prepare('SELECT conversation_id FROM project_conversation_state WHERE project_id=?').get(projectId) as { conversation_id: string } | undefined)?.conversation_id
+  }
+
+  recoverInterruptedMessages(at: string): number {
+    if (this.recoveryMode) return 0
+    return Number(this.db.prepare(`UPDATE agent_messages SET status='interrupted',updated_at=?,completed_at=?
+      WHERE status IN ('pending','streaming')`).run(at, at).changes)
+  }
+
+  private mapDiagnosticIncident(row: any): DiagnosticIncidentDetail {
+    const groups = (this.db.prepare('SELECT * FROM diagnostic_groups WHERE incident_id=? ORDER BY created_at,id').all(row.id) as any[]).map(group => {
+      const occurrences = (this.db.prepare('SELECT * FROM diagnostic_occurrences WHERE group_id=? ORDER BY file,line,column_number,id').all(group.id) as any[])
+        .map(mapDiagnosticOccurrence)
+      return {
+        id: group.id, incidentId: group.incident_id, fingerprint: group.fingerprint, source: group.source,
+        ...(group.code ? { code: group.code } : {}), failureKind: group.failure_kind, severity: group.severity,
+        title: group.title, normalizedTemplate: group.normalized_template, occurrenceCount: group.occurrence_count,
+        createdAt: group.created_at, occurrences
+      }
+    })
+    return {
+      id: row.id, projectId: row.project_id, attemptId: row.attempt_id, targetKey: row.target_key,
+      operation: row.operation, failureKinds: JSON.parse(row.failure_kinds_json), status: row.status,
+      ...(row.acknowledged_at ? { acknowledgedAt: row.acknowledged_at } : {}), createdAt: row.created_at,
+      updatedAt: row.updated_at, ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}), groups
+    }
+  }
+
   private replaceAgentSteps(run: AgentRun): void {
     this.db.prepare('DELETE FROM agent_steps WHERE run_id = ?').run(run.id)
     const insert = this.db.prepare(`INSERT INTO agent_steps(
@@ -676,6 +870,20 @@ export class AppDatabase {
 const normalizeRoot = (value: string) => value.replaceAll('\\', '/').replace(/\/$/, '').toLowerCase()
 const mapWorkspace = (r: any): Workspace => ({ id: r.id, name: r.name, rootPath: r.root_path, trustState: r.trust_state, createdAt: r.created_at, lastOpenedAt: r.last_opened_at })
 const mapProject = (r: any): Project => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, type: r.type, creationMode: r.creation_mode, relativeRoot: r.relative_root, ...(r.problem_id ? { problemId: r.problem_id } : {}), createdAt: r.created_at, updatedAt: r.updated_at, lastOpenedAt: r.last_opened_at })
+const mapAgentConversation = (r: any): AgentConversation => ({
+  id: r.id, projectId: r.project_id, title: r.title, status: r.status, createdAt: r.created_at, updatedAt: r.updated_at
+})
+const mapAgentMessage = (r: any): AgentMessage => ({
+  id: r.id, conversationId: r.conversation_id, role: r.role, kind: r.kind, content: r.content, status: r.status,
+  ...(r.diagnostic_snapshot_json ? { diagnosticSnapshot: JSON.parse(r.diagnostic_snapshot_json) } : {}),
+  ...(r.error_code ? { errorCode: r.error_code } : {}), ...(r.error_message ? { errorMessage: r.error_message } : {}),
+  createdAt: r.created_at, updatedAt: r.updated_at, ...(r.completed_at ? { completedAt: r.completed_at } : {})
+})
+const mapDiagnosticOccurrence = (r: any) => ({
+  id: r.id, groupId: r.group_id, ...(r.file ? { file: r.file } : {}), ...(r.line ? { line: r.line } : {}),
+  ...(r.column_number ? { column: r.column_number } : {}), ...(r.end_line ? { endLine: r.end_line } : {}),
+  ...(r.end_column ? { endColumn: r.end_column } : {}), rawMessage: r.raw_message, normalizedMessage: r.normalized_message
+})
 const mapToolchainProfile = (r: any): ToolchainProfile => ({
   id: r.id,
   family: r.family,
@@ -791,6 +999,15 @@ const mapLearnerKnowledge = (r: any): LearnerKnowledge => ({
   confidence: r.confidence,
   ...(r.verified_at ? { verifiedAt: r.verified_at } : {}),
   ...(r.last_evidence_id ? { lastEvidenceId: r.last_evidence_id } : {}),
+  updatedAt: r.updated_at
+})
+
+const mapBackgroundProfile = (r: any): BackgroundProfile => ({
+  userId: r.user_id,
+  onboardingCompleted: Boolean(r.onboarding_completed),
+  startingPoint: r.starting_point,
+  studiedConceptIds: JSON.parse(r.studied_concept_ids_json),
+  focusConceptIds: JSON.parse(r.focus_concept_ids_json),
   updatedAt: r.updated_at
 })
 

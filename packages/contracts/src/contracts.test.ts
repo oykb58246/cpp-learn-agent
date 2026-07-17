@@ -6,6 +6,11 @@ import {
   ctestRunRequestSchema,
   debugCommandRequestSchema,
   debugStartRequestSchema,
+  agentConversationSchema,
+  agentMessageSchema,
+  conversationMessageDeltaSchema,
+  diagnosticIncidentSchema,
+  diagnosticOccurrenceSchema,
   environmentInstallRequestSchema,
   environmentInstallTaskSchema,
   environmentInstallerStatusSchema,
@@ -60,6 +65,51 @@ describe('contracts', () => {
     expect(languagePositionRequestSchema.safeParse({ projectId, relativePath: 'main.cpp', line: 1, column: 5 }).success).toBe(true)
     expect(debugStartRequestSchema.parse({ projectId, relativePath: 'main.cpp', breakpoints: [{ relativePath: 'main.cpp', line: 2 }] }).standard).toBe('c++17')
     expect(debugCommandRequestSchema.safeParse({ sessionId: crypto.randomUUID(), command: 'next' }).success).toBe(true)
+  })
+  it('validates diagnostic inbox and streamed conversation contracts', () => {
+    const now = new Date().toISOString()
+    const occurrence = {
+      id: crypto.randomUUID(), groupId: crypto.randomUUID(), file: 'main.cpp', line: 8, column: 5,
+      rawMessage: 'expected ; before return', normalizedMessage: 'expected ; before return'
+    }
+    expect(diagnosticOccurrenceSchema.safeParse(occurrence).success).toBe(true)
+    expect(diagnosticIncidentSchema.safeParse({
+      id: crypto.randomUUID(), projectId: crypto.randomUUID(), attemptId: crypto.randomUUID(),
+      targetKey: 'main.cpp:c++17', operation: 'build', failureKinds: ['compile'], status: 'active',
+      acknowledgedAt: undefined, createdAt: now, updatedAt: now,
+      groups: [{
+        id: crypto.randomUUID(), incidentId: crypto.randomUUID(), fingerprint: 'fingerprint', source: 'compiler',
+        failureKind: 'compile', severity: 'error', title: '语句结束符缺失', normalizedTemplate: 'expected ;',
+        occurrenceCount: 1, createdAt: now, occurrences: [occurrence]
+      }]
+    }).success).toBe(true)
+    expect(agentConversationSchema.safeParse({
+      id: crypto.randomUUID(), projectId: crypto.randomUUID(), title: '新对话', status: 'active', createdAt: now, updatedAt: now
+    }).success).toBe(true)
+    expect(agentMessageSchema.safeParse({
+      id: crypto.randomUUID(), conversationId: crypto.randomUUID(), role: 'assistant', kind: 'text',
+      content: '你好', status: 'streaming', createdAt: now, updatedAt: now
+    }).success).toBe(true)
+    expect(conversationMessageDeltaSchema.safeParse({
+      projectId: crypto.randomUUID(), conversationId: crypto.randomUUID(), messageId: crypto.randomUUID(), sequence: 0, delta: '你好'
+    }).success).toBe(true)
+  })
+  it('rejects unsafe diagnostic and malformed message payloads', () => {
+    expect(diagnosticOccurrenceSchema.safeParse({
+      id: crypto.randomUUID(), groupId: crypto.randomUUID(), file: 'C:\\workspace\\main.cpp', line: 1,
+      rawMessage: 'x', normalizedMessage: 'x'
+    }).success).toBe(false)
+    expect(agentMessageSchema.safeParse({
+      id: crypto.randomUUID(), conversationId: crypto.randomUUID(), role: 'user', kind: 'text',
+      content: '', status: 'completed', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    }).success).toBe(false)
+    expect(agentMessageSchema.safeParse({
+      id: crypto.randomUUID(), conversationId: crypto.randomUUID(), role: 'assistant', kind: 'text',
+      content: '', status: 'pending', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    }).success).toBe(true)
+    expect(conversationMessageDeltaSchema.safeParse({
+      projectId: crypto.randomUUID(), conversationId: crypto.randomUUID(), messageId: crypto.randomUUID(), sequence: -1, delta: 'x'
+    }).success).toBe(false)
   })
   it('restricts environment downloads to known official targets', () => {
     expect(environmentOpenDownloadRequestSchema.safeParse({ target: 'msys2' }).success).toBe(true)

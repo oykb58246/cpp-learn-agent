@@ -19,7 +19,10 @@ export const useAppStore = defineStore('app', {
       cursorStyle: 'mascot',
       onboardingCompleted: false,
       onboardingStatus: 'pending',
-      onboardingReminderDismissed: false
+      onboardingReminderDismissed: false,
+      productTourStatus: 'pending',
+      productTourStep: 0,
+      productTourWelcomeSeen: false
     } as AppSettings),
     projects: state => state.bootstrap?.recentProjects ?? [],
     workspaces: state => state.bootstrap?.workspaces ?? []
@@ -35,8 +38,9 @@ export const useAppStore = defineStore('app', {
       if (dash.ok) this.dashboard = dash.data
       this.loading = false
     },
-    async updateSettings(patch: Partial<AppSettings>) {
+    async updateSettings(patch: Partial<AppSettings>): Promise<boolean> {
       // 先本地应用，保证设置页点击/预览立即有反馈
+      const previous = this.bootstrap ? { ...this.bootstrap.settings } : null
       if (this.bootstrap && patch) {
         this.bootstrap.settings = { ...this.bootstrap.settings, ...patch }
         applyAppearance(this.bootstrap.settings)
@@ -48,7 +52,17 @@ export const useAppStore = defineStore('app', {
           cursorStyle: result.data.cursorStyle ?? patch.cursorStyle ?? this.bootstrap.settings.cursorStyle ?? 'mascot'
         }
         applyAppearance(this.bootstrap.settings)
-      } else if (!result.ok) this.error = result.error
+        return true
+      }
+      if (!result.ok) {
+        if (this.bootstrap && previous) {
+          this.bootstrap.settings = previous
+          applyAppearance(previous)
+        }
+        this.error = result.error
+        return false
+      }
+      return true
     },
     async refreshProjects() { const result = await window.cppPet.project.list(); if (result.ok && this.bootstrap) this.bootstrap.recentProjects = result.data; else if (!result.ok) this.error = result.error },
     async refreshWorkspaces() { const result = await window.cppPet.workspace.list(); if (result.ok && this.bootstrap) this.bootstrap.workspaces = result.data; else if (!result.ok) this.error = result.error },

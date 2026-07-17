@@ -240,7 +240,8 @@ export const environmentInstallTaskSchema = z.object({
   status: z.enum(['running', 'succeeded', 'failed']),
   startedAt: z.string(),
   finishedAt: z.string().optional(),
-  exitCode: z.number().int().nullable().optional()
+  exitCode: z.number().int().nullable().optional(),
+  verificationFailure: z.string().optional()
 })
 export type EnvironmentInstallTask = z.infer<typeof environmentInstallTaskSchema>
 export const environmentInstallResultSchema = z.object({

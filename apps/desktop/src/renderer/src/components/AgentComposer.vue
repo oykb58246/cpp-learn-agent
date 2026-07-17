@@ -10,13 +10,22 @@ const props = withDefaults(defineProps<{
   selection?: NonNullable<AgentStartRequest['selection']> | undefined
   diagnostics?: NonNullable<AgentStartRequest['diagnostics']> | undefined
   busy?: boolean
+  suggestion?: { label: string; message: string; mode: AgentStartRequest['mode'] } | undefined
 }>(), { source: 'main', busy: false })
 const emit = defineEmits<{
   submit: [request: AgentStartRequest]
   cancel: []
+  'suggestion-selected': []
 }>()
 const mode = ref<AgentStartRequest['mode']>('chat')
 const message = ref('')
+
+function selectSuggestion() {
+  if (!props.suggestion || props.busy) return
+  mode.value = props.suggestion.mode
+  message.value = props.suggestion.message
+  emit('suggestion-selected')
+}
 
 function submit() {
   const value = message.value.trim()
@@ -36,6 +45,7 @@ function submit() {
 
 <template>
   <form class="agent-composer" @submit.prevent="submit">
+    <button v-if="suggestion" type="button" class="agent-suggestion" :disabled="busy" @click="selectSuggestion">{{ suggestion.label }}</button>
     <select v-model="mode" aria-label="Agent 模式">
       <option value="chat">教学问答</option>
       <option value="explain">解释代码</option>

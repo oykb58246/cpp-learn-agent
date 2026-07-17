@@ -16,6 +16,33 @@ describe('AppDatabase', () => {
     expect(db.getSettings()).toMatchObject({ onboardingCompleted: true, onboardingStatus: 'skipped', onboardingReminderDismissed: false })
     db.close()
   })
+  it('starts a new user with a pending product tour', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppet-db-')); dirs.push(dir)
+    const db = new AppDatabase(join(dir, 'app.sqlite'))
+
+    expect(db.getSettings()).toMatchObject({
+      productTourStatus: 'pending',
+      productTourStep: 0,
+      productTourWelcomeSeen: false
+    })
+    db.close()
+  })
+  it('migrates old settings and persists product tour progress', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppet-db-')); dirs.push(dir); const file = join(dir, 'app.sqlite')
+    let db = new AppDatabase(file)
+    db.db.prepare('INSERT OR REPLACE INTO settings(key, value_json) VALUES(?, ?)').run('app', JSON.stringify({
+      theme: 'system', sidebarWidth: 260, inspectorWidth: 320, bottomPanelHeight: 190,
+      cursorStyle: 'mascot', onboardingCompleted: true, onboardingStatus: 'completed',
+      onboardingReminderDismissed: false
+    }))
+    expect(db.getSettings()).toMatchObject({ productTourStatus: 'pending', productTourStep: 0, productTourWelcomeSeen: false })
+
+    db.updateSettings({ productTourStatus: 'in-progress', productTourStep: 3, productTourWelcomeSeen: true })
+    db.close()
+    db = new AppDatabase(file)
+    expect(db.getSettings()).toMatchObject({ productTourStatus: 'in-progress', productTourStep: 3, productTourWelcomeSeen: true })
+    db.close()
+  })
   it('persists settings and workspaces across restarts', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppet-db-')); dirs.push(dir); const file = join(dir, 'app.sqlite')
     const id = crypto.randomUUID(); let db = new AppDatabase(file)

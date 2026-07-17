@@ -143,23 +143,22 @@ describe('seven H3 workflows', () => {
     expect(detail.approvals.some(item => item.risk === 'L3' && item.status === 'approved')).toBe(true)
   })
 
-  it('loads review state and updates verified learning after approval', async () => {
+  it('turns a legacy review request into an explanatory follow-up without learning writes', async () => {
     const reviewItemId = crypto.randomUUID()
     const { calls, detail } = await execute({ requestId: crypto.randomUUID(), source: 'main', mode: 'review', message: '复习循环错误', reviewItemId, reviewOutcome: 'passed' })
-    expect(calls.map(call => call.name)).toEqual(['learning.get_state', 'learning.update_state'])
-    expect(detail.response).toContain('复习')
-    expect(calls[1]?.args).toMatchObject({ reviewItemId, reviewOutcome: 'passed', conceptId: 'control.loops' })
-    expect(detail.timeline.some(item => item.kind === 'learning')).toBe(true)
+    expect(calls).toEqual([])
+    expect(detail.response).toContain('不会记录成绩')
+    expect(detail.timeline.some(item => item.kind === 'learning')).toBe(false)
   })
 
-  it('returns a failed review to the first interval without verifying knowledge', async () => {
+  it('keeps a legacy failed review request as an explanatory follow-up', async () => {
     const reviewItemId = crypto.randomUUID()
     const { run, calls } = await execute({
       requestId: crypto.randomUUID(), source: 'main', mode: 'review', message: '循环边界仍不熟悉', reviewItemId, reviewOutcome: 'failed'
     })
 
     expect(run.status).toBe('completed')
-    expect(calls[1]?.args).toMatchObject({ reviewItemId, reviewOutcome: 'failed', status: 'review', conceptId: 'control.loops' })
-    expect(run.response).toContain('需巩固')
+    expect(calls).toEqual([])
+    expect(run.response).toContain('下一步')
   })
 })

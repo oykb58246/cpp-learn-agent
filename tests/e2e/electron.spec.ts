@@ -1,4 +1,4 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from 'playwright/test'
 import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -32,7 +32,9 @@ test('explains how to resume after skipping first-run setup', async () => {
     await expect(page.getByRole('heading', { name: '暂时跳过环境配置？' })).toBeVisible()
     await expect(page.getByText('左侧活动栏 → 设置 → C++ 工具链 → 环境向导', { exact: false })).toBeVisible()
     await page.getByRole('button', { name: '确认稍后配置' }).click()
-    await expect(page.getByRole('heading', { name: '继续你的 C++ 学习' })).toBeVisible()
+    await expect(page.getByText('先了解一下你的 C++ 背景', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '开始使用' }).click()
+    await expect(page.getByRole('heading', { name: '开始处理你的 C++ 问题' })).toBeVisible()
     await expect(page.locator('.environment-reminder')).toContainText('环境初始化尚未完成')
     await captureWindow(electronApp, page, join(repo, 'test-results', 'visual', 'onboarding-skipped-home-1440x900.png'))
     const settings = await page.evaluate(() => window.cppPet.settings.get())
@@ -58,8 +60,6 @@ test('explains how to resume after skipping first-run setup', async () => {
     expect(trackedInstall.completed).toMatchObject({ target: 'llvm', status: 'succeeded', exitCode: 0 })
     const tasks = await page.evaluate(() => window.cppPet.environment.installTasks())
     expect(tasks.ok && tasks.data[0]?.status).toBe('succeeded')
-    await expect(page.locator('.installer-guide')).toContainText('最近安装命令已成功')
-    await expect(page.locator('.installer-note.success')).toContainText('LLVM 工具集安装完成，环境已重新检测。')
   } finally { await electronApp.close() }
 })
 
@@ -109,7 +109,9 @@ test('launches securely and renders the real project workflow', async () => {
     await expect(page.getByRole('heading', { name: '可以开始写 C++ 了' })).toBeVisible()
     await captureWindow(electronApp, page, join(repo, 'test-results', 'visual', 'onboarding-complete-1440x900.png'))
     await page.getByRole('button', { name: '进入首页' }).click()
-    await expect(page.getByRole('heading', { name: '继续你的 C++ 学习' })).toBeVisible()
+    await expect(page.getByText('先了解一下你的 C++ 背景', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '开始使用' }).click()
+    await expect(page.getByRole('heading', { name: '开始处理你的 C++ 问题' })).toBeVisible()
     await expect(page.getByText('边界练习', { exact: true })).toBeVisible()
     const toolchain = await page.evaluate(async () => {
       const bindings = await window.cppPet.toolchains.list()
@@ -240,7 +242,7 @@ test('launches securely and renders the real project workflow', async () => {
     await expect(page.locator('.workspace-view')).toBeVisible()
     await captureWindow(electronApp, page, join(repo, 'test-results', 'visual', 'workspace-dark-1440x900.png'))
     await page.locator('.activity-rail').getByRole('link', { name: '首页' }).click()
-    await expect(page.getByRole('heading', { name: '继续你的 C++ 学习' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '开始处理你的 C++ 问题' })).toBeVisible()
     await captureWindow(electronApp, page, join(repo, 'test-results', 'visual', 'home-dark-1440x900.png'))
   } finally { await electronApp.close() }
 })

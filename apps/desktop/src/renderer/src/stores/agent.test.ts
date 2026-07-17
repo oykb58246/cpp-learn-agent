@@ -1,12 +1,28 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import type { AgentRun, AgentRunDetail, LearnerSummary } from '@cpp-pet/contracts'
+import type {
+  AgentConversation,
+  AgentMessage,
+  AgentRun,
+  AgentRunDetail,
+  BackgroundProfile,
+  DiagnosticInboxChangedEvent,
+  LearnerSummary
+} from '@cpp-pet/contracts'
 import { useAgentStore } from './agent'
 
 const now = new Date().toISOString()
 const run = (status: AgentRun['status']): AgentRun => ({
   id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'main', mode: 'chat', message: '你好',
   status, steps: [], createdAt: now, updatedAt: now
+})
+const projectId = crypto.randomUUID()
+const conversation = (id = crypto.randomUUID()): AgentConversation => ({
+  id, projectId, title: '指针问题', status: 'active', createdAt: now, updatedAt: now
+})
+const message = (conversationId: string, role: AgentMessage['role'], content: string, status: AgentMessage['status'] = 'completed'): AgentMessage => ({
+  id: crypto.randomUUID(), conversationId, role, kind: 'text', content, status,
+  createdAt: now, updatedAt: now, ...(['completed', 'stopped', 'failed', 'interrupted'].includes(status) ? { completedAt: now } : {})
 })
 
 describe('agent store', () => {
@@ -107,5 +123,93 @@ describe('agent store', () => {
 
     expect(store.models).toHaveLength(1)
     expect(store.models[0]?.apiKeyConfigured).toBe(false)
+  })
+
+  it('stores the self-reported background used by assistant explanations', async () => {
+    const profile: BackgroundProfile = {
+      userId: 'local-user', onboardingCompleted: true, startingPoint: 'some-experience',
+      studiedConceptIds: ['basics.program'], focusConceptIds: ['control.loops'], updatedAt: now
+    }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      cppPet: { learning: { saveBackground: async () => ({ ok: true, data: profile }) } }
+    } })
+    const store = useAgentStore()
+
+    await store.saveBackground({
+      onboardingCompleted: true,
+      startingPoint: 'some-experience',
+      studiedConceptIds: ['basics.program'],
+      focusConceptIds: ['control.loops']
+    })
+
+    expect(store.background).toEqual(profile)
+  })
+
+  it('loads project-scoped inbox and the current conversation, then clears them on project switch', async () => {
+    const first = conversation()
+    const stored = [message(first.id, 'user', '为什么报错？')]
+    const inbox: DiagnosticInboxChangedEvent = { projectId, groups: [], attention: false }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      cppPet: {
+        diagnostics: { listActive: async () => ({ ok: true, data: inbox }) },
+        conversations: {
+          list: async ({ projectId: requested }: { projectId: string }) => ({ ok: true, data: requested === projectId ? [first] : [] }),
+          messages: async () => ({ ok: true, data: stored })
+        }
+      }
+    } })
+    const store = useAgentStore()
+
+    await store.loadProjectAgent(projectId)
+    expect(store.currentConversationId).toBe(first.id)
+    expect(store.messages).toEqual(stored)
+
+    const otherProjectId = crypto.randomUUID()
+    await store.loadProjectAgent(otherProjectId)
+    expect(store.agentProjectId).toBe(otherProjectId)
+    expect(store.currentConversationId).toBeNull()
+    expect(store.messages).toEqual([])
+  })
+
+  it('accepts ordered deltas once and replaces optimistic messages with final events', () => {
+    const item = conversation()
+    const assistant = message(item.id, 'assistant', '', 'streaming')
+    const store = useAgentStore()
+    store.agentProjectId = projectId
+    store.currentConversationId = item.id
+    store.messages = [assistant]
+
+    store.handleConversationDelta({ projectId, conversationId: item.id, messageId: assistant.id, sequence: 4, delta: '先看' })
+    store.handleConversationDelta({ projectId, conversationId: item.id, messageId: assistant.id, sequence: 4, delta: '重复' })
+    store.handleConversationDelta({ projectId, conversationId: item.id, messageId: assistant.id, sequence: 3, delta: '乱序' })
+    store.handleConversationDelta({ projectId, conversationId: item.id, messageId: assistant.id, sequence: 5, delta: '错误位置' })
+    expect(store.messages[0]?.content).toBe('先看错误位置')
+
+    const completed = { ...assistant, content: '先看错误位置。', status: 'completed' as const, completedAt: now }
+    store.handleConversationChanged({ kind: 'message', projectId, message: completed })
+    expect(store.messages[0]).toEqual(completed)
+  })
+
+  it('stops and retries the current conversation through preload APIs', async () => {
+    const item = conversation()
+    const failed = message(item.id, 'assistant', '部分回答', 'stopped')
+    const replacement = message(item.id, 'assistant', '', 'pending')
+    const calls: string[] = []
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      cppPet: { conversations: {
+        stop: async () => { calls.push('stop'); return { ok: true, data: failed } },
+        retry: async () => { calls.push('retry'); return { ok: true, data: { user: message(item.id, 'user', '问题'), assistant: replacement } } }
+      } }
+    } })
+    const store = useAgentStore()
+    store.agentProjectId = projectId
+    store.currentConversationId = item.id
+    store.messages = [failed]
+
+    await store.stopMessage()
+    await store.retryMessage(failed.id)
+
+    expect(calls).toEqual(['stop', 'retry'])
+    expect(store.messages.some(entry => entry.id === replacement.id)).toBe(true)
   })
 })

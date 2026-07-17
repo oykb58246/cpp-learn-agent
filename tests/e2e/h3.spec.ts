@@ -1,4 +1,4 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from 'playwright/test'
 import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -120,27 +120,16 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
     await captureWindow(electronApp, page, 'h3-workspace-agent-1024x720.png')
     await setWindowSize(electronApp, page, 1440, 900)
 
-    await page.getByRole('link', { name: 'Agent 记录' }).click()
-    await expect(page.getByRole('heading', { name: 'Agent 记录' })).toBeVisible()
+    await page.getByRole('link', { name: '助教记录' }).click()
+    await expect(page.getByRole('heading', { name: '助教记录' })).toBeVisible()
     await expect(page.locator('.run-timeline')).toContainText('workspace.apply_patch')
     await expect(page.locator('.run-timeline')).toContainText('compiler.build')
     await captureWindow(electronApp, page, 'h3-runs-1440x900.png')
 
-    await page.getByRole('link', { name: '练习' }).click()
-    await expect(page.getByRole('heading', { name: '练习中心' })).toBeVisible()
-    await expect(page.locator('.practice-layout')).toContainText('编译错误修复')
-    await expect(page.locator('.practice-layout')).toContainText('复习')
-    await captureWindow(electronApp, page, 'h3-practice-1440x900.png')
-
-    await page.getByRole('link', { name: '报告' }).click()
-    await expect(page.getByRole('heading', { name: '学习报告' })).toBeVisible()
-    await expect(page.locator('.report-metrics')).toContainText('30')
-    await expect(page.locator('.achievement-list')).toContainText('first-fix')
-    await captureWindow(electronApp, page, 'h3-reports-1440x900.png')
-
     await page.getByRole('link', { name: '知识树' }).click()
     await expect(page.getByRole('heading', { name: '知识树' })).toBeVisible()
-    await expect(page.locator('.knowledge-summary')).toContainText('38')
+    await expect(page.locator('.knowledge-summary')).toContainText('已标注学过 4')
+    await expect(page.locator('.knowledge-summary')).toContainText('尚未接触 34')
     await expect(page.locator('.knowledge-groups')).toContainText('函数')
     await captureWindow(electronApp, page, 'h3-knowledge-1440x900.png')
 

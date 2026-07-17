@@ -1,4 +1,4 @@
-import type { KnowledgeGateResult, KnowledgeNode, LearnerKnowledge } from '@cpp-pet/contracts'
+import type { BackgroundProfile, KnowledgeGateResult, KnowledgeNode, LearnerKnowledge } from '@cpp-pet/contracts'
 
 const node = (
   id: string,
@@ -79,6 +79,38 @@ export function validateKnowledgeGraph(nodes: KnowledgeNode[]): string[] {
   }
   for (const id of byId.keys()) visit(id)
   return [...new Set(errors)]
+}
+
+export interface ExplanationContext {
+  knownConceptIds: string[]
+  focusConceptIds: string[]
+  unseenConceptIds: string[]
+  instructions: string
+}
+
+export function buildExplanationContext(
+  nodes: KnowledgeNode[],
+  profile: BackgroundProfile | null | undefined,
+  requestedConceptIds: string[]
+): ExplanationContext {
+  const validIds = new Set(nodes.map(node => node.id))
+  const filterKnown = (ids: string[]) => [...new Set(ids.filter(id => validIds.has(id)))]
+  const knownConceptIds = filterKnown(profile?.studiedConceptIds ?? [])
+  const focusConceptIds = filterKnown(profile?.focusConceptIds ?? [])
+  const known = new Set(knownConceptIds)
+  const unseenConceptIds = [...new Set(requestedConceptIds.filter(id => validIds.has(id) && !known.has(id)))]
+  const instructions = [
+    knownConceptIds.length
+      ? `可将这些学过的概念作为已知前提：${knownConceptIds.join('、')}。`
+      : '按零基础方式讲解，不假设用户已学过 C++ 概念。',
+    focusConceptIds.length
+      ? `这些概念需要放慢并细分说明：${focusConceptIds.join('、')}。`
+      : '',
+    unseenConceptIds.length
+      ? `先用简短定义介绍未接触概念：${unseenConceptIds.join('、')}，再继续解释或排错。`
+      : '使用未列为“学过”的概念时，先用简短定义和最小示例做必要介绍，再继续解释或排错。'
+  ].filter(Boolean).join('\n')
+  return { knownConceptIds, focusConceptIds, unseenConceptIds, instructions }
 }
 
 export class KnowledgeGate {

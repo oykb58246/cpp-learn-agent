@@ -199,7 +199,7 @@ describe('AgentRuntime', () => {
     expect(calls).toEqual([])
   })
 
-  it('stops before tools when the knowledge gate requires learning', async () => {
+  it('continues to execute when the requested concept is unfamiliar', async () => {
     const calls: string[] = []
     const plan: RuntimePlan = {
       intent: 'explain-vector', conceptIds: ['stl.vector'], successCriteria: [],
@@ -220,8 +220,10 @@ describe('AgentRuntime', () => {
     const run = await runtime.start({ ...request, requestId: crypto.randomUUID(), mode: 'explain' })
 
     expect(run.status).toBe('completed')
-    expect(run.response).toContain('先学习模板')
-    expect(calls).toEqual([])
+    expect(calls).toEqual(['workspace.read_file'])
+    expect(store.get(run.id)?.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'policy', title: '讲解背景已应用' })
+    ]))
   })
 
   it('retries one retryable tool failure', async () => {
@@ -283,6 +285,7 @@ describe('AgentRuntime', () => {
 
     expect(run.response).toBe('return 会结束当前函数并把结果交给调用者。')
     expect(store.get(run.id)?.timeline.some(item => item.kind === 'response' && item.summary === run.response)).toBe(true)
+    expect(store.get(run.id)?.timeline.map(item => item.kind)).not.toContain('learning')
   })
 
   it('cancels an active tool through AbortSignal', async () => {

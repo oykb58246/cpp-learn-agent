@@ -69,6 +69,34 @@ const api: CppPetApi = {
     run: input => invoke(ipc.programRun, input),
     stop: input => invoke(ipc.programStop, input)
   },
+  diagnostics: {
+    listActive: input => invoke(ipc.diagnosticsListActive, input),
+    acknowledge: input => invoke(ipc.diagnosticsAcknowledge, input),
+    onChanged: listener => {
+      const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
+      ipcRenderer.on(ipc.diagnosticsChanged, wrapped)
+      return () => ipcRenderer.removeListener(ipc.diagnosticsChanged, wrapped)
+    }
+  },
+  conversations: {
+    list: input => invoke(ipc.conversationsList, input),
+    create: input => invoke(ipc.conversationsCreate, input),
+    archive: input => invoke(ipc.conversationsArchive, input),
+    messages: input => invoke(ipc.conversationsMessages, input),
+    send: input => invoke(ipc.conversationsSend, input),
+    stop: input => invoke(ipc.conversationsStop, input),
+    retry: input => invoke(ipc.conversationsRetry, input),
+    onDelta: listener => {
+      const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
+      ipcRenderer.on(ipc.conversationsDelta, wrapped)
+      return () => ipcRenderer.removeListener(ipc.conversationsDelta, wrapped)
+    },
+    onChanged: listener => {
+      const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
+      ipcRenderer.on(ipc.conversationsChanged, wrapped)
+      return () => ipcRenderer.removeListener(ipc.conversationsChanged, wrapped)
+    }
+  },
   agent: {
     start: input => invoke(ipc.agentStart, input),
     get: input => invoke(ipc.agentGet, input),
@@ -87,6 +115,8 @@ const api: CppPetApi = {
     catalog: () => invoke(ipc.learningCatalog),
     knowledge: input => invoke(ipc.learningKnowledge, input),
     updateKnowledge: input => invoke(ipc.learningUpdateKnowledge, input),
+    background: input => invoke(ipc.learningBackgroundGet, input),
+    saveBackground: input => invoke(ipc.learningBackgroundSave, input),
     errors: input => invoke(ipc.learningErrors, input),
     reviews: input => invoke(ipc.learningReviews, input),
     summary: input => invoke(ipc.learningSummary, input)
