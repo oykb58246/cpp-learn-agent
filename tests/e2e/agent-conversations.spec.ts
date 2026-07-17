@@ -88,7 +88,8 @@ test('places Agent in the right sidebar and opens snapshots on demand', async ()
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page)
     expect(prepared).toHaveProperty('projectId')
-    await openProject(page, (prepared as { projectId: string }).projectId)
+    const projectId = (prepared as { projectId: string }).projectId
+    await openProject(page, projectId)
 
     await expect(page.locator('.workspace-inspector')).toHaveCount(0)
     await page.getByRole('button', { name: /Agent/ }).click()
@@ -154,6 +155,16 @@ test('places Agent in the right sidebar and opens snapshots on demand', async ()
     expect(overlap).toEqual({ editorAgent: false, popoverAgent: false })
     await capture(electronApp, page, 'workspace-agent-sidebar-1024x720.png')
 
+    await page.evaluate(() => window.cppPet.settings.update({ theme: 'dark' }))
+    await browserWindow.evaluate(win => win.setSize(1440, 900))
+    await openProject(page, projectId)
+    await expect(page.locator('html')).toHaveClass(/dark/)
+    await page.getByRole('button', { name: /Agent/ }).click()
+    await history.click()
+    await expect(page.getByRole('dialog', { name: '项目快照' })).toBeVisible()
+    await capture(electronApp, page, 'workspace-agent-sidebar-dark-1440x900.png')
+
+    await page.getByRole('button', { name: '关闭快照' }).click()
     await page.locator('.agent-toggle').click()
     await expect(page.locator('.workspace-inspector')).toHaveCount(0)
   } finally {
