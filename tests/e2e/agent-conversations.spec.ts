@@ -95,17 +95,67 @@ test('places Agent in the right sidebar and opens snapshots on demand', async ()
     await expect(page.locator('.workspace-agent-inspector .conversation-panel')).toBeVisible()
     await expect(page.locator('.editor-area > .conversation-panel')).toHaveCount(0)
 
-    const history = page.getByRole('button', { name: '快照' })
+    const history = page.getByRole('button', { name: '快照', exact: true })
     await expect(page.locator('.snapshot-popover')).toHaveCount(0)
     await history.click()
     await expect(page.getByRole('dialog', { name: '项目快照' })).toBeVisible()
     await expect(history).toHaveAttribute('aria-expanded', 'true')
+
+    await page.getByRole('textbox', { name: '快照标签' }).fill('布局检查点')
+    await page.getByRole('button', { name: '创建', exact: true }).click()
+    const manualSnapshot = page.locator('.snapshot-list article').filter({ hasText: '布局检查点' })
+    await expect(manualSnapshot).toBeVisible()
+    await electronApp.evaluate(({ dialog }) => {
+      dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false })
+    })
+    await manualSnapshot.getByRole('button', { name: '恢复快照' }).click()
+    await expect(page.locator('.monaco-editor-host')).toHaveCount(0)
+    await manualSnapshot.getByRole('button', { name: '删除快照' }).click()
+    await expect(manualSnapshot).toHaveCount(0)
+    await page.getByText('main.cpp', { exact: true }).click()
+    await expect(page.locator('.monaco-editor-host')).toBeVisible()
+    await expect(page.locator('.snapshot-popover')).toHaveCount(0)
+
+    await history.click()
+    await page.getByRole('button', { name: '关闭快照' }).click()
+    await expect(page.locator('.snapshot-popover')).toHaveCount(0)
+
+    await history.click()
+    await page.locator('.editor-toolbar').click({ position: { x: 4, y: 4 } })
+    await expect(page.locator('.snapshot-popover')).toHaveCount(0)
+
+    await history.click()
+    await history.click()
+    await expect(page.locator('.snapshot-popover')).toHaveCount(0)
+
+    await history.click()
     await page.keyboard.press('Escape')
     await expect(page.locator('.snapshot-popover')).toHaveCount(0)
 
     const editorRight = await page.locator('.editor-area').evaluate(element => element.getBoundingClientRect().right)
     const agentLeft = await page.locator('.workspace-agent-inspector').evaluate(element => element.getBoundingClientRect().left)
     expect(Math.abs(editorRight - agentLeft)).toBeLessThanOrEqual(1)
+
+    await history.click()
+    await capture(electronApp, page, 'workspace-agent-sidebar-1440x900.png')
+    const browserWindow = await electronApp.browserWindow(page)
+    await browserWindow.evaluate(win => win.setSize(1024, 720))
+    await page.waitForTimeout(250)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    const overlap = await page.evaluate(() => {
+      const editor = document.querySelector('.editor-area')!.getBoundingClientRect()
+      const agent = document.querySelector('.workspace-agent-inspector')!.getBoundingClientRect()
+      const popover = document.querySelector('.snapshot-popover')!.getBoundingClientRect()
+      return {
+        editorAgent: editor.right > agent.left + 1,
+        popoverAgent: popover.right > agent.left + 1
+      }
+    })
+    expect(overlap).toEqual({ editorAgent: false, popoverAgent: false })
+    await capture(electronApp, page, 'workspace-agent-sidebar-1024x720.png')
+
+    await page.locator('.agent-toggle').click()
+    await expect(page.locator('.workspace-inspector')).toHaveCount(0)
   } finally {
     await electronApp.close()
   }
