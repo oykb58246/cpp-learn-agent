@@ -81,6 +81,36 @@ async function capture(electronApp: ElectronApplication, page: Page, name: strin
   writeFileSync(join(repo, 'test-results', 'visual', name), Buffer.from(png, 'base64'))
 }
 
+test('places Agent in the right sidebar and opens snapshots on demand', async () => {
+  const electronApp = await launch(join(temp, 'workspace-layout-user-data'))
+  try {
+    const page = await electronApp.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    const prepared = await prepare(page)
+    expect(prepared).toHaveProperty('projectId')
+    await openProject(page, (prepared as { projectId: string }).projectId)
+
+    await expect(page.locator('.workspace-inspector')).toHaveCount(0)
+    await page.getByRole('button', { name: /Agent/ }).click()
+    await expect(page.locator('.workspace-agent-inspector .conversation-panel')).toBeVisible()
+    await expect(page.locator('.editor-area > .conversation-panel')).toHaveCount(0)
+
+    const history = page.getByRole('button', { name: '快照' })
+    await expect(page.locator('.snapshot-popover')).toHaveCount(0)
+    await history.click()
+    await expect(page.getByRole('dialog', { name: '项目快照' })).toBeVisible()
+    await expect(history).toHaveAttribute('aria-expanded', 'true')
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.snapshot-popover')).toHaveCount(0)
+
+    const editorRight = await page.locator('.editor-area').evaluate(element => element.getBoundingClientRect().right)
+    const agentLeft = await page.locator('.workspace-agent-inspector').evaluate(element => element.getBoundingClientRect().left)
+    expect(Math.abs(editorRight - agentLeft)).toBeLessThanOrEqual(1)
+  } finally {
+    await electronApp.close()
+  }
+})
+
 test('persists a grouped diagnostic inbox and explains it in a streamed project conversation', async () => {
   test.setTimeout(180_000)
   let electronApp = await launch()
