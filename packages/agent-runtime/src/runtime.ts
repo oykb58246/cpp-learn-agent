@@ -2,6 +2,8 @@ import {
   agentStartRequestSchema,
   type AgentRun,
   type AgentRunDetail,
+  type AgentExecutionEvidence,
+  type AgentWorkflow,
   type AgentStartRequest,
   type AgentStep,
   type Approval,
@@ -25,6 +27,7 @@ export interface RuntimePlanStep {
   sideEffects?: string[]
   summary?: string
   continueOnFailure?: boolean
+  dependsOn?: string[]
 }
 
 export interface RuntimePlan {
@@ -34,6 +37,10 @@ export interface RuntimePlan {
   steps: RuntimePlanStep[]
   source?: 'model' | 'offline'
   fallbackReason?: string
+  workflow?: AgentWorkflow
+  responseGoal?: string
+  secondaryIntents?: string[]
+  intentConfidence?: number
 }
 
 export interface RuntimeContextBuilder {
@@ -43,6 +50,7 @@ export interface RuntimeContextBuilder {
 export interface RuntimePlanner {
   contextApproval?(request: ResolvedAgentRequest, context: ContextPacket): RuntimeContextApproval | undefined | Promise<RuntimeContextApproval | undefined>
   plan(request: ResolvedAgentRequest, context: ContextPacket, signal: AbortSignal): Promise<RuntimePlan>
+  finalize?(request: ResolvedAgentRequest, context: ContextPacket, plan: RuntimePlan, evidence: AgentExecutionEvidence[], signal: AbortSignal): Promise<string>
 }
 
 export interface RuntimeContextApproval {
@@ -83,6 +91,7 @@ interface ExecutionState {
   toolCalls: number
   approvedSteps: Set<string>
   results: Map<string, unknown>
+  toolResults: Map<string, ToolResult>
   deadline: number
   contextApprovalGranted: boolean
 }
@@ -177,6 +186,8 @@ export class AgentRuntime {
       message: request.message,
       ...(request.projectId ? { projectId: request.projectId } : {}),
       ...(request.activeFile ? { activeFile: request.activeFile } : {}),
+      ...(request.conversationId ? { conversationId: request.conversationId } : {}),
+      ...(request.assistantMessageId ? { assistantMessageId: request.assistantMessageId } : {}),
       status: 'queued',
       steps: [],
       createdAt: now,
@@ -190,6 +201,7 @@ export class AgentRuntime {
       toolCalls: 0,
       approvedSteps: new Set(),
       results: new Map(),
+      toolResults: new Map(),
       deadline: Date.now() + this.totalTimeoutMs,
       contextApprovalGranted: false
     }
@@ -441,6 +453,7 @@ export class AgentRuntime {
       }
 
       state.results.set(planStep.id, result?.structuredContent ?? result)
+      if (result) state.toolResults.set(planStep.id, result)
       step.status = 'completed'
       step.summary = result?.summary ?? '工具未返回摘要。'
       step.finishedAt = new Date().toISOString()
@@ -463,6 +476,10 @@ export class AgentRuntime {
   private async complete(state: ExecutionState): Promise<void> {
     if (this.isTerminal(state.run.status)) return
     await this.setStatus(state, 'responding')
+    if (state.plan?.source === 'model' && this.options.planner.finalize && state.context) {
+      const evidence = this.executionEvidence(state)
+      state.run.response = await this.withDeadline(state, signal => this.options.planner.finalize!(state.request, state.context!, state.plan!, evidence, signal))
+    }
     state.run.response ??= '任务已根据工具证据完成。'
     const validationSteps = state.run.steps.filter(step => step.kind === 'validate')
     state.run.validationSummary = validationSteps.map(step => step.summary).filter(Boolean).join('；') || '计划步骤已完成。'
@@ -476,6 +493,32 @@ export class AgentRuntime {
     state.run.completedAt = state.run.updatedAt
     await this.persist(state)
     await this.timeline(state, 'response', 'completed', '完成回答', state.run.response)
+  }
+
+  private executionEvidence(state: ExecutionState): AgentExecutionEvidence[] {
+    return state.run.steps.flatMap(step => {
+      const result = state.toolResults.get(step.id)
+      if (!result || !step.toolName) return []
+      return [{
+        stepId: step.id,
+        tool: step.toolName,
+        ok: result.ok,
+        summary: result.summary,
+        changedFiles: result.sideEffects
+          .filter(effect => effect.kind === 'write-file' || effect.kind === 'create-file' || effect.kind === 'delete-file')
+          .map(effect => effect.target),
+        diagnostics: result.diagnostics.map(diagnostic => ({
+          source: diagnostic.source,
+          severity: diagnostic.severity,
+          ...(diagnostic.code ? { code: diagnostic.code } : {}),
+          ...(diagnostic.file ? { file: diagnostic.file } : {}),
+          ...(diagnostic.line ? { line: diagnostic.line } : {}),
+          ...(diagnostic.column ? { column: diagnostic.column } : {}),
+          message: diagnostic.normalizedMessage || diagnostic.rawMessage
+        })),
+        ...(result.exitCode === null ? { exitCode: null } : { exitCode: result.exitCode })
+      }]
+    })
   }
 
   private async fail(state: ExecutionState, code: string, message: string): Promise<void> {

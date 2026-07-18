@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type {
+  AgentExecutionEvidence,
   AgentStartRequest,
   ContextPacket,
   KnowledgeGateResult,
@@ -286,6 +287,31 @@ describe('AgentRuntime', () => {
     expect(run.response).toBe('return 会结束当前函数并把结果交给调用者。')
     expect(store.get(run.id)?.timeline.some(item => item.kind === 'response' && item.summary === run.response)).toBe(true)
     expect(store.get(run.id)?.timeline.map(item => item.kind)).not.toContain('learning')
+  })
+
+  it('uses execution evidence to generate the final model response', async () => {
+    const plan: RuntimePlan = {
+      intent: 'edit_code', conceptIds: ['basics.program'], successCriteria: ['build succeeds'], source: 'model',
+      workflow: 'edit-and-build', responseGoal: '说明实际编译结果',
+      steps: [{ id: 'build', title: '编译验证', kind: 'validate', toolName: 'compiler.build', risk: 'L1', arguments: {} }]
+    }
+    let receivedEvidence: AgentExecutionEvidence[] = []
+    const planner: RuntimePlanner = {
+      async plan() { return plan },
+      async finalize(_request, _context, _plan, evidence) {
+        receivedEvidence = evidence
+        return '已经根据真实工具结果完成处理，编译通过。'
+      }
+    }
+    const runtime = new AgentRuntime({
+      store: new InMemoryRuntimeStore(), contextBuilder, planner,
+      toolClient: { async call() { return success('GCC 编译通过') } }, knowledgeGate: allowGate
+    })
+
+    const run = await runtime.start({ ...request, requestId: crypto.randomUUID(), mode: 'auto' })
+
+    expect(run.response).toContain('编译通过')
+    expect(receivedEvidence).toEqual([expect.objectContaining({ stepId: 'build', tool: 'compiler.build', ok: true, summary: 'GCC 编译通过' })])
   })
 
   it('cancels an active tool through AbortSignal', async () => {

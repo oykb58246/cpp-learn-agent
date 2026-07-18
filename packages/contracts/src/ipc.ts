@@ -29,6 +29,7 @@ export const ipc = {
   diagnosticsChanged: 'diagnostics:changed',
   conversationsList: 'conversations:list', conversationsCreate: 'conversations:create', conversationsArchive: 'conversations:archive',
   conversationsMessages: 'conversations:messages', conversationsSend: 'conversations:send', conversationsStop: 'conversations:stop',
+  conversationsAgentSubmit: 'conversations:submit-agent',
   conversationsRetry: 'conversations:retry', conversationsDelta: 'conversations:delta', conversationsChanged: 'conversations:changed',
   agentStart: 'agent:start', agentGet: 'agent:get', agentList: 'agent:list', agentCancel: 'agent:cancel',
   agentChanged: 'agent:changed', approvalDecide: 'approval:decide',

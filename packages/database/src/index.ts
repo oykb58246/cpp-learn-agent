@@ -358,10 +358,10 @@ export class AppDatabase {
     this.ensureWritable()
     return this.transaction(() => {
       this.db.prepare(`INSERT INTO agent_runs(
-        id,request_id,source,mode,message,project_id,active_file,status,intent,plan_summary,response,
+        id,request_id,source,mode,message,project_id,active_file,conversation_id,assistant_message_id,status,intent,plan_summary,response,
         validation_summary,error_code,error_message,steps_json,pending_approval_json,created_at,updated_at,completed_at
       ) VALUES(
-        @id,@requestId,@source,@mode,@message,@projectId,@activeFile,@status,@intent,@planSummary,@response,
+        @id,@requestId,@source,@mode,@message,@projectId,@activeFile,@conversationId,@assistantMessageId,@status,@intent,@planSummary,@response,
         @validationSummary,@errorCode,@errorMessage,@stepsJson,@pendingApprovalJson,@createdAt,@updatedAt,@completedAt
       )`).run(agentRunParams(run))
       this.replaceAgentSteps(run)
@@ -373,7 +373,8 @@ export class AppDatabase {
     this.ensureWritable()
     return this.transaction(() => {
       const result = this.db.prepare(`UPDATE agent_runs SET
-        source=@source,mode=@mode,message=@message,project_id=@projectId,active_file=@activeFile,status=@status,
+        source=@source,mode=@mode,message=@message,project_id=@projectId,active_file=@activeFile,
+        conversation_id=@conversationId,assistant_message_id=@assistantMessageId,status=@status,
         intent=@intent,plan_summary=@planSummary,response=@response,validation_summary=@validationSummary,
         error_code=@errorCode,error_message=@errorMessage,steps_json=@stepsJson,
         pending_approval_json=@pendingApprovalJson,updated_at=@updatedAt,completed_at=@completedAt
@@ -903,6 +904,8 @@ const agentRunParams = (run: AgentRun) => ({
   ...run,
   projectId: run.projectId ?? null,
   activeFile: run.activeFile ?? null,
+  conversationId: run.conversationId ?? null,
+  assistantMessageId: run.assistantMessageId ?? null,
   intent: run.intent ?? null,
   planSummary: run.planSummary ?? null,
   response: run.response ?? null,
@@ -922,6 +925,8 @@ const mapAgentRun = (r: any): AgentRun => ({
   message: r.message,
   ...(r.project_id ? { projectId: r.project_id } : {}),
   ...(r.active_file ? { activeFile: r.active_file } : {}),
+  ...(r.conversation_id ? { conversationId: r.conversation_id } : {}),
+  ...(r.assistant_message_id ? { assistantMessageId: r.assistant_message_id } : {}),
   status: r.status,
   ...(r.intent ? { intent: r.intent } : {}),
   ...(r.plan_summary ? { planSummary: r.plan_summary } : {}),

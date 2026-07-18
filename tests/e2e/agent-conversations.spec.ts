@@ -1,4 +1,4 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from 'playwright/test'
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

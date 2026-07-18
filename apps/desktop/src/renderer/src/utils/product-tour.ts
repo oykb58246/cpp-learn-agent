@@ -112,9 +112,17 @@ export function panelPlacement(target: RectLike | null, viewport: SizeLike, pane
     return { left: clampLeft(target.left), top: target.top - gap - panel.height, centered: false }
   }
 
-  return {
-    left: clampLeft((viewport.width - panel.width) / 2),
-    top: clampTop((viewport.height - panel.height) / 2),
-    centered: true
+  const candidates = [
+    { left: margin, top: margin },
+    { left: viewport.width - panel.width - margin, top: margin },
+    { left: margin, top: viewport.height - panel.height - margin },
+    { left: viewport.width - panel.width - margin, top: viewport.height - panel.height - margin }
+  ].map(candidate => ({ left: clampLeft(candidate.left), top: clampTop(candidate.top) }))
+  const overlapArea = (candidate: { left: number; top: number }) => {
+    const horizontal = Math.max(0, Math.min(candidate.left + panel.width, target.right) - Math.max(candidate.left, target.left))
+    const vertical = Math.max(0, Math.min(candidate.top + panel.height, target.bottom) - Math.max(candidate.top, target.top))
+    return horizontal * vertical
   }
+  const best = candidates.reduce((current, candidate) => overlapArea(candidate) < overlapArea(current) ? candidate : current)
+  return { ...best, centered: false }
 }

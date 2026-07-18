@@ -7,6 +7,7 @@ export class H3WorkflowPlanner implements RuntimePlanner {
   async plan(request: ResolvedAgentRequest, context: ContextPacket): Promise<RuntimePlan> {
     if (request.source === 'screenshot') return this.screenshot(request)
     switch (request.mode) {
+      case 'auto': return this.auto(request)
       case 'environment': return this.environment(request)
       case 'project': return this.project(request)
       case 'explain': return this.explain(request)
@@ -14,6 +15,17 @@ export class H3WorkflowPlanner implements RuntimePlanner {
       case 'solve': return this.logic(request, context)
       case 'review': return this.review(request)
       case 'chat': return this.chat()
+    }
+  }
+
+  private auto(request: ResolvedAgentRequest): RuntimePlan {
+    return {
+      intent: 'answer', conceptIds: [], successCriteria: ['explain model requirement'], source: 'offline',
+      workflow: 'answer', responseGoal: '说明自动意图理解需要已配置的大模型。',
+      steps: [{
+        id: 'respond', title: '说明模型配置要求', kind: 'respond',
+        summary: `自动理解需求和规划工具操作需要先配置可用的大模型。当前请求：“${request.message.slice(0, 200)}”`
+      }]
     }
   }
 

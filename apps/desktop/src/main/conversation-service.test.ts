@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import type { ConversationChangedEvent, ConversationMessageDelta, ModelProfile } from '@cpp-pet/contracts'
+import type { AgentRun, ConversationChangedEvent, ConversationMessageDelta, ModelProfile } from '@cpp-pet/contracts'
 import { AppDatabase } from '@cpp-pet/database'
 import { builtInKnowledge } from '@cpp-pet/agent-runtime'
 import { ConversationService, type ConversationStreamingGateway } from './conversation-service'
@@ -84,6 +84,29 @@ describe('ConversationService', () => {
     const started = service.send({ projectId, conversationId: conversation.id, message: '你好' })
     await waitFor(() => changes.some(event => event.kind === 'message' && event.message.id === started.assistant.id && event.message.status === 'failed'))
     expect(service.messages({ projectId, conversationId: conversation.id }).at(-1)).toMatchObject({ status: 'failed', errorCode: 'MODEL_NOT_CONFIGURED' })
+    db.close()
+  })
+
+  it('persists an Agent task exchange and writes the terminal run response back to the assistant message', () => {
+    const { db, projectId, service } = setup({ async stream() {} })
+    const changes: ConversationChangedEvent[] = []
+    service.onChanged(event => changes.push(event))
+    const conversation = service.create({ projectId })
+    const started = service.beginAgentTask({ projectId, conversationId: conversation.id, message: '帮我写一个 hello world 程序', activeFile: 'main.cpp' })
+    const baseRun: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto',
+      message: started.user.content, projectId, activeFile: 'main.cpp', conversationId: conversation.id,
+      assistantMessageId: started.assistant.id, status: 'waiting-approval', steps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    }
+
+    service.handleAgentRunChanged(baseRun)
+    expect(service.messages({ projectId, conversationId: conversation.id }).at(-1)).toMatchObject({ id: started.assistant.id, status: 'pending' })
+
+    service.handleAgentRunChanged({ ...baseRun, status: 'completed', response: '已更新 `main.cpp`，并且编译通过。', completedAt: new Date().toISOString() })
+    expect(service.messages({ projectId, conversationId: conversation.id }).at(-1)).toMatchObject({
+      id: started.assistant.id, status: 'completed', content: '已更新 `main.cpp`，并且编译通过。'
+    })
+    expect(changes.some(event => event.kind === 'message' && event.message.id === started.assistant.id && event.message.status === 'completed')).toBe(true)
     db.close()
   })
 

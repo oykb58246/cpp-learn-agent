@@ -12,7 +12,6 @@ const patterns = {
 
 export function inferAgentMode(input: IntentInput): AgentStartRequest['mode'] {
   const message = input.message.trim()
-
   if (input.diagnostics?.length) return 'diagnose'
   if (patterns.environment.test(message)) return 'environment'
   if (patterns.project.test(message)) return 'project'

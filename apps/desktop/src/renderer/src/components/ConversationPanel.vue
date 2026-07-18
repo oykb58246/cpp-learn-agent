@@ -22,6 +22,11 @@ const router = useRouter()
 const transcript = ref<HTMLElement | null>(null)
 const currentConversation = computed(() => agent.conversations.find(item => item.id === agent.currentConversationId))
 const streaming = computed(() => agent.messages.some(item => item.role === 'assistant' && ['pending', 'streaming'].includes(item.status)))
+const activeTask = computed(() => Boolean(
+  agent.currentRun
+  && agent.currentRun.conversationId === agent.currentConversationId
+  && !['completed', 'failed', 'cancelled'].includes(agent.currentRun.status)
+))
 
 watch(() => agent.messages.map(item => `${item.id}:${item.content.length}:${item.status}`).join('|'), async () => {
   await nextTick()
@@ -29,6 +34,7 @@ watch(() => agent.messages.map(item => `${item.id}:${item.content.length}:${item
 })
 
 async function submit(request: AgentStartRequest) {
+  if (props.projectId && agent.agentProjectId !== props.projectId) await agent.loadProjectAgent(props.projectId)
   if (request.mode !== 'chat') {
     emit('tool-submit', request)
     return
@@ -41,8 +47,8 @@ async function submit(request: AgentStartRequest) {
 }
 
 async function cancel() {
-  if (streaming.value) await agent.stopMessage()
-  else emit('cancel-tool')
+  if (activeTask.value) emit('cancel-tool')
+  else if (streaming.value) await agent.stopMessage()
 }
 
 async function archiveCurrent() {
@@ -104,7 +110,7 @@ async function archiveCurrent() {
       :active-file="activeFile"
       :selection="selection"
       :diagnostics="diagnostics"
-      :busy="streaming || toolBusy"
+      :busy="streaming || activeTask || toolBusy"
       @submit="submit"
       @cancel="cancel"
     />

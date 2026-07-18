@@ -126,6 +126,24 @@ describe('H3 persistence', () => {
     reopened.close()
   })
 
+  it('persists automatic run links back to the originating conversation message', () => {
+    const { file, db } = setup()
+    const run: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto',
+      message: '帮我写一个 hello world 程序', conversationId: crypto.randomUUID(), assistantMessageId: crypto.randomUUID(),
+      status: 'queued', steps: [], createdAt: now, updatedAt: now
+    }
+
+    db.createAgentRun(run)
+    db.close()
+
+    const reopened = new AppDatabase(file)
+    expect(reopened.getAgentRun(run.id)).toMatchObject({
+      mode: 'auto', conversationId: run.conversationId, assistantMessageId: run.assistantMessageId
+    })
+    reopened.close()
+  })
+
   it('recovers unfinished runs as readable cancelled timelines without replaying work', () => {
     const { file, db } = setup()
     const approval: Approval = {

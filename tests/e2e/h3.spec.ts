@@ -1,4 +1,4 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from 'playwright/test'
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -90,7 +90,6 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
     await expect(page.getByLabel('Agent 模式')).toHaveCount(0)
     await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('修复当前编译错误并解释根因')
     await page.getByRole('button', { name: '发送', exact: true }).click()
-
     await expect(page.locator('.approval-card')).toContainText('应用最小修复', { timeout: 30_000 })
     await expect(page.locator('.approval-diff')).toContainText('--- a/main.cpp')
     await expect(page.locator('.approval-diff')).toContainText('+  std::cout << "missing semicolon";')

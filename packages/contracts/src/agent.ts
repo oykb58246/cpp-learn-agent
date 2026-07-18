@@ -23,6 +23,8 @@ export const agentRunStatusSchema = z.enum([
   'cancelled'
 ])
 export type AgentRunStatus = z.infer<typeof agentRunStatusSchema>
+export const agentModeSchema = z.enum(['auto', 'environment', 'explain', 'diagnose', 'solve', 'project', 'review', 'chat'])
+export type AgentMode = z.infer<typeof agentModeSchema>
 
 export const agentStepKindSchema = z.enum(['reason', 'resource', 'tool', 'approval', 'validate', 'respond', 'learning'])
 export const agentStepStatusSchema = z.enum(['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled'])
@@ -173,10 +175,12 @@ export const agentRunSchema = z.object({
   id: z.string().uuid(),
   requestId: z.string().uuid(),
   source: z.enum(['main', 'editor', 'pet', 'screenshot', 'system']),
-  mode: z.enum(['environment', 'explain', 'diagnose', 'solve', 'project', 'review', 'chat']),
+  mode: agentModeSchema,
   message: z.string().min(1).max(20_000),
   projectId: z.string().uuid().optional(),
   activeFile: z.string().max(1_024).optional(),
+  conversationId: z.string().uuid().optional(),
+  assistantMessageId: z.string().uuid().optional(),
   status: agentRunStatusSchema,
   intent: z.string().max(200).optional(),
   planSummary: z.string().max(20_000).optional(),
@@ -189,6 +193,10 @@ export const agentRunSchema = z.object({
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
   completedAt: timestampSchema.optional()
+}).superRefine((run, context) => {
+  if (Boolean(run.conversationId) !== Boolean(run.assistantMessageId)) {
+    context.addIssue({ code: 'custom', path: ['conversationId'], message: '对话任务必须同时关联 conversationId 和 assistantMessageId。' })
+  }
 })
 export type AgentRun = z.infer<typeof agentRunSchema>
 
@@ -212,10 +220,12 @@ export type ScreenshotRef = z.infer<typeof screenshotRefSchema>
 export const agentStartRequestSchema = z.object({
   requestId: z.string().uuid().default(() => crypto.randomUUID()),
   source: z.enum(['main', 'editor', 'pet', 'screenshot', 'system']),
-  mode: z.enum(['environment', 'explain', 'diagnose', 'solve', 'project', 'review', 'chat']),
+  mode: agentModeSchema,
   message: z.string().min(1).max(20_000),
   projectId: z.string().uuid().optional(),
   activeFile: z.string().max(1_024).optional(),
+  conversationId: z.string().uuid().optional(),
+  assistantMessageId: z.string().uuid().optional(),
   selection: z.object({
     startLine: z.number().int().positive(),
     startColumn: z.number().int().positive(),
@@ -228,6 +238,9 @@ export const agentStartRequestSchema = z.object({
   reviewItemId: z.string().uuid().optional(),
   reviewOutcome: z.enum(['passed', 'failed']).optional()
 }).superRefine((request, context) => {
+  if (Boolean(request.conversationId) !== Boolean(request.assistantMessageId)) {
+    context.addIssue({ code: 'custom', path: ['conversationId'], message: '对话任务必须同时关联 conversationId 和 assistantMessageId。' })
+  }
   if (request.mode === 'review' && (!request.reviewItemId || !request.reviewOutcome)) {
     context.addIssue({ code: 'custom', path: ['reviewItemId'], message: '复习请求必须引用具体复习项和结果。' })
   }

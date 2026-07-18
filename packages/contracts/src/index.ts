@@ -67,6 +67,7 @@ import type {
   ConversationRetryInput,
   ConversationSendInput,
   ConversationSendResult,
+  ConversationAgentSubmitResult,
   ConversationStopInput,
   DiagnosticInboxChangedEvent
 } from './conversation'
@@ -75,6 +76,7 @@ export * from './future'
 export * from './agent'
 export * from './learning'
 export * from './conversation'
+export * from './agent-protocol'
 
 export const themeSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themeSchema>
@@ -318,6 +320,7 @@ export interface CppPetApi {
     archive(input: ConversationArchiveInput): Promise<ApiResult<AgentConversation>>
     messages(input: ConversationMessagesInput): Promise<ApiResult<AgentMessage[]>>
     send(input: ConversationSendInput): Promise<ApiResult<ConversationSendResult>>
+    submitAgent(input: ConversationSendInput): Promise<ApiResult<ConversationAgentSubmitResult>>
     stop(input: ConversationStopInput): Promise<ApiResult<AgentMessage | null>>
     retry(input: ConversationRetryInput): Promise<ApiResult<ConversationSendResult>>
     onDelta(listener: (event: ConversationMessageDelta) => void): () => void

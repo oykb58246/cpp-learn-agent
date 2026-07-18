@@ -212,4 +212,27 @@ describe('agent store', () => {
     expect(calls).toEqual(['stop', 'retry'])
     expect(store.messages.some(entry => entry.id === replacement.id)).toBe(true)
   })
+
+  it('submits a unified Agent task and links its run to the current conversation', async () => {
+    const item = conversation()
+    const user = message(item.id, 'user', '帮我写一个 hello world 程序')
+    const assistant = message(item.id, 'assistant', '', 'pending')
+    const run: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto',
+      message: user.content, projectId, conversationId: item.id, assistantMessageId: assistant.id,
+      status: 'waiting-approval', steps: [], createdAt: now, updatedAt: now
+    }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      cppPet: { conversations: { submitAgent: async () => ({ ok: true, data: { user, assistant, run } }) } }
+    } })
+    const store = useAgentStore()
+    store.agentProjectId = projectId
+    store.currentConversationId = item.id
+
+    await store.submitAgent({ message: user.content, activeFile: 'main.cpp' })
+
+    expect(store.messages).toEqual([user, assistant])
+    expect(store.currentRun).toEqual(run)
+    expect(store.runs).toEqual([run])
+  })
 })

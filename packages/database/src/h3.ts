@@ -157,6 +157,12 @@ UPDATE agent_messages SET sequence_number = rowid WHERE sequence_number IS NULL;
 CREATE UNIQUE INDEX idx_message_sequence ON agent_messages(conversation_id, sequence_number);
 `
 
+const linkedAgentConversationSql = `
+ALTER TABLE agent_runs ADD COLUMN conversation_id TEXT;
+ALTER TABLE agent_runs ADD COLUMN assistant_message_id TEXT;
+CREATE INDEX idx_agent_runs_conversation ON agent_runs(conversation_id, updated_at DESC);
+`
+
 export const h3Migrations: Migration[] = [
   { version: 4, name: 'h3-agent-runs', sql: agentSql },
   { version: 5, name: 'h3-learning-state', sql: learningSql },
@@ -164,5 +170,6 @@ export const h3Migrations: Migration[] = [
   { version: 7, name: 'h3-approval-diff', sql: approvalDiffSql },
   { version: 8, name: 'assistant-background-profile', sql: assistantBackgroundSql },
   { version: 9, name: 'agent-conversations-and-diagnostics', sql: conversationsAndDiagnosticsSql },
-  { version: 10, name: 'stable-conversation-message-order', sql: stableConversationMessageOrderSql }
+  { version: 10, name: 'stable-conversation-message-order', sql: stableConversationMessageOrderSql },
+  { version: 11, name: 'linked-agent-conversations', sql: linkedAgentConversationSql }
 ]

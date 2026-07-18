@@ -11,6 +11,7 @@ import type {
   ConversationSendInput,
   ConversationSendResult,
   ConversationStopInput,
+  AgentRun,
   KnowledgeNode
 } from '@cpp-pet/contracts'
 import {
@@ -97,6 +98,41 @@ export class ConversationService {
   }
 
   send(input: ConversationSendInput): ConversationSendResult {
+    const exchange = this.createExchange(input)
+    this.startGeneration(input, exchange.user, exchange.assistant)
+    return exchange
+  }
+
+  beginAgentTask(input: ConversationSendInput): ConversationSendResult {
+    return this.createExchange(input)
+  }
+
+  handleAgentRunChanged(run: AgentRun): AgentMessage | null {
+    if (!run.projectId || !run.conversationId || !run.assistantMessageId) return null
+    if (!['completed', 'failed', 'cancelled'].includes(run.status)) return null
+    const current = this.options.db.listAgentMessages(run.projectId, run.conversationId)
+      .find(message => message.id === run.assistantMessageId)
+    if (!current) return null
+    const now = this.now()
+    const status: AgentMessage['status'] = run.status === 'completed' ? 'completed' : run.status === 'cancelled' ? 'stopped' : 'failed'
+    const content = run.response?.trim() || (run.status === 'failed' ? '任务未能完成。' : '任务已停止。')
+    if (current.status === status && current.content === content) return current
+    const message: AgentMessage = {
+      ...current,
+      content,
+      status,
+      ...(run.errorCode ? { errorCode: run.errorCode } : {}),
+      ...(run.errorMessage ? { errorMessage: run.errorMessage } : {}),
+      updatedAt: now,
+      completedAt: now
+    }
+    this.options.db.saveAgentMessage(message)
+    this.touchConversation(run.projectId, run.conversationId, now)
+    this.emitChanged({ kind: 'message', projectId: run.projectId, message })
+    return message
+  }
+
+  private createExchange(input: ConversationSendInput): ConversationSendResult {
     const conversation = this.requireConversation(input.projectId, input.conversationId)
     if (this.active.has(input.conversationId)) throw new Error('Conversation is already streaming')
     const now = this.now()
@@ -118,7 +154,6 @@ export class ConversationService {
     })
     this.emitChanged({ kind: 'message', projectId: input.projectId, message: user })
     this.emitChanged({ kind: 'message', projectId: input.projectId, message: assistant })
-    this.startGeneration(input, user, assistant)
     return { user, assistant }
   }
 

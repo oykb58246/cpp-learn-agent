@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { diagnosticSchema, type Diagnostic } from './future'
+import { agentModeSchema, agentRunSchema } from './agent'
 
 const timestampSchema = z.string().datetime()
 const relativePathSchema = z.string().min(1).max(1_024).refine(value => {
@@ -147,9 +148,11 @@ export const conversationSendInputSchema = z.object({
   projectId: z.string().uuid(),
   conversationId: z.string().uuid(),
   message: z.string().trim().min(1).max(20_000),
+  mode: agentModeSchema.optional(),
   activeFile: relativePathSchema.optional(),
   selection: editorSelectionSchema.optional(),
-  diagnostic: diagnosticExplanationSnapshotSchema.optional()
+  diagnostic: diagnosticExplanationSnapshotSchema.optional(),
+  diagnostics: z.array(diagnosticSchema).max(200).optional()
 })
 export type ConversationSendInput = z.input<typeof conversationSendInputSchema>
 
@@ -175,5 +178,7 @@ export type ConversationStopInput = z.infer<typeof conversationStopInputSchema>
 export type ConversationRetryInput = z.infer<typeof conversationRetryInputSchema>
 export const conversationSendResultSchema = z.object({ user: agentMessageSchema, assistant: agentMessageSchema })
 export type ConversationSendResult = z.infer<typeof conversationSendResultSchema>
+export const conversationAgentSubmitResultSchema = conversationSendResultSchema.extend({ run: agentRunSchema })
+export type ConversationAgentSubmitResult = z.infer<typeof conversationAgentSubmitResultSchema>
 
 export type DiagnosticWithFailureKind = { kind: DiagnosticFailureKind; diagnostic: Diagnostic }

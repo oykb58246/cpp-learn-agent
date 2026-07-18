@@ -687,6 +687,37 @@ function registerIpc(): void {
   handle(ipc.conversationsArchive, conversationArchiveInputSchema, input => requiredConversationService().archive(input))
   handle(ipc.conversationsMessages, conversationMessagesInputSchema, input => requiredConversationService().messages(input))
   handle(ipc.conversationsSend, conversationSendInputSchema, input => requiredConversationService().send(input))
+  handle(ipc.conversationsAgentSubmit, conversationSendInputSchema, async input => {
+    const conversation = requiredConversationService()
+    const exchange = conversation.beginAgentTask(input)
+    const requestId = randomUUID()
+    const diagnostics = input.diagnostics ?? input.diagnostic?.occurrences.map(occurrence => ({
+      source: 'compiler' as const,
+      severity: 'error' as const,
+      ...(occurrence.file ? { file: occurrence.file } : {}),
+      ...(occurrence.line ? { line: occurrence.line } : {}),
+      ...(occurrence.column ? { column: occurrence.column } : {}),
+      rawMessage: occurrence.rawMessage,
+      normalizedMessage: occurrence.normalizedMessage,
+      relatedConceptIds: []
+    }))
+    const request = {
+      requestId,
+      source: 'editor',
+      mode: input.mode ?? 'auto',
+      message: input.message,
+      projectId: input.projectId,
+      ...(input.activeFile ? { activeFile: input.activeFile } : {}),
+      ...(input.selection ? { selection: input.selection } : {}),
+      ...(diagnostics?.length ? { diagnostics } : {}),
+      conversationId: input.conversationId,
+      assistantMessageId: exchange.assistant.id
+    } as const
+    const task = requiredAgentServices().agentHost.start(request)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    const run = requiredAgentServices().agentHost.list().find(item => item.requestId === requestId) ?? await task
+    return { ...exchange, run }
+  })
   handle(ipc.conversationsStop, conversationStopInputSchema, input => requiredConversationService().stop(input))
   handle(ipc.conversationsRetry, conversationRetryInputSchema, input => requiredConversationService().retry(input))
   handle(ipc.agentStart, agentStartRequestSchema, input => requiredAgentServices().agentHost.start(input))
@@ -940,6 +971,7 @@ app.whenReady().then(async () => {
   })
   agentHost = new AgentHost(runtime)
   agentHost.onChanged(run => {
+    conversationService?.handleAgentRunChanged(run)
     mainWindow?.webContents.send(ipc.agentChanged, run)
     const currentLevel = database?.getLearnerSummary('local-user').level ?? lastLearnerLevel
     mainWindow?.webContents.send(ipc.petChanged, petEventForRun(run, lastLearnerLevel, currentLevel))

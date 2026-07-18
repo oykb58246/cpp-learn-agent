@@ -8,6 +8,7 @@ export interface AssistantRecordSummary {
 }
 
 const titleByMode: Record<AgentRun['mode'], string> = {
+  auto: '智能助教任务',
   environment: '开发环境协助',
   explain: '代码与概念解释',
   diagnose: '报错诊断',

@@ -75,7 +75,7 @@ describe('desktop H3 integration', () => {
       selection: { startLine: 1, startColumn: 1, endLine: 1, endColumn: 10, content: 'return 0;' }
     })
 
-    expect(context.sources.map(item => item.kind)).toEqual(['selection', 'learning'])
+    expect(context.sources.map(item => item.kind)).toEqual(expect.arrayContaining(['selection', 'project-tree', 'learning', 'tool']))
     expect(context.sources.some(item => item.kind === 'file')).toBe(false)
   })
 

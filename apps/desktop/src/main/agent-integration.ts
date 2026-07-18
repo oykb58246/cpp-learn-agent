@@ -11,6 +11,7 @@ import {
   type DebugCommand,
   type DebugSessionState,
   type ContextPacket,
+  type FileTreeNode,
   type LearnerKnowledge,
   type TimelineEvent,
   type Approval,
@@ -46,6 +47,10 @@ import {
   type RuntimeToolClient,
   type RuntimeToolProgress
 } from '@cpp-pet/agent-runtime'
+
+function flattenFileTree(nodes: FileTreeNode[]): FileTreeNode[] {
+  return nodes.flatMap(node => [node, ...(node.children ? flattenFileTree(node.children) : [])])
+}
 
 export class DatabaseRuntimeStore implements RuntimeStore {
   constructor(private readonly db: AppDatabase) {}
@@ -86,26 +91,89 @@ export class DesktopContextBuilder implements RuntimeContextBuilder {
         metadata: { contentHash: document.contentHash, truncated: document.content.length > 100_000 }
       })
     }
-    if (request.diagnostics?.length) {
+    if (request.projectId) {
+      const project = this.db.getProject(request.projectId)
+      const files = flattenFileTree(this.workspaceService.listTree(request.projectId)).slice(0, 200)
+      sources.push({
+        kind: 'project-tree',
+        label: project?.name ?? '当前项目',
+        content: JSON.stringify({ name: project?.name ?? '当前项目', type: project?.type ?? 'single-file', files }),
+        trusted: true,
+        projectId: request.projectId
+      })
+    }
+    const liveDiagnostics = request.diagnostics ?? []
+    const incidentDiagnostics = request.projectId
+      ? this.db.listActiveDiagnosticIncidents(request.projectId).flatMap(incident => incident.groups.flatMap(group => group.occurrences.map(occurrence => ({
+          source: group.source,
+          severity: group.severity,
+          ...(group.code ? { code: group.code } : {}),
+          ...(occurrence.file ? { file: occurrence.file } : {}),
+          ...(occurrence.line ? { line: occurrence.line } : {}),
+          ...(occurrence.column ? { column: occurrence.column } : {}),
+          rawMessage: occurrence.rawMessage,
+          normalizedMessage: occurrence.normalizedMessage,
+          relatedConceptIds: []
+        }))))
+      : []
+    const diagnostics = [...liveDiagnostics, ...incidentDiagnostics].slice(0, 200)
+    if (diagnostics.length) {
       sources.push({
         kind: 'diagnostic',
-        label: `当前诊断（${request.diagnostics.length}）`,
-        content: JSON.stringify(request.diagnostics),
+        label: `当前诊断（${diagnostics.length}）`,
+        content: JSON.stringify(diagnostics),
         trusted: true,
         ...(request.projectId ? { projectId: request.projectId } : {}),
         ...(request.activeFile ? { relativePath: request.activeFile } : {})
       })
     }
     const backgroundProfile = this.db.getBackgroundProfile('local-user')
-    const explanationContext = buildExplanationContext(builtInKnowledge, backgroundProfile, [])
+    const knowledge = this.db.listLearnerKnowledge('local-user')
+    const activeKnowledgeIds = knowledge
+      .filter(item => ['learning', 'self-claimed', 'verified', 'review'].includes(item.status))
+      .map(item => item.conceptId)
+    const mergedProfile = backgroundProfile
+      ? { ...backgroundProfile, studiedConceptIds: [...new Set([...backgroundProfile.studiedConceptIds, ...activeKnowledgeIds])] }
+      : undefined
+    const explanationContext = buildExplanationContext(builtInKnowledge, mergedProfile, [])
+    const relevantErrors = this.db.listErrorBookEntries('local-user').slice(0, 50).map(error => ({
+      category: error.category,
+      title: error.title,
+      conceptIds: error.conceptIds,
+      status: error.status
+    }))
+    const dueReviews = this.db.listReviewItems('local-user', true).slice(0, 50).map(review => ({ conceptId: review.conceptId, dueAt: review.dueAt }))
     sources.push({
       kind: 'learning',
-      label: '助教讲解背景',
+      label: '学习状态',
       content: JSON.stringify({
         startingPoint: backgroundProfile?.startingPoint ?? 'zero-beginner',
-        knownConceptIds: explanationContext.knownConceptIds,
+        knowledge: knowledge.map(item => ({ conceptId: item.conceptId, status: item.status, confidence: item.confidence })),
         focusConceptIds: explanationContext.focusConceptIds,
-        instructions: explanationContext.instructions
+        relevantErrors,
+        dueReviews,
+        teachingInstructions: explanationContext.instructions
+      }),
+      trusted: true
+    })
+    if (request.projectId && request.conversationId) {
+      const messages = this.db.listAgentMessages(request.projectId, request.conversationId)
+        .filter(message => message.content.trim() && ['completed', 'stopped', 'interrupted'].includes(message.status))
+        .slice(-20)
+        .map(message => ({ role: message.role, content: message.content }))
+      if (messages.length) {
+        sources.push({ kind: 'memory', label: '近期对话', content: JSON.stringify({ messages }), trusted: true, projectId: request.projectId })
+      }
+    }
+    const activeToolchainId = this.db.getSettings().activeToolchainId
+    const toolchain = activeToolchainId ? this.db.getToolchainProfile(activeToolchainId) : undefined
+    sources.push({
+      kind: 'tool',
+      label: '开发环境',
+      content: JSON.stringify({
+        cppStandard: 'c++17',
+        ...(toolchain ? { compiler: `${toolchain.family} ${toolchain.version}` } : {}),
+        cmakeAvailable: Boolean(toolchain?.capabilities.compileDatabase)
       }),
       trusted: true
     })

@@ -107,6 +107,25 @@ describe('H3 agent contracts', () => {
     expect(agentStartRequestSchema.safeParse({ ...request, diagnostics: Array.from({ length: 201 }, () => diagnostic!) }).success).toBe(false)
   })
 
+  it('links automatic Agent requests and runs to a conversation message', () => {
+    const conversationId = crypto.randomUUID()
+    const assistantMessageId = crypto.randomUUID()
+    const request = agentStartRequestSchema.parse({
+      source: 'editor', mode: 'auto', message: '帮我写一个 hello world 程序',
+      conversationId, assistantMessageId
+    })
+    const run = agentRunSchema.parse({
+      id: crypto.randomUUID(), requestId: request.requestId, source: request.source, mode: request.mode,
+      message: request.message, conversationId, assistantMessageId,
+      status: 'queued', steps: [], createdAt: now, updatedAt: now
+    })
+
+    expect(request.mode).toBe('auto')
+    expect(run.conversationId).toBe(conversationId)
+    expect(run.assistantMessageId).toBe(assistantMessageId)
+    expect(agentStartRequestSchema.safeParse({ ...request, conversationId: undefined, assistantMessageId }).success).toBe(false)
+  })
+
   it('requires a concrete review item for review requests', () => {
     const reviewItemId = crypto.randomUUID()
     const request = agentStartRequestSchema.parse({

@@ -84,6 +84,7 @@ const api: CppPetApi = {
     archive: input => invoke(ipc.conversationsArchive, input),
     messages: input => invoke(ipc.conversationsMessages, input),
     send: input => invoke(ipc.conversationsSend, input),
+    submitAgent: input => invoke(ipc.conversationsAgentSubmit, input),
     stop: input => invoke(ipc.conversationsStop, input),
     retry: input => invoke(ipc.conversationsRetry, input),
     onDelta: listener => {

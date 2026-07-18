@@ -377,17 +377,24 @@ function languageFailed(reason: string) {
   languageStatusText.value = reason
 }
 
-async function submitAgent(request: AgentStartRequest) {
-  agentOpen.value = true
-  await agent.start(request)
-}
-
 function toggleAgentPanel() {
   agentOpen.value = !agentOpen.value
 }
 
 function toggleDiagnosticInbox() {
   if (inboxCount.value) inboxOpen.value = !inboxOpen.value
+}
+
+async function submitAgent(request: AgentStartRequest) {
+  agentOpen.value = true
+  if (store.currentProject && agent.agentProjectId !== store.currentProject.id) await agent.loadProjectAgent(store.currentProject.id)
+  await agent.submitAgent({
+    message: request.message,
+    mode: request.mode,
+    ...(request.activeFile ? { activeFile: request.activeFile } : {}),
+    ...(request.selection ? { selection: { ...request.selection } } : {}),
+    ...(request.diagnostics?.length ? { diagnostics: request.diagnostics.map(item => ({ ...item, relatedConceptIds: [...item.relatedConceptIds] })) } : {})
+  })
 }
 
 async function navigateInboxOccurrence(occurrence: DiagnosticOccurrence) {

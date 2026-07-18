@@ -155,6 +155,23 @@ export const useAgentStore = defineStore('agent', {
       this.upsertMessage(result.data.assistant)
       return result.data
     },
+    async submitAgent(input: Omit<ConversationSendInput, 'projectId' | 'conversationId'>) {
+      const projectId = this.agentProjectId
+      if (!projectId) return null
+      if (!this.currentConversationId && !await this.createConversation()) return null
+      const conversationId = this.currentConversationId
+      if (!conversationId) return null
+      this.running = true
+      this.error = null
+      const result = await window.cppPet.conversations.submitAgent({ ...input, projectId, conversationId })
+      this.running = false
+      if (!result.ok) { this.error = result.error; return null }
+      this.upsertMessage(result.data.user)
+      this.upsertMessage(result.data.assistant)
+      this.upsertRun(result.data.run)
+      this.currentRun = result.data.run
+      return result.data
+    },
     async stopMessage() {
       const projectId = this.agentProjectId
       const conversationId = this.currentConversationId
