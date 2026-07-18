@@ -170,6 +170,16 @@ export const useAgentStore = defineStore('agent', {
       this.upsertMessage(result.data.assistant)
       this.upsertRun(result.data.run)
       this.currentRun = result.data.run
+      const [detail, messages] = await Promise.all([
+        typeof window.cppPet.agent?.get === 'function' ? window.cppPet.agent.get({ runId: result.data.run.id }) : Promise.resolve(null),
+        typeof window.cppPet.conversations.messages === 'function' ? window.cppPet.conversations.messages({ projectId, conversationId }) : Promise.resolve(null)
+      ])
+      if (detail?.ok) {
+        this.currentRun = detail.data
+        this.upsertRun(detail.data)
+      } else if (detail) this.error ??= detail.error
+      if (messages?.ok) this.messages = messages.data
+      else if (messages) this.error ??= messages.error
       return result.data
     },
     async stopMessage() {
