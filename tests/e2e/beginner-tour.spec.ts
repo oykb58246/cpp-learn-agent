@@ -3,17 +3,22 @@ import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createElectronEnvironment } from './electron-env'
+import { createElectronEnvironment, startStreamingModelFixture, type StreamingModelFixture } from './electron-env'
 
 const repo = resolve(import.meta.dirname, '../..')
 let temp = ''
+let modelFixture: StreamingModelFixture
 
-test.beforeEach(() => {
+test.beforeEach(async () => {
   temp = mkdtempSync(join(tmpdir(), 'cpppilot-tour-e2e-'))
   mkdirSync(join(temp, 'workspace'))
   mkdirSync(join(repo, 'test-results', 'visual'), { recursive: true })
+  modelFixture = await startStreamingModelFixture()
 })
-test.afterEach(() => rmSync(temp, { recursive: true, force: true }))
+test.afterEach(async () => {
+  await modelFixture.close()
+  rmSync(temp, { recursive: true, force: true })
+})
 
 async function setWindowSize(electronApp: ElectronApplication, page: Page, width: number, height: number) {
   const browserWindow = await electronApp.browserWindow(page)
@@ -52,7 +57,7 @@ async function expectTourNotToOverlapTarget(page: Page, target: string) {
   expect(overlaps).toBe(false)
 }
 
-test('guides a beginner through a real offline Agent experience', async () => {
+test('guides a beginner through a real Responses Agent experience', async () => {
   test.setTimeout(180_000)
   const electronApp = await electron.launch({
     executablePath: electronPath as unknown as string,
@@ -65,7 +70,7 @@ test('guides a beginner through a real offline Agent experience', async () => {
   try {
     const page = await electronApp.firstWindow()
     await page.waitForLoadState('domcontentloaded')
-    const prepared = await page.evaluate(async () => {
+    const prepared = await page.evaluate(async baseUrl => {
       const settings = await window.cppPet.settings.update({
         onboardingCompleted: true,
         onboardingStatus: 'completed',
@@ -79,9 +84,12 @@ test('guides a beginner through a real offline Agent experience', async () => {
         studiedConceptIds: [],
         focusConceptIds: []
       })
-      return { settings: settings.ok, background: background.ok }
-    })
-    expect(prepared).toEqual({ settings: true, background: true })
+      const model = await window.cppPet.model.save({
+        name: 'Tour Responses model', baseUrl, model: 'gpt-5', enabled: true, timeoutMs: 10_000, apiKey: 'fixture-key'
+      })
+      return { settings: settings.ok, background: background.ok, model: model.ok }
+    }, modelFixture.baseUrl)
+    expect(prepared).toEqual({ settings: true, background: true, model: true })
     await page.evaluate(() => { window.location.hash = '#/home' })
     await page.reload()
     await page.waitForLoadState('domcontentloaded')
@@ -119,6 +127,8 @@ test('guides a beginner through a real offline Agent experience', async () => {
     await captureWindow(electronApp, page, 'beginner-tour-agent-input-1024x720.png')
     await expectTourInsideViewport(page)
     await page.getByRole('button', { name: '发送', exact: true }).click()
+    await expect(page.locator('.approval-card')).toContainText('发送上下文到 OpenAI 模型', { timeout: 30_000 })
+    await page.getByRole('button', { name: '批准', exact: true }).click()
     await expect(page.locator('[data-tour="assistant-result"]')).toContainText('循环', { timeout: 30_000 })
     await expect(page.getByRole('dialog', { name: '看懂助教结果' })).toBeVisible()
     await captureWindow(electronApp, page, 'beginner-tour-agent-result-1024x720.png')
@@ -162,7 +172,7 @@ test('keeps the approval card interactive during the assistant tour step', async
   try {
     const page = await electronApp.firstWindow()
     await page.waitForLoadState('domcontentloaded')
-    const prepared = await page.evaluate(async () => {
+    const prepared = await page.evaluate(async baseUrl => {
       const settings = await window.cppPet.settings.update({
         onboardingCompleted: true,
         onboardingStatus: 'completed',
@@ -178,14 +188,14 @@ test('keeps the approval card interactive during the assistant tour step', async
       })
       const model = await window.cppPet.model.save({
         name: 'Approval test model',
-        baseUrl: 'http://127.0.0.1:1/v1',
-        model: 'offline-fallback',
+        baseUrl,
+        model: 'gpt-5',
         enabled: true,
         timeoutMs: 1_000,
         apiKey: 'test-key'
       })
       return { settings: settings.ok, background: background.ok, model: model.ok }
-    })
+    }, modelFixture.baseUrl)
     expect(prepared).toEqual({ settings: true, background: true, model: true })
     await page.evaluate(() => { window.location.hash = '#/home' })
     await page.reload()
@@ -198,7 +208,7 @@ test('keeps the approval card interactive during the assistant tour step', async
     await page.getByRole('button', { name: '试着解释这段循环' }).click()
     await page.getByRole('button', { name: '发送', exact: true }).click()
 
-    await expect(page.locator('.approval-card')).toContainText('发送最小上下文到模型服务', { timeout: 30_000 })
+    await expect(page.locator('.approval-card')).toContainText('发送上下文到 OpenAI 模型', { timeout: 30_000 })
     await expect(page.locator('[data-tour="assistant-approval"]')).toBeVisible()
     await expect(page.locator('.product-tour-status')).toContainText('需要你的确认')
     await expectTourNotToOverlapTarget(page, 'assistant-approval')

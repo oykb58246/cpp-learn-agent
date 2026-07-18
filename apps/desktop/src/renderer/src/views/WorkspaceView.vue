@@ -407,8 +407,9 @@ async function explainDiagnostic(snapshot: DiagnosticExplanationSnapshot, create
   inboxOpen.value = false
   agentOpen.value = true
   if (createNew || !agent.currentConversationId) await agent.createConversation(snapshot.title)
-  await agent.sendMessage({
+  await agent.submitAgent({
     message: `请结合我的 C++ 学习背景，解释这个错误：${snapshot.title}`,
+    mode: 'auto',
     diagnostic: snapshot,
     ...(active.value?.relativePath ? { activeFile: active.value.relativePath } : {})
   })

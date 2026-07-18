@@ -1,16 +1,20 @@
-import type { AgentRun, AgentRunDetail, AgentStartRequest, ApprovalDecision } from '@cpp-pet/contracts'
-import type { AgentRuntime } from '@cpp-pet/agent-runtime'
+import type { AgentContinueRequest, AgentRun, AgentRunDetail, AgentStartRequest, ApprovalDecision } from '@cpp-pet/contracts'
+import type { AgentRuntimeController } from '@cpp-pet/agent-runtime'
 
 export class AgentHost {
   private readonly listeners = new Set<(run: AgentRun) => void>()
 
-  constructor(private readonly runtime: AgentRuntime) {
+  constructor(private readonly runtime: AgentRuntimeController) {
     runtime.onChanged(run => this.publish(run))
   }
 
   async start(input: AgentStartRequest): Promise<AgentRun> {
     const run = await this.runtime.start(input)
     return run
+  }
+
+  async continue(input: AgentContinueRequest): Promise<AgentRun> {
+    return this.runtime.continue(input)
   }
 
   get(runId: string): AgentRunDetail | undefined { return this.runtime.get(runId) }

@@ -12,12 +12,16 @@ export const jsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.union([
 export const agentRunStatusSchema = z.enum([
   'queued',
   'contextualizing',
+  'waiting-model-approval',
+  'model-requesting',
+  'validating-model-output',
   'planning',
   'policy-check',
   'waiting-approval',
   'executing',
   'validating',
   'responding',
+  'waiting-input',
   'completed',
   'failed',
   'cancelled'
@@ -190,6 +194,10 @@ export const agentRunSchema = z.object({
   errorMessage: z.string().max(20_000).optional(),
   steps: z.array(agentStepSchema).max(12),
   pendingApproval: approvalSchema.optional(),
+  pendingClarification: z.object({
+    question: z.string().min(1).max(2_000),
+    requestedAt: timestampSchema
+  }).strict().optional(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
   completedAt: timestampSchema.optional()
@@ -249,6 +257,13 @@ export const agentStartRequestSchema = z.object({
   }
 })
 export type AgentStartRequest = z.input<typeof agentStartRequestSchema>
+
+export const agentContinueRequestSchema = z.object({
+  runId: z.string().uuid(),
+  message: z.string().min(1).max(20_000).refine(value => value.trim().length > 0, '补充信息不能为空。'),
+  assistantMessageId: z.string().uuid().optional()
+}).strict()
+export type AgentContinueRequest = z.input<typeof agentContinueRequestSchema>
 
 export const modelProfileSchema = z.object({
   id: z.string().uuid(),

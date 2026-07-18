@@ -3,16 +3,17 @@ import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createElectronEnvironment } from './electron-env'
+import { createElectronEnvironment, startStreamingModelFixture } from './electron-env'
 
 const repo = resolve(import.meta.dirname, '../..')
-const request = '帮我把 main.cpp 中的"Hello, C++Pilot!"改成"Hello, world!"，编译成功后再解释 main、cout 和 endl 的作用'
+const request = '帮我把 main.cpp 中的"Hello, C++Pilot!"改成"Hello, world!，编译成功后再解释 main、cout 和 endl 的作用。'
 
 test('修改代码、编译验证并解释指定概念', async () => {
   test.setTimeout(180_000)
   const temp = mkdtempSync(join(tmpdir(), 'cpppilot-agent-edit-'))
   const workspaceRoot = join(temp, 'workspace')
   mkdirSync(workspaceRoot)
+  const modelFixture = await startStreamingModelFixture()
   const electronApp = await electron.launch({
     executablePath: electronPath as unknown as string,
     args: ['--in-process-gpu', '--no-sandbox', join(repo, 'apps/desktop')],
@@ -25,7 +26,7 @@ test('修改代码、编译验证并解释指定概念', async () => {
   try {
     const page = await electronApp.firstWindow()
     await page.waitForLoadState('domcontentloaded')
-    const setup = await page.evaluate(async () => {
+    const setup = await page.evaluate(async baseUrl => {
       await window.cppPet.settings.update({ onboardingStatus: 'completed' })
       const detected = await window.cppPet.toolchains.detect()
       if (!detected.ok || !detected.data.candidates[0]) return { error: 'NO_TOOLCHAIN' }
@@ -44,8 +45,12 @@ test('修改代码、编译验证并解释指定概念', async () => {
         content: '#include <iostream>\nusing namespace std;\n\nint Main() {\n    cout << "Hello, C++Pilot!" << endl;\n    return 0;\n}\n',
         createSnapshot: false
       })
-      return written.ok ? { projectId: project.id } : { error: written.error.code }
-    })
+      if (!written.ok) return { error: written.error.code }
+      const model = await window.cppPet.model.save({
+        name: 'Responses E2E model', baseUrl, model: 'gpt-5', enabled: true, timeoutMs: 10_000, apiKey: 'fixture-key'
+      })
+      return model.ok ? { projectId: project.id } : { error: model.error.code }
+    }, modelFixture.baseUrl)
     expect(setup).toHaveProperty('projectId')
     const projectId = (setup as { projectId: string }).projectId
 
@@ -58,7 +63,10 @@ test('修改代码、编译验证并解释指定概念', async () => {
     await page.getByPlaceholder('向 CppPilot 提交学习任务').fill(request)
     await page.getByRole('button', { name: '发送', exact: true }).click()
 
-    await expect(page.locator('.approval-card')).toContainText('Apply requested file edit', { timeout: 30_000 })
+    await expect(page.locator('.approval-card')).toContainText('发送上下文到 OpenAI 模型', { timeout: 30_000 })
+    await page.getByRole('button', { name: '批准', exact: true }).click()
+
+    await expect(page.locator('.approval-card')).toContainText('应用文件修改', { timeout: 30_000 })
     await expect(page.locator('.approval-diff')).toContainText('-int Main()')
     await expect(page.locator('.approval-diff')).toContainText('+int main()')
     await expect(page.locator('.approval-diff')).toContainText('-    cout << "Hello, C++Pilot!" << endl;')
@@ -94,8 +102,13 @@ test('修改代码、编译验证并解释指定概念', async () => {
         { name: 'compiler.build', status: 'completed', ok: true }
       ]
     })
+    const firstContextRequest = modelFixture.requests.find(item => (item.input as any[])?.some(input => input.role === 'user'))
+    const contextText = (firstContextRequest?.input as any[])?.find(input => input.role === 'user')?.content?.[0]?.text
+    expect(JSON.parse(contextText).task.prompt).toBe(request)
+    expect(modelFixture.requests.some(item => JSON.stringify(item).includes('compiler.build'))).toBe(true)
   } finally {
     await electronApp.close()
+    await modelFixture.close()
     rmSync(temp, { recursive: true, force: true })
   }
 })

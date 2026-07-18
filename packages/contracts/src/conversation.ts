@@ -147,7 +147,7 @@ export type ConversationChangedEvent = z.infer<typeof conversationChangedEventSc
 export const conversationSendInputSchema = z.object({
   projectId: z.string().uuid(),
   conversationId: z.string().uuid(),
-  message: z.string().trim().min(1).max(20_000),
+  message: z.string().min(1).max(20_000).refine(value => value.trim().length > 0, '消息不能为空。'),
   mode: agentModeSchema.optional(),
   activeFile: relativePathSchema.optional(),
   selection: editorSelectionSchema.optional(),

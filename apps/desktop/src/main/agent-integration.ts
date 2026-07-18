@@ -5,14 +5,17 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport, type StdioServerParameters } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import {
+  cppPilotContextEnvelopeSchema,
   toolResultSchema,
   type AgentRun,
   type AgentRunDetail,
   type DebugCommand,
   type DebugSessionState,
   type ContextPacket,
+  type CppPilotContextEnvelope,
   type FileTreeNode,
   type LearnerKnowledge,
+  type OpenAiFunctionTool,
   type TimelineEvent,
   type Approval,
   type ToolCall,
@@ -34,18 +37,16 @@ import { GdbMiSession } from '@cpp-pet/cpp-local-tools/debugger'
 import {
   buildExplanationContext,
   builtInKnowledge,
-  H3WorkflowPlanner,
   nextReviewDate,
   reviewIntervalsDays,
-  OpenAiCompatiblePlanner,
-  ResilientPlanner,
+  OpenAiResponsesClient,
   type ResolvedAgentRequest,
   type RuntimeContextBuilder,
-  type RuntimeContextApproval,
-  type RuntimePlanner,
   type RuntimeStore,
   type RuntimeToolClient,
-  type RuntimeToolProgress
+  type RuntimeToolProgress,
+  type OpenAiAgentContextBuilder,
+  type OpenAiAgentModelFactory
 } from '@cpp-pet/agent-runtime'
 
 function flattenFileTree(nodes: FileTreeNode[]): FileTreeNode[] {
@@ -197,6 +198,147 @@ export class DesktopContextBuilder implements RuntimeContextBuilder {
   }
 }
 
+export class DesktopOpenAiContextBuilder implements OpenAiAgentContextBuilder {
+  constructor(private readonly workspaceService: WorkspaceService, private readonly db: AppDatabase) {}
+
+  async build(
+    request: ResolvedAgentRequest,
+    taskId: string,
+    turn: number,
+    _signal: AbortSignal
+  ): Promise<CppPilotContextEnvelope> {
+    const project = request.projectId ? this.db.getProject(request.projectId) : undefined
+    const tree = request.projectId ? flattenFileTree(this.workspaceService.listTree(request.projectId)) : []
+    const relatedFiles = tree.filter(node => node.kind === 'file').map(node => node.relativePath).slice(0, 200)
+    const activeDocument = request.projectId && request.activeFile
+      ? this.workspaceService.readFile(request.projectId, request.activeFile)
+      : undefined
+    const liveDiagnostics = request.diagnostics ?? []
+    const incidentDiagnostics = request.projectId
+      ? this.db.listActiveDiagnosticIncidents(request.projectId).flatMap(incident => incident.groups.flatMap(group => group.occurrences.map(occurrence => ({
+          source: group.source,
+          severity: group.severity,
+          ...(group.code ? { code: group.code } : {}),
+          ...(occurrence.file ? { file: occurrence.file } : {}),
+          ...(occurrence.line ? { line: occurrence.line } : {}),
+          ...(occurrence.column ? { column: occurrence.column } : {}),
+          message: occurrence.normalizedMessage || occurrence.rawMessage
+        }))))
+      : []
+    const diagnostics = [
+      ...liveDiagnostics.map(item => ({
+        source: item.source,
+        severity: item.severity,
+        ...(item.code ? { code: item.code } : {}),
+        ...(item.file ? { file: item.file } : {}),
+        ...(item.line ? { line: item.line } : {}),
+        ...(item.column ? { column: item.column } : {}),
+        message: item.normalizedMessage || item.rawMessage
+      })),
+      ...incidentDiagnostics
+    ].slice(0, 200)
+    const recentConversation = request.projectId && request.conversationId
+      ? this.db.listAgentMessages(request.projectId, request.conversationId)
+          .filter(message => message.content.trim())
+          .slice(-20)
+          .map(message => ({ role: message.role, content: message.content }))
+      : []
+    const learnerProfile = this.db.getBackgroundProfile('local-user') ?? {}
+    const knowledgeState = this.db.listLearnerKnowledge('local-user').slice(0, 200).map(item => ({
+      conceptId: item.conceptId, status: item.status, confidence: item.confidence
+    }))
+    const relevantErrors = this.db.listErrorBookEntries('local-user').slice(0, 50).map(item => ({
+      category: item.category, title: item.title, conceptIds: item.conceptIds, status: item.status
+    }))
+    const dueReviews = this.db.listReviewItems('local-user', true).slice(0, 50).map(item => ({
+      conceptId: item.conceptId, dueAt: item.dueAt
+    }))
+    const activeToolchainId = this.db.getSettings().activeToolchainId
+    const toolchain = activeToolchainId ? this.db.getToolchainProfile(activeToolchainId) : undefined
+    const allowedPaths = [...new Set([
+      ...(request.activeFile ? [request.activeFile] : []),
+      ...relatedFiles
+    ])].slice(0, 500)
+
+    return cppPilotContextEnvelopeSchema.parse({
+      protocol: 'cpppilot.context.v1', taskId, turn,
+      task: {
+        prompt: request.message,
+        source: request.source === 'editor' ? 'workspace' : request.source,
+        ...(request.activeFile ? { activeFile: request.activeFile } : {}),
+        ...(request.selection ? {
+          selection: {
+            startLine: request.selection.startLine,
+            endLine: request.selection.endLine,
+            content: request.selection.content
+          }
+        } : {})
+      },
+      workspace: {
+        ...(project ? { project: { id: project.id, name: project.name, type: project.type } } : {}),
+        ...(activeDocument ? {
+          activeFile: {
+            path: activeDocument.relativePath,
+            content: activeDocument.content.slice(0, 100_000),
+            contentHash: activeDocument.contentHash,
+            dirty: false,
+            truncated: activeDocument.content.length > 100_000
+          }
+        } : {}),
+        relatedFiles,
+        diagnostics,
+        environment: {
+          cppStandard: 'c++17',
+          ...(toolchain ? { compiler: `${toolchain.family} ${toolchain.version}` } : {}),
+          cmakeAvailable: Boolean(toolchain?.capabilities.compileDatabase)
+        }
+      },
+      memory: {
+        recentConversation,
+        learnerProfile,
+        knowledgeState,
+        relevantErrors,
+        dueReviews,
+        recentEvidence: []
+      },
+      policy: {
+        ...(request.projectId ? { allowedProjectId: request.projectId } : {}),
+        allowedPaths,
+        writesRequireApproval: true,
+        maxModelTurns: 12,
+        maxToolCalls: 20,
+        remainingTimeMs: 120_000
+      }
+    })
+  }
+}
+
+export class DesktopOpenAiModelFactory implements OpenAiAgentModelFactory {
+  constructor(
+    private readonly db: AppDatabase,
+    private readonly secrets: { get(profileId: string): string | undefined },
+    private readonly tools: OpenAiFunctionTool[],
+    private readonly fetcher?: typeof fetch
+  ) {}
+
+  async create(_signal: AbortSignal) {
+    const profile = this.db.listModelProfiles().find(item => item.enabled)
+    const apiKey = profile ? this.secrets.get(profile.id) : undefined
+    if (!profile || !apiKey) return undefined
+    const client = new OpenAiResponsesClient({
+      profile,
+      apiKey,
+      tools: this.tools,
+      ...(this.fetcher ? { fetcher: this.fetcher } : {})
+    })
+    return {
+      profile,
+      tools: this.tools,
+      respond: (input: Parameters<OpenAiResponsesClient['respond']>[0], signal: AbortSignal) => client.respond(input, signal)
+    }
+  }
+}
+
 export class McpRuntimeToolClient implements RuntimeToolClient {
   private constructor(private readonly client: Client, private readonly server?: ReturnType<typeof createLocalMcpServer>) {}
 
@@ -254,37 +396,6 @@ export class McpRuntimeToolClient implements RuntimeToolClient {
   async close(): Promise<void> {
     await this.client.close()
     await this.server?.close()
-  }
-}
-
-export class DesktopPlanner implements RuntimePlanner {
-  private readonly offline = new H3WorkflowPlanner()
-
-  constructor(private readonly db: AppDatabase, private readonly secrets: { get(profileId: string): string | undefined }) {}
-
-  contextApproval(_request: ResolvedAgentRequest, context: ContextPacket): RuntimeContextApproval | undefined {
-    const profile = this.db.listModelProfiles().find(item => item.enabled)
-    const apiKey = profile ? this.secrets.get(profile.id) : undefined
-    if (!profile || !apiKey || context.sources.length === 0) return undefined
-    return {
-      risk: 'L3',
-      title: '发送最小上下文到模型服务',
-      description: `将 ${context.sources.length} 个已标记来源发送到模型配置“${profile.name}”。`,
-      parameterSummary: {
-        profile: profile.name,
-        sources: context.sources.map(source => ({ kind: source.kind, label: source.label })),
-        tokenEstimate: context.tokenEstimate,
-        truncated: context.truncated
-      },
-      sideEffects: ['remote-request']
-    }
-  }
-
-  async plan(request: ResolvedAgentRequest, context: ContextPacket, signal: AbortSignal) {
-    const profile = this.db.listModelProfiles().find(item => item.enabled)
-    const apiKey = profile ? this.secrets.get(profile.id) : undefined
-    const primary = profile && apiKey ? new OpenAiCompatiblePlanner({ profile, apiKey }) : undefined
-    return new ResilientPlanner(primary, this.offline).plan(request, context, signal)
   }
 }
 

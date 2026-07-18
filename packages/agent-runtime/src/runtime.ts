@@ -5,6 +5,7 @@ import {
   type AgentExecutionEvidence,
   type AgentWorkflow,
   type AgentStartRequest,
+  type AgentContinueRequest,
   type AgentStep,
   type Approval,
   type ApprovalDecision,
@@ -116,6 +117,17 @@ export interface AgentRuntimeOptions {
   totalTimeoutMs?: number
 }
 
+export interface AgentRuntimeController {
+  onChanged(listener: (run: AgentRun) => void): () => void
+  start(input: AgentStartRequest): Promise<AgentRun>
+  continue(input: AgentContinueRequest): Promise<AgentRun>
+  get(runId: string): AgentRunDetail | undefined
+  list(): AgentRun[]
+  decide(input: ApprovalDecision): Promise<AgentRun>
+  cancel(runId: string): Promise<AgentRun>
+  shutdown(): Promise<void>
+}
+
 export class InMemoryRuntimeStore implements RuntimeStore {
   private readonly runs = new Map<string, AgentRun>()
   private readonly timeline = new Map<string, TimelineEvent[]>()
@@ -222,6 +234,10 @@ export class AgentRuntime {
     }
     if (this.isTerminal(run.status)) this.executions.delete(run.id)
     return structuredClone(run)
+  }
+
+  async continue(_input: AgentContinueRequest): Promise<AgentRun> {
+    throw new Error('Legacy Agent runs do not support model clarification')
   }
 
   get(runId: string): AgentRunDetail | undefined { return this.options.store.get(runId) }

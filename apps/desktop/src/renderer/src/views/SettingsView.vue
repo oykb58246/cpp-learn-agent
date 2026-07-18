@@ -400,7 +400,7 @@ async function selectCursor(style: CursorStyle) {
           <Bot :size="18" />
           <div>
             <h2>模型服务</h2>
-            <p>OpenAI-compatible BYOK；未配置时使用确定性离线规划。</p>
+            <p>OpenAI Responses API BYOK；未配置可用模型时 Agent 会明确停止任务。</p>
           </div>
           <div class="section-actions model-profile-actions">
             <select v-model="selectedModelId" aria-label="模型配置" @change="selectModel(selectedModelId)">
@@ -412,7 +412,7 @@ async function selectCursor(style: CursorStyle) {
         </header>
         <div :class="['model-mode-line', { offline: offlineMode }]">
           <component :is="offlineMode ? WifiOff : Wifi" :size="17" />
-          <div><strong>{{ offlineMode ? '离线规划模式' : '在线模型可用' }}</strong><span>{{ offlineMode ? '七条工作流仍调用本地工具并保留验证证据。' : `${selectedModel?.name ?? '已启用配置'} · 密钥已保护` }}</span></div>
+          <div><strong>{{ offlineMode ? 'Agent 模型未配置' : 'OpenAI Responses 模型可用' }}</strong><span>{{ offlineMode ? '保存并启用模型配置与 API Key 后才能执行 Agent 任务。' : `${selectedModel?.name ?? '已启用配置'} · 密钥已保护` }}</span></div>
         </div>
         <div class="model-field-grid">
           <label><span>配置名称</span><input v-model="modelForm.name" maxlength="100" /></label>

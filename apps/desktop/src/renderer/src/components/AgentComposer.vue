@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { Send, Square } from 'lucide-vue-next'
 import type { AgentStartRequest } from '@cpp-pet/contracts'
-import { inferAgentMode } from '../utils/agent-intent'
+import { createAgentRequest } from '../utils/agent-request'
 
 const props = withDefaults(defineProps<{
   source?: AgentStartRequest['source']
@@ -27,17 +27,14 @@ function selectSuggestion() {
 }
 
 function submit() {
-  const value = message.value.trim()
-  if (!value || props.busy) return
-  emit('submit', {
+  if (!message.value.trim() || props.busy) return
+  emit('submit', createAgentRequest(message.value, {
     source: props.source,
-    mode: inferAgentMode({ message: value, selection: props.selection, diagnostics: props.diagnostics }),
-    message: value,
     ...(props.projectId ? { projectId: props.projectId } : {}),
     ...(props.activeFile ? { activeFile: props.activeFile } : {}),
-    ...(props.selection ? { selection: { ...props.selection } } : {}),
-    ...(props.diagnostics?.length ? { diagnostics: props.diagnostics.map(item => ({ ...item, relatedConceptIds: [...item.relatedConceptIds] })) } : {})
-  })
+    ...(props.selection ? { selection: props.selection } : {}),
+    ...(props.diagnostics ? { diagnostics: props.diagnostics } : {})
+  }))
   message.value = ''
 }
 </script>

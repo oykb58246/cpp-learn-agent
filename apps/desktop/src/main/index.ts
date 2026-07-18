@@ -4,7 +4,7 @@ import { basename, join } from 'node:path'
 import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { AppDatabase } from '@cpp-pet/database'
-import { runProcess, runtimeDiagnostics, ToolchainService, ToolExecutionError } from '@cpp-pet/cpp-local-tools'
+import { createOpenAiToolRegistry, localToolDefinitions, runProcess, runtimeDiagnostics, ToolchainService, ToolExecutionError } from '@cpp-pet/cpp-local-tools'
 import { ClangdSession } from '@cpp-pet/cpp-local-tools/language-server'
 import { GdbMiSession } from '@cpp-pet/cpp-local-tools/debugger'
 import { DomainError, safePath, WorkspaceService } from '@cpp-pet/workspace-core'
@@ -19,9 +19,7 @@ import {
   conversationArchiveInputSchema,
   conversationCreateInputSchema,
   conversationMessagesInputSchema,
-  conversationRetryInputSchema,
   conversationSendInputSchema,
-  conversationStopInputSchema,
   debugCommandRequestSchema,
   debugStartRequestSchema,
   diagnosticsProjectInputSchema,
@@ -47,7 +45,7 @@ import {
   type CppStandard,
   type EnvironmentInstallTask
 } from '@cpp-pet/contracts'
-import { achievementDefinitions, AgentRuntime, builtInKnowledge, KnowledgeGate, OpenAiCompatiblePlanner, StreamingModelGateway, transitionKnowledge } from '@cpp-pet/agent-runtime'
+import { achievementDefinitions, builtInKnowledge, OpenAiAgentRuntime, OpenAiResponsesClient, transitionKnowledge } from '@cpp-pet/agent-runtime'
 import { z } from 'zod'
 import { createWindowOptions } from './window-options'
 import { AgentHost } from './agent-host'
@@ -59,9 +57,9 @@ import { DiagnosticIncidentService } from './diagnostic-incident-service'
 import { ConversationService } from './conversation-service'
 import {
   DatabaseRuntimeStore,
-  DesktopContextBuilder,
   DesktopMcpAdapter,
-  DesktopPlanner,
+  DesktopOpenAiContextBuilder,
+  DesktopOpenAiModelFactory,
   McpRuntimeToolClient
 } from './agent-integration'
 
@@ -84,6 +82,7 @@ const cmakeBuilds = new Map<string, { directory: string; sourceDirectory: string
 const languageSessions = new Map<string, ClangdSession>()
 const debugSessions = new Map<string, GdbMiSession>()
 const environmentInstallTasks = new Map<string, EnvironmentInstallTask>()
+const openAiToolRegistry = createOpenAiToolRegistry(localToolDefinitions)
 let stopWatching: (() => void) | null = null
 if (process.env.CPP_PET_USER_DATA) app.setPath('userData', process.env.CPP_PET_USER_DATA)
 
@@ -686,10 +685,24 @@ function registerIpc(): void {
   handle(ipc.conversationsCreate, conversationCreateInputSchema, input => requiredConversationService().create(input))
   handle(ipc.conversationsArchive, conversationArchiveInputSchema, input => requiredConversationService().archive(input))
   handle(ipc.conversationsMessages, conversationMessagesInputSchema, input => requiredConversationService().messages(input))
-  handle(ipc.conversationsSend, conversationSendInputSchema, input => requiredConversationService().send(input))
   handle(ipc.conversationsAgentSubmit, conversationSendInputSchema, async input => {
     const conversation = requiredConversationService()
     const exchange = conversation.beginAgentTask(input)
+    const waitingRun = requiredAgentServices().agentHost.list().find(run =>
+      run.projectId === input.projectId
+      && run.conversationId === input.conversationId
+      && run.status === 'waiting-input'
+    )
+    if (waitingRun) {
+      const task = requiredAgentServices().agentHost.continue({
+        runId: waitingRun.id,
+        message: input.message,
+        assistantMessageId: exchange.assistant.id
+      })
+      await new Promise<void>(resolve => setImmediate(resolve))
+      const run = requiredAgentServices().agentHost.get(waitingRun.id) ?? await task
+      return { ...exchange, run }
+    }
     const requestId = randomUUID()
     const diagnostics = input.diagnostics ?? input.diagnostic?.occurrences.map(occurrence => ({
       source: 'compiler' as const,
@@ -718,8 +731,6 @@ function registerIpc(): void {
     const run = requiredAgentServices().agentHost.list().find(item => item.requestId === requestId) ?? await task
     return { ...exchange, run }
   })
-  handle(ipc.conversationsStop, conversationStopInputSchema, input => requiredConversationService().stop(input))
-  handle(ipc.conversationsRetry, conversationRetryInputSchema, input => requiredConversationService().retry(input))
   handle(ipc.agentStart, agentStartRequestSchema, input => requiredAgentServices().agentHost.start(input))
   handle(ipc.agentGet, z.object({ runId: z.string().uuid() }), input => {
     const run = requiredAgentServices().agentHost.get(input.runId)
@@ -832,8 +843,19 @@ function registerIpc(): void {
     const apiKey = modelSecrets.get(input.profileId)
     if (!profile || !apiKey) throw new ToolExecutionError('MODEL_NOT_CONFIGURED', '模型配置或 API Key 不完整。', '保存模型地址、模型名和 API Key。')
     const started = Date.now()
-    await new OpenAiCompatiblePlanner({ profile, apiKey }).plan({ requestId: randomUUID(), source: 'system', mode: 'chat', message: '连接测试' }, { requestId: randomUUID(), sources: [], conceptIds: [], tokenEstimate: 0, truncated: false }, new AbortController().signal)
-    return { ok: true, latencyMs: Date.now() - started, detail: '模型返回了有效结构化计划。' }
+    const model = new OpenAiResponsesClient({ profile, apiKey, tools: openAiToolRegistry.tools })
+    const taskId = randomUUID()
+    await model.respond([{
+      role: 'user',
+      content: [{ type: 'input_text', text: JSON.stringify({
+        protocol: 'cpppilot.context.v1', taskId, turn: 0,
+        task: { prompt: '验证 OpenAI Responses API 连接。不要调用工具。', source: 'system' },
+        workspace: { relatedFiles: [], diagnostics: [], environment: { cppStandard: 'c++17', cmakeAvailable: false } },
+        memory: { recentConversation: [], learnerProfile: {}, knowledgeState: [], relevantErrors: [], dueReviews: [], recentEvidence: [] },
+        policy: { allowedPaths: [], writesRequireApproval: true, maxModelTurns: 1, maxToolCalls: 1, remainingTimeMs: 30_000 }
+      }) }]
+    }], new AbortController().signal)
+    return { ok: true, latencyMs: Date.now() - started, detail: '模型返回了有效的 OpenAI Responses 响应。' }
   })
   handle(ipc.mockDashboard, empty, () => {
     const { database } = requiredServices()
@@ -930,13 +952,8 @@ app.whenReady().then(async () => {
     }
   })
   conversationService = new ConversationService({
-    db: database,
-    workspace: workspaceService,
-    secrets: modelSecrets,
-    gateway: new StreamingModelGateway(),
-    nodes: builtInKnowledge
+    db: database
   })
-  conversationService.onDelta(event => mainWindow?.webContents.send(ipc.conversationsDelta, event))
   conversationService.onChanged(event => mainWindow?.webContents.send(ipc.conversationsChanged, event))
   nativeTheme.themeSource = database.getSettings().theme
   registerIpc()
@@ -962,12 +979,12 @@ app.whenReady().then(async () => {
       return
     }
   }
-  const runtime = new AgentRuntime({
+  const runtime = new OpenAiAgentRuntime({
     store: new DatabaseRuntimeStore(database),
-    contextBuilder: new DesktopContextBuilder(workspaceService, database),
-    planner: new DesktopPlanner(database, modelSecrets!),
-    toolClient: agentToolClient,
-    knowledgeGate: new KnowledgeGate(builtInKnowledge)
+    contextBuilder: new DesktopOpenAiContextBuilder(workspaceService, database),
+    modelFactory: new DesktopOpenAiModelFactory(database, modelSecrets!, openAiToolRegistry.tools),
+    registry: openAiToolRegistry,
+    toolClient: agentToolClient
   })
   agentHost = new AgentHost(runtime)
   agentHost.onChanged(run => {

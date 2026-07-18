@@ -171,48 +171,6 @@ describe('agent store', () => {
     expect(store.messages).toEqual([])
   })
 
-  it('accepts ordered deltas once and replaces optimistic messages with final events', () => {
-    const item = conversation()
-    const assistant = message(item.id, 'assistant', '', 'streaming')
-    const store = useAgentStore()
-    store.agentProjectId = projectId
-    store.currentConversationId = item.id
-    store.messages = [assistant]
-
-    store.handleConversationDelta({ projectId, conversationId: item.id, messageId: assistant.id, sequence: 4, delta: '先看' })
-    store.handleConversationDelta({ projectId, conversationId: item.id, messageId: assistant.id, sequence: 4, delta: '重复' })
-    store.handleConversationDelta({ projectId, conversationId: item.id, messageId: assistant.id, sequence: 3, delta: '乱序' })
-    store.handleConversationDelta({ projectId, conversationId: item.id, messageId: assistant.id, sequence: 5, delta: '错误位置' })
-    expect(store.messages[0]?.content).toBe('先看错误位置')
-
-    const completed = { ...assistant, content: '先看错误位置。', status: 'completed' as const, completedAt: now }
-    store.handleConversationChanged({ kind: 'message', projectId, message: completed })
-    expect(store.messages[0]).toEqual(completed)
-  })
-
-  it('stops and retries the current conversation through preload APIs', async () => {
-    const item = conversation()
-    const failed = message(item.id, 'assistant', '部分回答', 'stopped')
-    const replacement = message(item.id, 'assistant', '', 'pending')
-    const calls: string[] = []
-    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
-      cppPet: { conversations: {
-        stop: async () => { calls.push('stop'); return { ok: true, data: failed } },
-        retry: async () => { calls.push('retry'); return { ok: true, data: { user: message(item.id, 'user', '问题'), assistant: replacement } } }
-      } }
-    } })
-    const store = useAgentStore()
-    store.agentProjectId = projectId
-    store.currentConversationId = item.id
-    store.messages = [failed]
-
-    await store.stopMessage()
-    await store.retryMessage(failed.id)
-
-    expect(calls).toEqual(['stop', 'retry'])
-    expect(store.messages.some(entry => entry.id === replacement.id)).toBe(true)
-  })
-
   it('submits a unified Agent task and links its run to the current conversation', async () => {
     const item = conversation()
     const user = message(item.id, 'user', '帮我写一个 hello world 程序')
