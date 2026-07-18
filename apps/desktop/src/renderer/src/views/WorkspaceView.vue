@@ -970,14 +970,15 @@ async function overwriteDisk() {
         :active-file="active?.relativePath"
         :selection="agentSelection"
         :diagnostics="activeDiagnostics"
+        :approval-pending="Boolean(agent.pendingApproval)"
         :tool-busy="agentRunning || agent.running"
         :tool-status="agent.currentRun?.status"
         @close="agentOpen = false"
         @tool-submit="submitAgent"
         @cancel-tool="agent.currentRun && agent.cancel(agent.currentRun.id)"
       >
-        <template v-if="agent.pendingApproval" #tool-status>
-          <ApprovalCard :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
+        <template #approval>
+          <ApprovalCard v-if="agent.pendingApproval" :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
         </template>
       </ConversationPanel>
     </aside>

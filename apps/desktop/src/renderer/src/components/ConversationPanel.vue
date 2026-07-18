@@ -13,9 +13,10 @@ const props = withDefaults(defineProps<{
   activeFile?: string | undefined
   selection?: AgentEditorSelection | undefined
   diagnostics?: Diagnostic[] | undefined
+  approvalPending?: boolean
   toolBusy?: boolean
   toolStatus?: string | undefined
-}>(), { toolBusy: false, diagnostics: () => [] })
+}>(), { toolBusy: false, approvalPending: false, diagnostics: () => [] })
 const emit = defineEmits<{ close: []; 'tool-submit': [request: AgentStartRequest]; 'cancel-tool': [] }>()
 const agent = useAgentStore()
 const router = useRouter()
@@ -81,9 +82,10 @@ async function archiveCurrent() {
       </div>
     </header>
 
-    <slot name="tool-status" />
-
-    <div ref="transcript" class="conversation-transcript" aria-live="polite">
+    <div v-if="approvalPending" class="conversation-approval-view" aria-live="polite">
+      <slot name="approval" />
+    </div>
+    <div v-else ref="transcript" class="conversation-transcript" aria-live="polite">
       <div v-if="agent.conversationLoading" class="conversation-empty">正在载入对话…</div>
       <div v-else-if="!agent.messages.length" class="conversation-empty">
         <Bot :size="22" />

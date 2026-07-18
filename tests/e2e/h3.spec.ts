@@ -91,6 +91,8 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
     await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('修复当前编译错误并解释根因')
     await page.getByRole('button', { name: '发送', exact: true }).click()
     await expect(page.locator('.approval-card')).toContainText('应用最小修复', { timeout: 30_000 })
+    await expect(page.locator('.conversation-transcript')).toHaveCount(0)
+    await expect(page.locator('.conversation-approval-view')).toBeVisible()
     await expect(page.locator('.approval-diff')).toContainText('--- a/main.cpp')
     await expect(page.locator('.approval-diff')).toContainText('+  std::cout << "missing semicolon";')
     await page.getByRole('button', { name: '批准', exact: true }).click()
