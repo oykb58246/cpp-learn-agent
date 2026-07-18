@@ -10,6 +10,7 @@ import { GdbMiSession } from '@cpp-pet/cpp-local-tools/debugger'
 import { DomainError, safePath, WorkspaceService } from '@cpp-pet/workspace-core'
 import {
   buildRequestSchema,
+  agentContinueRequestSchema,
   agentRunStatusSchema,
   agentStartRequestSchema,
   approvalDecisionSchema,
@@ -55,6 +56,7 @@ import { petEventForRun } from './pet-events'
 import { installationVerificationFailure, visiblePowerShellTerminalArguments } from './environment-install'
 import { DiagnosticIncidentService } from './diagnostic-incident-service'
 import { ConversationService } from './conversation-service'
+import { configureSingleInstance } from './single-instance'
 import {
   DatabaseRuntimeStore,
   DesktopMcpAdapter,
@@ -85,6 +87,11 @@ const environmentInstallTasks = new Map<string, EnvironmentInstallTask>()
 const openAiToolRegistry = createOpenAiToolRegistry(localToolDefinitions)
 let stopWatching: (() => void) | null = null
 if (process.env.CPP_PET_USER_DATA) app.setPath('userData', process.env.CPP_PET_USER_DATA)
+const ownsSingleInstance = configureSingleInstance(app, () => {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.focus()
+})
 
 const requiredServices = () => {
   if (!database || !workspaceService) throw new Error('Application services are not ready')
@@ -732,6 +739,7 @@ function registerIpc(): void {
     return { ...exchange, run }
   })
   handle(ipc.agentStart, agentStartRequestSchema, input => requiredAgentServices().agentHost.start(input))
+  handle(ipc.agentContinue, agentContinueRequestSchema, input => requiredAgentServices().agentHost.continue(input))
   handle(ipc.agentGet, z.object({ runId: z.string().uuid() }), input => {
     const run = requiredAgentServices().agentHost.get(input.runId)
     if (!run) throw new ToolExecutionError('AGENT_RUN_NOT_FOUND', 'Agent 记录不存在。', '刷新 Agent 记录列表。')
@@ -852,7 +860,7 @@ function registerIpc(): void {
         task: { prompt: '验证 OpenAI Responses API 连接。不要调用工具。', source: 'system' },
         workspace: { relatedFiles: [], diagnostics: [], environment: { cppStandard: 'c++17', cmakeAvailable: false } },
         memory: { recentConversation: [], learnerProfile: {}, knowledgeState: [], relevantErrors: [], dueReviews: [], recentEvidence: [] },
-        policy: { allowedPaths: [], writesRequireApproval: true, maxModelTurns: 1, maxToolCalls: 1, remainingTimeMs: 30_000 }
+        policy: { allowedPaths: [], allowNewPaths: false, writesRequireApproval: true, maxModelTurns: 1, maxToolCalls: 1, remainingTimeMs: 30_000 }
       }) }]
     }], new AbortController().signal)
     return { ok: true, latencyMs: Date.now() - started, detail: '模型返回了有效的 OpenAI Responses 响应。' }
@@ -925,12 +933,12 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  if (!ownsSingleInstance) return
   const userData = app.getPath('userData')
   rmSync(join(userData, 'builds'), { recursive: true, force: true })
   database = new AppDatabase(join(userData, 'data', 'cpp-pet.sqlite')); workspaceService = new WorkspaceService(database, join(userData, 'snapshots'))
   diagnosticIncidentService = new DiagnosticIncidentService(database)
   diagnosticIncidentService.onChanged(event => mainWindow?.webContents.send(ipc.diagnosticsChanged, event))
-  if (!database.recoveryMode) database.recoverInterruptedAgentRuns()
   if (process.env.CPP_PET_E2E_SEED_ROOT && database.listProjects().length === 0) {
     mkdirSync(process.env.CPP_PET_E2E_SEED_ROOT, { recursive: true })
     const workspace = workspaceService.registerWorkspace(process.env.CPP_PET_E2E_SEED_ROOT)
@@ -986,6 +994,8 @@ app.whenReady().then(async () => {
     registry: openAiToolRegistry,
     toolClient: agentToolClient
   })
+  await runtime.restore()
+  if (!database.recoveryMode) database.recoverInterruptedAgentRuns()
   agentHost = new AgentHost(runtime)
   agentHost.onChanged(run => {
     conversationService?.handleAgentRunChanged(run)

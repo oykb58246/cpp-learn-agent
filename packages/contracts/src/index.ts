@@ -40,6 +40,7 @@ import type {
   AgentRun,
   AgentRunDetail,
   AgentRunStatus,
+  AgentContinueRequest,
   AgentStartRequest,
   ApprovalDecision,
   ModelProfile,
@@ -325,6 +326,7 @@ export interface CppPetApi {
   }
   agent: {
     start(input: AgentStartRequest): Promise<ApiResult<AgentRun>>
+    continue(input: AgentContinueRequest): Promise<ApiResult<AgentRun>>
     get(input: { runId: string }): Promise<ApiResult<AgentRunDetail>>
     list(input?: { status?: AgentRunStatus; projectId?: string; limit?: number }): Promise<ApiResult<AgentRun[]>>
     cancel(input: { runId: string }): Promise<ApiResult<AgentRun>>

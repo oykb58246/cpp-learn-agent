@@ -31,7 +31,7 @@ export const ipc = {
   conversationsMessages: 'conversations:messages',
   conversationsAgentSubmit: 'conversations:submit-agent',
   conversationsChanged: 'conversations:changed',
-  agentStart: 'agent:start', agentGet: 'agent:get', agentList: 'agent:list', agentCancel: 'agent:cancel',
+  agentStart: 'agent:start', agentContinue: 'agent:continue', agentGet: 'agent:get', agentList: 'agent:list', agentCancel: 'agent:cancel',
   agentChanged: 'agent:changed', approvalDecide: 'approval:decide',
   petChanged: 'pet:changed',
   learningCatalog: 'learning:catalog', learningKnowledge: 'learning:knowledge', learningUpdateKnowledge: 'learning:update-knowledge',

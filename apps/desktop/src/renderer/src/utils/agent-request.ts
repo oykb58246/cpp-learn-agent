@@ -21,3 +21,13 @@ export function createAgentRequest(message: string, context: AgentRequestContext
     } : {})
   }
 }
+
+export async function submitAgentRequestAfterContextSync(
+  request: AgentStartRequest,
+  synchronizeContext: () => Promise<boolean>,
+  submit: (request: AgentStartRequest) => Promise<unknown>
+): Promise<boolean> {
+  if (!await synchronizeContext()) return false
+  await submit(request)
+  return true
+}

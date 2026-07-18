@@ -8,6 +8,7 @@ import AgentComposer from '../components/AgentComposer.vue'
 import ApprovalCard from '../components/ApprovalCard.vue'
 import RunTimeline from '../components/RunTimeline.vue'
 import { summarizeAssistantRecord } from '../utils/assistant-record'
+import { isAgentRunBusy } from '../utils/agent-run-state'
 import { agentTourSuggestion, beginnerTourSteps } from '../utils/product-tour'
 
 const store = useAgentStore()
@@ -22,7 +23,7 @@ const toolCalls = computed(() => {
   const current = store.currentRun
   return current && 'toolCalls' in current ? current.toolCalls : []
 })
-const active = computed(() => store.currentRun && !['completed', 'failed', 'cancelled'].includes(store.currentRun.status))
+const active = computed(() => isAgentRunBusy(store.currentRun?.status))
 const tourStep = computed(() => beginnerTourSteps[tour.currentStepIndex])
 const showTourSuggestion = computed(() => tour.open && tourStep.value?.id === 'assistant-input')
 const summaryFor = summarizeAssistantRecord
@@ -35,7 +36,10 @@ onMounted(async () => {
 onBeforeUnmount(() => store.dispose())
 
 async function submit(request: AgentStartRequest) {
-  const run = await store.start(request)
+  const current = store.currentRun
+  const run = current?.status === 'waiting-input'
+    ? await store.continue(current.id, request.message)
+    : await store.start(request)
   if (run && showTourSuggestion.value) tour.trackAgentRun(run.id)
 }
 async function decide(decision: 'approved' | 'rejected') {
@@ -85,6 +89,7 @@ async function decide(decision: 'approved' | 'rejected') {
     <div class="runs-composer" data-tour="assistant-composer">
       <AgentComposer
         :busy="Boolean(active) || store.running"
+        :cancellable="store.currentRun?.status === 'waiting-input'"
         :suggestion="showTourSuggestion ? agentTourSuggestion : undefined"
         @submit="submit"
         @cancel="store.currentRun && store.cancel(store.currentRun.id)"

@@ -74,10 +74,11 @@ test('修改代码、编译验证并解释指定概念', async () => {
     await page.getByRole('button', { name: '批准', exact: true }).click()
 
     await expect(page.locator('.workspace-agent-panel')).toContainText('completed', { timeout: 60_000 })
-    await expect(page.locator('.conversation-transcript')).toContainText('main')
-    await expect(page.locator('.conversation-transcript')).toContainText('cout')
-    await expect(page.locator('.conversation-transcript')).toContainText('endl')
-    await expect(page.locator('.conversation-transcript')).toContainText(/compil|build|编译/i)
+    const finalAssistantMessage = page.locator('.conversation-message.assistant').last()
+    await expect(finalAssistantMessage).toContainText('main')
+    await expect(finalAssistantMessage).toContainText('cout')
+    await expect(finalAssistantMessage).toContainText('endl')
+    await expect(finalAssistantMessage).toContainText(/compil|build|编译/i)
     await expect(page.locator('.monaco-editor-host')).toContainText('Hello, world!', { timeout: 10_000 })
     await expect(page.locator('.monaco-editor-host')).toContainText('int main()')
 

@@ -59,7 +59,9 @@ import SnapshotPopover from '../components/SnapshotPopover.vue'
 import { useAppStore } from '../stores/app'
 import { useAgentStore } from '../stores/agent'
 import { useWorkspaceStore } from '../stores/workspace'
+import { submitAgentRequestAfterContextSync } from '../utils/agent-request'
 import type { AgentEditorSelection } from '../utils/editor-selection'
+import { isAgentRunBusy } from '../utils/agent-run-state'
 import { diagnosticBadgeLabel } from '../utils/diagnostic-inbox'
 
 const app = useAppStore()
@@ -142,7 +144,7 @@ const activeDiagnostics = computed(() => {
   const normalized = normalizePath(path)
   return allDiagnostics.value.filter(item => !item.file || normalizePath(item.file) === normalized)
 })
-const agentRunning = computed(() => Boolean(agent.currentRun && !['completed', 'failed', 'cancelled'].includes(agent.currentRun.status)))
+const agentRunning = computed(() => isAgentRunBusy(agent.currentRun?.status))
 const inboxGroups = computed(() => agent.inbox?.groups ?? [])
 const inboxCount = computed(() => inboxGroups.value.length)
 const outputText = computed(() => {
@@ -387,14 +389,21 @@ function toggleDiagnosticInbox() {
 
 async function submitAgent(request: AgentStartRequest) {
   agentOpen.value = true
-  if (store.currentProject && agent.agentProjectId !== store.currentProject.id) await agent.loadProjectAgent(store.currentProject.id)
-  await agent.submitAgent({
-    message: request.message,
-    mode: request.mode,
-    ...(request.activeFile ? { activeFile: request.activeFile } : {}),
-    ...(request.selection ? { selection: { ...request.selection } } : {}),
-    ...(request.diagnostics?.length ? { diagnostics: request.diagnostics.map(item => ({ ...item, relatedConceptIds: [...item.relatedConceptIds] })) } : {})
+  await submitAgentRequestAfterContextSync(request, syncEditorContext, async synchronizedRequest => {
+    if (store.currentProject && agent.agentProjectId !== store.currentProject.id) await agent.loadProjectAgent(store.currentProject.id)
+    await agent.submitAgent({
+      message: synchronizedRequest.message,
+      mode: synchronizedRequest.mode,
+      ...(synchronizedRequest.activeFile ? { activeFile: synchronizedRequest.activeFile } : {}),
+      ...(synchronizedRequest.selection ? { selection: { ...synchronizedRequest.selection } } : {}),
+      ...(synchronizedRequest.diagnostics?.length ? { diagnostics: synchronizedRequest.diagnostics.map(item => ({ ...item, relatedConceptIds: [...item.relatedConceptIds] })) } : {})
+    })
   })
+}
+
+async function syncEditorContext() {
+  clearTimeout(autoSaveTimer)
+  return store.syncActiveDraftForAgent()
 }
 
 async function navigateInboxOccurrence(occurrence: DiagnosticOccurrence) {
@@ -407,6 +416,7 @@ async function explainDiagnostic(snapshot: DiagnosticExplanationSnapshot, create
   inboxOpen.value = false
   agentOpen.value = true
   if (createNew || !agent.currentConversationId) await agent.createConversation(snapshot.title)
+  if (!await syncEditorContext()) return
   await agent.submitAgent({
     message: `请结合我的 C++ 学习背景，解释这个错误：${snapshot.title}`,
     mode: 'auto',

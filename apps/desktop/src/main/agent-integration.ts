@@ -40,8 +40,10 @@ import {
   nextReviewDate,
   reviewIntervalsDays,
   OpenAiResponsesClient,
+  sanitizeModelVisibleText,
   type ResolvedAgentRequest,
   type RuntimeContextBuilder,
+  type RuntimeSessionRecord,
   type RuntimeStore,
   type RuntimeToolClient,
   type RuntimeToolProgress,
@@ -60,6 +62,13 @@ export class DatabaseRuntimeStore implements RuntimeStore {
   append(event: TimelineEvent): void { this.db.appendTimeline(event) }
   saveApproval(approval: Approval): void { this.db.saveApproval(approval) }
   saveToolCall(call: ToolCall): void { this.db.saveToolCall(call) }
+  saveSession(session: RuntimeSessionRecord): void { this.db.saveAgentModelSession(session) }
+  deleteSession(runId: string): void { this.db.deleteAgentModelSession(runId) }
+  getSession(runId: string): RuntimeSessionRecord | undefined { return this.db.getAgentModelSession(runId) }
+  listSessions(): RuntimeSessionRecord[] { return this.db.listAgentModelSessions() }
+  saveCheckpoint(run: AgentRun, session?: RuntimeSessionRecord): void {
+    this.db.saveAgentCheckpoint(run, session)
+  }
   get(runId: string): AgentRunDetail | undefined { return this.db.getAgentRun(runId) }
   list(): AgentRun[] { return this.db.listAgentRuns() }
   learnerKnowledge(userId: string): LearnerKnowledge[] { return this.db.listLearnerKnowledge(userId) }
@@ -213,6 +222,9 @@ export class DesktopOpenAiContextBuilder implements OpenAiAgentContextBuilder {
     const activeDocument = request.projectId && request.activeFile
       ? this.workspaceService.readFile(request.projectId, request.activeFile)
       : undefined
+    const activeContent = activeDocument
+      ? sanitizeModelVisibleText(activeDocument.content.slice(0, 100_000))
+      : undefined
     const liveDiagnostics = request.diagnostics ?? []
     const incidentDiagnostics = request.projectId
       ? this.db.listActiveDiagnosticIncidents(request.projectId).flatMap(incident => incident.groups.flatMap(group => group.occurrences.map(occurrence => ({
@@ -253,6 +265,31 @@ export class DesktopOpenAiContextBuilder implements OpenAiAgentContextBuilder {
     const dueReviews = this.db.listReviewItems('local-user', true).slice(0, 50).map(item => ({
       conceptId: item.conceptId, dueAt: item.dueAt
     }))
+    const recentEvidence = request.projectId
+      ? this.db.listAgentRuns({ projectId: request.projectId, limit: 10 })
+          .filter(run => run.requestId !== taskId && (run.status === 'completed' || run.status === 'failed'))
+          .slice(0, 5)
+          .map(run => {
+            const detail = this.db.getAgentRun(run.id)
+            return {
+              task: sanitizeModelVisibleText(run.message).text,
+              status: run.status,
+              ...(run.validationSummary ? {
+                validationSummary: sanitizeModelVisibleText(run.validationSummary).text
+              } : {}),
+              ...(run.completedAt ? { completedAt: run.completedAt } : {}),
+              tools: (detail?.toolCalls ?? []).slice(-10).map(call => ({
+                tool: call.toolName,
+                status: call.status,
+                ...(call.result ? {
+                  ok: call.result.ok,
+                  summary: sanitizeModelVisibleText(call.result.summary).text
+                } : {}),
+                ...(call.errorCode ? { errorCode: call.errorCode } : {})
+              }))
+            }
+          })
+      : []
     const activeToolchainId = this.db.getSettings().activeToolchainId
     const toolchain = activeToolchainId ? this.db.getToolchainProfile(activeToolchainId) : undefined
     const allowedPaths = [...new Set([
@@ -272,17 +309,27 @@ export class DesktopOpenAiContextBuilder implements OpenAiAgentContextBuilder {
             endLine: request.selection.endLine,
             content: request.selection.content
           }
+        } : {}),
+        ...(request.screenshot ? {
+          screenshot: {
+            id: request.screenshot.id,
+            mimeType: request.screenshot.mimeType,
+            width: request.screenshot.width,
+            height: request.screenshot.height,
+            bytes: new TextEncoder().encode(request.screenshot.previewDataUrl).byteLength
+          }
         } : {})
       },
       workspace: {
-        ...(project ? { project: { id: project.id, name: project.name, type: project.type } } : {}),
+        ...(project ? { project: { id: project.id, workspaceId: project.workspaceId, name: project.name, type: project.type } } : {}),
         ...(activeDocument ? {
           activeFile: {
             path: activeDocument.relativePath,
-            content: activeDocument.content.slice(0, 100_000),
+            content: activeContent!.text.slice(0, 100_000),
             contentHash: activeDocument.contentHash,
             dirty: false,
-            truncated: activeDocument.content.length > 100_000
+            truncated: activeDocument.content.length > 100_000 || activeContent!.text.length > 100_000,
+            redacted: activeContent!.redacted
           }
         } : {}),
         relatedFiles,
@@ -299,11 +346,13 @@ export class DesktopOpenAiContextBuilder implements OpenAiAgentContextBuilder {
         knowledgeState,
         relevantErrors,
         dueReviews,
-        recentEvidence: []
+        recentEvidence
       },
       policy: {
         ...(request.projectId ? { allowedProjectId: request.projectId } : {}),
+        ...(project ? { allowedWorkspaceId: project.workspaceId } : {}),
         allowedPaths,
+        allowNewPaths: true,
         writesRequireApproval: true,
         maxModelTurns: 12,
         maxToolCalls: 20,
@@ -803,8 +852,11 @@ export class DesktopMcpAdapter implements LocalMcpAdapter {
   }
 
   private createProject(args: Record<string, unknown>) {
-    const workspace = this.options.db.listWorkspaces().find(item => item.trustState === 'trusted')
-    if (!workspace) throw new ToolExecutionError('WORKSPACE_NOT_AVAILABLE', '没有已信任工作区。', '先在设置中添加并信任工作区。')
+    const workspaceId = String(args.workspaceId)
+    const workspace = this.options.db.listWorkspaces().find(item => item.id === workspaceId)
+    if (!workspace || workspace.trustState !== 'trusted') {
+      throw new ToolExecutionError('WORKSPACE_NOT_AVAILABLE', '指定工作区不存在或未信任。', '选择当前已信任工作区。')
+    }
     const draft = this.options.workspaceService.previewProject({
       mode: 'description', workspaceId: workspace.id, name: String(args.name), type: 'single-file', description: String(args.description)
     })

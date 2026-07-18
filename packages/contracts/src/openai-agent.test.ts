@@ -12,6 +12,7 @@ import {
 
 const taskId = crypto.randomUUID()
 const projectId = crypto.randomUUID()
+const workspaceId = crypto.randomUUID()
 
 describe('OpenAI Responses Agent contracts', () => {
   it('validates bounded clarification continuations', () => {
@@ -34,8 +35,8 @@ describe('OpenAI Responses Agent contracts', () => {
       protocol: 'cpppilot.context.v1', taskId, turn: 0,
       task: { prompt, source: 'workspace', activeFile: 'main.cpp' },
       workspace: {
-        project: { id: projectId, name: 'demo', type: 'single-file' },
-        activeFile: { path: 'main.cpp', content: 'int main() {}', contentHash: 'hash-1', dirty: false, truncated: false },
+        project: { id: projectId, workspaceId, name: 'demo', type: 'single-file' },
+        activeFile: { path: 'main.cpp', content: 'int main() {}', contentHash: 'hash-1', dirty: false, truncated: false, redacted: false },
         relatedFiles: ['README.md'], diagnostics: [],
         environment: { cppStandard: 'c++17', compiler: 'gcc 14', cmakeAvailable: true }
       },
@@ -44,7 +45,8 @@ describe('OpenAI Responses Agent contracts', () => {
         relevantErrors: [], dueReviews: [], recentEvidence: []
       },
       policy: {
-        allowedProjectId: projectId, allowedPaths: ['main.cpp'], writesRequireApproval: true,
+        allowedProjectId: projectId, allowedWorkspaceId: workspaceId, allowedPaths: ['main.cpp'], writesRequireApproval: true,
+        allowNewPaths: true,
         maxModelTurns: 12, maxToolCalls: 20, remainingTimeMs: 120_000
       }
     })
@@ -78,6 +80,7 @@ describe('OpenAI Responses Agent contracts', () => {
     const output = cppPilotToolOutputSchema.parse({
       protocol: 'cpppilot.tool-output.v1', taskId, callId: 'call_1', tool: 'compiler.build',
       ok: true, summary: '编译成功', exitCode: 0, diagnostics: [], artifacts: [], changedFiles: [],
+      outcomes: [{ type: 'build_succeeded', target: 'main.cpp' }],
       data: { content: 'int main() {}' }, retryable: false, durationMs: 30, outputTruncated: false
     })
 
@@ -90,17 +93,23 @@ describe('OpenAI Responses Agent contracts', () => {
     const completed = cppPilotFinalResponseSchema.parse({
       protocol: 'cpppilot.final.v1', taskId, status: 'completed',
       intent: { primary: 'edit_code', secondary: ['explain_code'] },
-      messageMarkdown: '已修改并编译。', evidenceCallIds: ['call_1'], suggestedNextActions: []
+      messageMarkdown: '已修改并编译。', clarificationQuestion: null,
+      evidenceCallIds: ['call_1', 'call_2'],
+      claims: [
+        { type: 'file_changed', callId: 'call_1', target: 'main.cpp' },
+        { type: 'build_succeeded', callId: 'call_2', target: 'main.cpp' }
+      ],
+      suggestedNextActions: []
     })
     const clarification = cppPilotFinalResponseSchema.parse({
       protocol: 'cpppilot.final.v1', taskId, status: 'needs_input',
       intent: { primary: 'edit_code', secondary: [] }, messageMarkdown: '请选择目标文件。',
-      clarificationQuestion: '你要修改哪个文件？', evidenceCallIds: [], suggestedNextActions: []
+      clarificationQuestion: '你要修改哪个文件？', evidenceCallIds: [], claims: [], suggestedNextActions: []
     })
 
     expect(completed.status).toBe('completed')
     expect(clarification.status).toBe('needs_input')
-    expect(cppPilotFinalResponseSchema.safeParse({ ...clarification, clarificationQuestion: undefined }).success).toBe(false)
+    expect(cppPilotFinalResponseSchema.safeParse({ ...clarification, clarificationQuestion: null }).success).toBe(false)
     expect(cppPilotFinalResponseSchema.safeParse({ ...completed, status: 'unknown' }).success).toBe(false)
     expect(cppPilotFinalResponseSchema.safeParse({ ...completed, extra: true }).success).toBe(false)
   })

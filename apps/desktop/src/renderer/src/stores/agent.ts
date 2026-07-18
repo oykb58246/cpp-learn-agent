@@ -203,6 +203,16 @@ export const useAgentStore = defineStore('agent', {
       this.currentRun = result.data
       return result.data
     },
+    async continue(runId: string, message: string) {
+      this.running = true
+      this.error = null
+      const result = await window.cppPet.agent.continue({ runId, message })
+      this.running = false
+      if (!result.ok) { this.error = result.error; return null }
+      this.upsertRun(result.data)
+      this.currentRun = result.data
+      return result.data
+    },
     async selectRun(runId: string) {
       const result = await window.cppPet.agent.get({ runId })
       if (!result.ok) { this.error = result.error; return null }

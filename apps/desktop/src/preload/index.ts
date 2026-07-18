@@ -92,6 +92,7 @@ const api: CppPetApi = {
   },
   agent: {
     start: input => invoke(ipc.agentStart, input),
+    continue: input => invoke(ipc.agentContinue, input),
     get: input => invoke(ipc.agentGet, input),
     list: input => invoke(ipc.agentList, input),
     cancel: input => invoke(ipc.agentCancel, input),

@@ -6,6 +6,7 @@ import type { AgentStartRequest, Diagnostic } from '@cpp-pet/contracts'
 import type { AgentEditorSelection } from '../utils/editor-selection'
 import { renderMarkdown } from '../utils/markdown'
 import { useAgentStore } from '../stores/agent'
+import { isAgentRunBusy } from '../utils/agent-run-state'
 import AgentComposer from './AgentComposer.vue'
 
 const props = withDefaults(defineProps<{
@@ -26,7 +27,12 @@ const streaming = computed(() => agent.messages.some(item => item.role === 'assi
 const activeTask = computed(() => Boolean(
   agent.currentRun
   && agent.currentRun.conversationId === agent.currentConversationId
-  && !['completed', 'failed', 'cancelled'].includes(agent.currentRun.status)
+  && isAgentRunBusy(agent.currentRun.status)
+))
+const cancellableTask = computed(() => Boolean(
+  agent.currentRun
+  && agent.currentRun.conversationId === agent.currentConversationId
+  && agent.currentRun.status === 'waiting-input'
 ))
 
 watch(() => agent.messages.map(item => `${item.id}:${item.content.length}:${item.status}`).join('|'), async () => {
@@ -53,7 +59,7 @@ function retry(itemId: string) {
 }
 
 async function cancel() {
-  if (activeTask.value) emit('cancel-tool')
+  if (activeTask.value || cancellableTask.value) emit('cancel-tool')
 }
 
 async function archiveCurrent() {
@@ -117,6 +123,7 @@ async function archiveCurrent() {
       :selection="selection"
       :diagnostics="diagnostics"
       :busy="streaming || activeTask || toolBusy"
+      :cancellable="cancellableTask"
       @submit="submit"
       @cancel="cancel"
     />

@@ -192,7 +192,7 @@ export const agentRunSchema = z.object({
   validationSummary: z.string().max(20_000).optional(),
   errorCode: z.string().max(100).optional(),
   errorMessage: z.string().max(20_000).optional(),
-  steps: z.array(agentStepSchema).max(12),
+  steps: z.array(agentStepSchema).max(100),
   pendingApproval: approvalSchema.optional(),
   pendingClarification: z.object({
     question: z.string().min(1).max(2_000),

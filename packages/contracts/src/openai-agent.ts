@@ -2,6 +2,30 @@ import { z } from 'zod'
 import { agentIntentSchema } from './agent-protocol'
 
 const boundedRecord = z.record(z.string(), z.unknown())
+export const cppPilotOutcomeTypeSchema = z.enum([
+  'file_read',
+  'file_changed',
+  'build_succeeded',
+  'tests_succeeded',
+  'program_succeeded',
+  'analysis_succeeded',
+  'debug_succeeded',
+  'project_created',
+  'environment_configured'
+])
+export type CppPilotOutcomeType = z.infer<typeof cppPilotOutcomeTypeSchema>
+
+export const cppPilotToolOutcomeSchema = z.object({
+  type: cppPilotOutcomeTypeSchema,
+  target: z.string().min(1).max(1_024).nullable()
+}).strict()
+export type CppPilotToolOutcome = z.infer<typeof cppPilotToolOutcomeSchema>
+
+export const cppPilotOutcomeClaimSchema = cppPilotToolOutcomeSchema.extend({
+  callId: z.string().min(1).max(200)
+}).strict()
+export type CppPilotOutcomeClaim = z.infer<typeof cppPilotOutcomeClaimSchema>
+
 const protocolDiagnosticSchema = z.object({
   source: z.string().min(1).max(100),
   severity: z.enum(['info', 'warning', 'error']),
@@ -24,11 +48,19 @@ export const cppPilotContextEnvelopeSchema = z.object({
       startLine: z.number().int().positive(),
       endLine: z.number().int().positive(),
       content: z.string().max(100_000)
-    }).strict().nullable().optional()
+    }).strict().nullable().optional(),
+    screenshot: z.object({
+      id: z.string().uuid(),
+      mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+      bytes: z.number().int().positive().max(6_000_000)
+    }).strict().optional()
   }).strict(),
   workspace: z.object({
     project: z.object({
       id: z.string().uuid(),
+      workspaceId: z.string().uuid(),
       name: z.string().min(1).max(200),
       type: z.enum(['single-file', 'multi-file', 'cmake'])
     }).strict().optional(),
@@ -37,7 +69,8 @@ export const cppPilotContextEnvelopeSchema = z.object({
       content: z.string().max(100_000),
       contentHash: z.string().min(1).max(200),
       dirty: z.boolean(),
-      truncated: z.boolean()
+      truncated: z.boolean(),
+      redacted: z.boolean()
     }).strict().optional(),
     relatedFiles: z.array(z.string().min(1).max(1_024)).max(200),
     diagnostics: z.array(protocolDiagnosticSchema).max(200),
@@ -60,7 +93,9 @@ export const cppPilotContextEnvelopeSchema = z.object({
   }).strict(),
   policy: z.object({
     allowedProjectId: z.string().uuid().optional(),
+    allowedWorkspaceId: z.string().uuid().optional(),
     allowedPaths: z.array(z.string().min(1).max(1_024)).max(500),
+    allowNewPaths: z.boolean(),
     writesRequireApproval: z.boolean(),
     maxModelTurns: z.number().int().positive().max(50),
     maxToolCalls: z.number().int().positive().max(100),
@@ -80,6 +115,7 @@ export const cppPilotToolOutputSchema = z.object({
   diagnostics: z.array(protocolDiagnosticSchema).max(200),
   artifacts: z.array(boundedRecord).max(100),
   changedFiles: z.array(z.string().min(1).max(1_024)).max(100),
+  outcomes: z.array(cppPilotToolOutcomeSchema).max(100),
   data: boundedRecord.optional(),
   retryable: z.boolean(),
   errorCode: z.string().max(100).optional(),
@@ -97,12 +133,24 @@ export const cppPilotFinalResponseSchema = z.object({
     secondary: z.array(agentIntentSchema).max(10)
   }).strict(),
   messageMarkdown: z.string().trim().min(1).max(100_000),
-  clarificationQuestion: z.string().trim().min(1).max(2_000).optional(),
+  clarificationQuestion: z.string().trim().min(1).max(2_000).nullable(),
   evidenceCallIds: z.array(z.string().min(1).max(200)).max(100),
+  claims: z.array(cppPilotOutcomeClaimSchema).max(100),
   suggestedNextActions: z.array(z.string().min(1).max(500)).max(20)
 }).strict().superRefine((response, context) => {
   if (response.status === 'needs_input' && !response.clarificationQuestion) {
     context.addIssue({ code: 'custom', path: ['clarificationQuestion'], message: 'needs_input must include clarificationQuestion' })
+  }
+  if (response.status !== 'needs_input' && response.clarificationQuestion !== null) {
+    context.addIssue({ code: 'custom', path: ['clarificationQuestion'], message: 'only needs_input may include clarificationQuestion' })
+  }
+  const evidenceCallIds = new Set(response.evidenceCallIds)
+  for (const [index, claim] of response.claims.entries()) {
+    if (!evidenceCallIds.has(claim.callId)) {
+      context.addIssue({
+        code: 'custom', path: ['claims', index, 'callId'], message: 'claim callId must also appear in evidenceCallIds'
+      })
+    }
   }
 })
 export type CppPilotFinalResponse = z.infer<typeof cppPilotFinalResponseSchema>

@@ -16,6 +16,7 @@ const now = new Date().toISOString()
 describe('H3 agent contracts', () => {
   it('exposes only fixed H3 IPC channels', () => {
     expect(ipc.agentStart).toBe('agent:start')
+    expect(ipc.agentContinue).toBe('agent:continue')
     expect(ipc.agentChanged).toBe('agent:changed')
     expect(ipc.approvalDecide).toBe('approval:decide')
     expect(ipc.learningSummary).toBe('learning:summary')
@@ -39,6 +40,32 @@ describe('H3 agent contracts', () => {
 
     expect(run.status).toBe('queued')
     expect(agentRunSchema.safeParse({ ...run, status: 'unknown' }).success).toBe(false)
+  })
+
+  it('accepts a run with 20 auditable steps', () => {
+    const steps = Array.from({ length: 20 }, (_, sequence) => ({
+      id: `step-${sequence + 1}`,
+      sequence,
+      title: `Step ${sequence + 1}`,
+      kind: 'tool' as const,
+      status: 'completed' as const,
+      toolName: 'compiler.build'
+    }))
+
+    const result = agentRunSchema.safeParse({
+      id: crypto.randomUUID(),
+      requestId: crypto.randomUUID(),
+      source: 'editor',
+      mode: 'edit',
+      message: 'Complete a multi-step edit task',
+      status: 'completed',
+      steps,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: now
+    })
+
+    expect(result.success).toBe(true)
   })
 
   it('requires approval decisions to reference an existing approval', () => {

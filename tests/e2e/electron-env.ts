@@ -41,7 +41,7 @@ export async function startStreamingModelFixture(): Promise<StreamingModelFixtur
       await new Promise(resolve => setTimeout(resolve, 4_000))
     }
 
-    const output = nextOutput({ prompt, taskId, context, observations })
+    const output = nextOutput({ input, prompt, taskId, context, observations })
     response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
     response.end(JSON.stringify({ id: `resp_${requests.length}`, status: 'completed', output }))
   })
@@ -75,17 +75,81 @@ function findContext(input: ResponseInputItem[]): Record<string, any> | undefine
 }
 
 function nextOutput(options: {
+  input: ResponseInputItem[]
   prompt: string
   taskId: string
   context?: Record<string, any>
   observations: Array<Record<string, any>>
 }): ResponseInputItem[] {
-  const { prompt, taskId, context, observations } = options
+  const { input, prompt, taskId, context, observations } = options
   const projectId = context?.workspace?.project?.id
   const activeFile = context?.workspace?.activeFile
   const tools = new Set(observations.map(item => item.tool))
   const editGreeting = prompt.includes('Hello, C++Pilot!')
   const diagnose = prompt.includes('修复当前编译错误')
+
+  if (prompt.includes('E2E_SCENARIO:refusal')) {
+    return [refusal(taskId, 'E2E refusal from the model')]
+  }
+
+  if (prompt.includes('E2E_SCENARIO:invalid-final')) {
+    return [invalidFinal(taskId)]
+  }
+
+  if (prompt.includes('E2E_SCENARIO:clarification')) {
+    const answered = input.some(item => item.role === 'user' && Array.isArray(item.content)
+      && item.content.some(content => content.type === 'input_text' && content.text === 'main.cpp'))
+    return [answered
+      ? final(taskId, 'answer', [], 'Continuing the same run with `main.cpp`.')
+      : final(taskId, 'answer', [], 'I need one detail before continuing.', {
+          status: 'needs_input',
+          clarificationQuestion: 'Which file should I update?'
+        })]
+  }
+
+  if (prompt.includes('E2E_SCENARIO:approval-rejection')) {
+    const rejected = observations.find(item => item.callId === `reject_${taskId}`)
+    if (!rejected) {
+      return [call(`reject_${taskId}`, 'workspace_apply_patch', {
+        projectId,
+        relativePath: 'main.cpp',
+        expectedHash: activeFile?.contentHash,
+        content: '#include <iostream>\nint main() {\n  std::cout << "not applied" << std::endl;\n}\n'
+      })]
+    }
+    return [final(taskId, 'edit_code', [], 'The requested edit was not applied because approval was rejected.', {
+      status: 'failed'
+    })]
+  }
+
+  if (prompt.includes('E2E_SCENARIO:tool-recovery')) {
+    const builds = observations.filter(item => item.tool === 'compiler.build')
+    const patch = observations.find(item => item.callId === `recovery_patch_${taskId}`)
+    const successfulBuild = builds.find(item => item.ok === true)
+    if (builds.length === 0) {
+      return [call(`recovery_build_initial_${taskId}`, 'compiler_build', {
+        runId: taskId, projectId, relativePath: 'main.cpp', standard: 'c++17'
+      })]
+    }
+    if (!patch) {
+      return [call(`recovery_patch_${taskId}`, 'workspace_apply_patch', {
+        projectId,
+        relativePath: 'main.cpp',
+        expectedHash: activeFile?.contentHash,
+        content: '#include <iostream>\nint main() {\n  std::cout << "recover" << std::endl;\n  return 0;\n}\n'
+      })]
+    }
+    if (!successfulBuild) {
+      return [call(`recovery_build_final_${taskId}`, 'compiler_build', {
+        runId: taskId, projectId, relativePath: 'main.cpp', standard: 'c++17'
+      })]
+    }
+    const evidenceCallIds = [patch.callId, successfulBuild.callId]
+    return [final(taskId, 'edit_code', evidenceCallIds,
+      'The compiler failure was observed, the file was fixed, and the second build succeeded.', {
+        claims: claimsFor(observations, evidenceCallIds)
+      })]
+  }
 
   if (editGreeting) {
     if (!tools.has('workspace.read_file')) {
@@ -102,8 +166,11 @@ function nextOutput(options: {
     if (!tools.has('compiler.build')) {
       return [call(`build_${taskId}`, 'compiler_build', { runId: taskId, projectId, relativePath: 'main.cpp', standard: 'c++17' })]
     }
-    return [final(taskId, 'edit_code', observations.map(item => item.callId),
-      '已将 `main.cpp` 更新为 `Hello, world!` 并完成编译验证。`main` 是程序入口，`cout` 负责标准输出，`endl` 输出换行并刷新缓冲区。')]
+    const evidenceCallIds = observations.map(item => item.callId)
+    return [final(taskId, 'edit_code', evidenceCallIds,
+      '已将 `main.cpp` 更新为 `Hello, world!` 并完成编译验证。`main` 是程序入口，`cout` 负责标准输出，`endl` 输出换行并刷新缓冲区。', {
+        claims: claimsFor(observations, evidenceCallIds)
+      })]
   }
 
   if (diagnose) {
@@ -116,7 +183,10 @@ function nextOutput(options: {
     if (!tools.has('compiler.build')) {
       return [call(`build_${taskId}`, 'compiler_build', { runId: taskId, projectId, relativePath: 'main.cpp', standard: 'c++17' })]
     }
-    return [final(taskId, 'edit_code', observations.map(item => item.callId), '已补充分号并通过编译。根因是输出语句末尾缺少语句终止符 `;`。')]
+    const evidenceCallIds = observations.map(item => item.callId)
+    return [final(taskId, 'edit_code', evidenceCallIds, '已补充分号并通过编译。根因是输出语句末尾缺少语句终止符 `;`。', {
+      claims: claimsFor(observations, evidenceCallIds)
+    })]
   }
 
   if (prompt.includes('Markdown 渲染测试')) {
@@ -136,12 +206,52 @@ function call(callId: string, name: string, args: Record<string, unknown>): Resp
   }
 }
 
-function final(taskId: string, primary: string, evidenceCallIds: string[], messageMarkdown: string): ResponseInputItem {
+function refusal(taskId: string, message: string): ResponseInputItem {
+  return {
+    type: 'message', id: `msg_${taskId}_${crypto.randomUUID()}`, role: 'assistant', status: 'completed',
+    content: [{ type: 'refusal', refusal: message }]
+  }
+}
+
+function invalidFinal(taskId: string): ResponseInputItem {
+  return {
+    type: 'message', id: `msg_${taskId}_${crypto.randomUUID()}`, role: 'assistant', status: 'completed',
+    content: [{ type: 'output_text', annotations: [], text: '{}' }]
+  }
+}
+
+function final(
+  taskId: string,
+  primary: string,
+  evidenceCallIds: string[],
+  messageMarkdown: string,
+  options: {
+    status?: 'completed' | 'needs_input' | 'failed'
+    clarificationQuestion?: string | null
+    claims?: Array<{ type: string; callId: string; target: string | null }>
+  } = {}
+): ResponseInputItem {
   return {
     type: 'message', id: `msg_${taskId}_${crypto.randomUUID()}`, role: 'assistant', status: 'completed',
     content: [{ type: 'output_text', annotations: [], text: JSON.stringify({
-      protocol: 'cpppilot.final.v1', taskId, status: 'completed',
-      intent: { primary, secondary: [] }, messageMarkdown, evidenceCallIds, suggestedNextActions: []
+      protocol: 'cpppilot.final.v1', taskId, status: options.status ?? 'completed',
+      intent: { primary, secondary: [] }, messageMarkdown,
+      clarificationQuestion: options.clarificationQuestion ?? null,
+      evidenceCallIds, claims: options.claims ?? [], suggestedNextActions: []
     }) }]
   }
+}
+
+function claimsFor(
+  observations: Array<Record<string, any>>,
+  evidenceCallIds: string[]
+): Array<{ type: string; callId: string; target: string | null }> {
+  const allowed = new Set(evidenceCallIds)
+  return observations
+    .filter(observation => allowed.has(String(observation.callId)))
+    .flatMap(observation => (Array.isArray(observation.outcomes) ? observation.outcomes : []).map((outcome: Record<string, any>) => ({
+      type: String(outcome.type),
+      callId: String(observation.callId),
+      target: typeof outcome.target === 'string' ? outcome.target : null
+    })))
 }

@@ -193,4 +193,25 @@ describe('agent store', () => {
     expect(store.currentRun).toEqual(run)
     expect(store.runs).toEqual([run])
   })
+
+  it('continues the current waiting-input run through preload', async () => {
+    const waiting: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'main', mode: 'auto', message: '帮我改一下',
+      status: 'waiting-input', pendingClarification: { question: '哪个文件？', requestedAt: now },
+      steps: [], createdAt: now, updatedAt: now
+    }
+    const completed = { ...waiting, status: 'completed' as const, response: '已完成', pendingClarification: undefined }
+    let received: unknown
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      cppPet: { agent: { continue: async (input: unknown) => { received = input; return { ok: true, data: completed } } } }
+    } })
+    const store = useAgentStore()
+    store.currentRun = waiting
+
+    const result = await store.continue(waiting.id, 'main.cpp')
+
+    expect(received).toEqual({ runId: waiting.id, message: 'main.cpp' })
+    expect(result?.status).toBe('completed')
+    expect(store.currentRun?.status).toBe('completed')
+  })
 })

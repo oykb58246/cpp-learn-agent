@@ -126,6 +126,89 @@ describe('H3 persistence', () => {
     reopened.close()
   })
 
+  it('persists resumable OpenAI sessions and waiting-input state across restarts', () => {
+    const { file, db } = setup()
+    const run: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto',
+      message: '修改目标文件', status: 'waiting-input', steps: [],
+      pendingClarification: { question: '目标文件是哪一个？', requestedAt: now },
+      createdAt: now, updatedAt: now
+    }
+    const session = {
+      runId: run.id,
+      protocol: 'cpppilot.openai-session.v1',
+      state: {
+        request: { requestId: run.requestId, source: run.source, mode: run.mode, message: run.message },
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'context' }] }],
+        remainingTimeMs: 90_000
+      },
+      updatedAt: now
+    }
+
+    db.createAgentRun(run)
+    db.saveAgentModelSession(session)
+    db.close()
+
+    const reopened = new AppDatabase(file)
+    expect(reopened.getAgentRun(run.id)).toMatchObject({
+      status: 'waiting-input',
+      pendingClarification: { question: '目标文件是哪一个？' }
+    })
+    expect(reopened.getAgentModelSession(run.id)).toEqual(session)
+    expect(reopened.listAgentModelSessions()).toEqual([session])
+    expect(reopened.recoverInterruptedAgentRuns('2026-07-17T00:00:00.000Z')).toEqual([])
+    expect(reopened.getAgentRun(run.id)?.status).toBe('waiting-input')
+
+    reopened.deleteAgentModelSession(run.id)
+    expect(reopened.getAgentModelSession(run.id)).toBeUndefined()
+    reopened.close()
+  })
+
+  it('isolates a malformed model session instead of failing the whole session list', () => {
+    const { db } = setup()
+    const run: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto',
+      message: '等待输入', status: 'waiting-input', steps: [],
+      pendingClarification: { question: '哪个文件？', requestedAt: now },
+      createdAt: now, updatedAt: now
+    }
+    db.createAgentRun(run)
+    db.db.prepare('INSERT INTO agent_model_sessions(run_id,protocol,state_json,updated_at) VALUES(?,?,?,?)')
+      .run(run.id, 'cpppilot.openai-session.v1', '{', now)
+
+    expect(db.getAgentModelSession(run.id)).toMatchObject({ runId: run.id, state: null })
+    expect(db.listAgentModelSessions()).toEqual([
+      expect.objectContaining({ runId: run.id, state: null })
+    ])
+    db.close()
+  })
+
+  it('rolls back the run and model session together when a checkpoint cannot be serialized', () => {
+    const { db } = setup()
+    const run: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto',
+      message: '原子 checkpoint', status: 'waiting-input', steps: [],
+      pendingClarification: { question: '哪个文件？', requestedAt: now },
+      createdAt: now, updatedAt: now
+    }
+    const originalSession = {
+      runId: run.id, protocol: 'cpppilot.openai-session.v1', state: { version: 'old' }, updatedAt: now
+    }
+    db.createAgentRun(run)
+    db.saveAgentModelSession(originalSession)
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+
+    expect(() => db.saveAgentCheckpoint(
+      { ...run, status: 'waiting-approval', pendingClarification: undefined, updatedAt: '2026-07-18T00:00:00.000Z' },
+      { ...originalSession, state: circular, updatedAt: '2026-07-18T00:00:00.000Z' }
+    )).toThrow()
+
+    expect(db.getAgentRun(run.id)).toMatchObject({ status: 'waiting-input' })
+    expect(db.getAgentModelSession(run.id)).toEqual(originalSession)
+    db.close()
+  })
+
   it('persists automatic run links back to the originating conversation message', () => {
     const { file, db } = setup()
     const run: AgentRun = {

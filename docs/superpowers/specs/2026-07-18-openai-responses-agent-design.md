@@ -103,13 +103,14 @@ The first turn calls `POST /v1/responses` with distinct instruction, context, to
     "selection": null
   },
   "workspace": {
-    "project": { "id": "uuid", "name": "project name", "type": "single-file" },
+    "project": { "id": "uuid", "workspaceId": "uuid", "name": "project name", "type": "single-file" },
     "activeFile": {
       "path": "main.cpp",
       "content": "current bounded file content",
       "contentHash": "sha256",
       "dirty": false,
-      "truncated": false
+      "truncated": false,
+      "redacted": false
     },
     "relatedFiles": [],
     "diagnostics": [],
@@ -125,7 +126,9 @@ The first turn calls `POST /v1/responses` with distinct instruction, context, to
   },
   "policy": {
     "allowedProjectId": "uuid",
+    "allowedWorkspaceId": "uuid",
     "allowedPaths": ["main.cpp"],
+    "allowNewPaths": true,
     "writesRequireApproval": true,
     "maxModelTurns": 12,
     "maxToolCalls": 20,
@@ -216,6 +219,7 @@ The first release sets `parallel_tool_calls: false` to preserve deterministic ap
   "diagnostics": [],
   "artifacts": [],
   "changedFiles": [],
+  "outcomes": [{ "type": "build_succeeded", "target": "main.cpp" }],
   "retryable": false,
   "durationMs": 413,
   "outputTruncated": false
@@ -243,7 +247,12 @@ When no function call is required, the model returns strict `cpppilot.final.v1` 
   "status": "completed",
   "intent": { "primary": "edit_code", "secondary": ["explain_code"] },
   "messageMarkdown": "Updated `main.cpp` and verified compilation.",
+  "clarificationQuestion": null,
   "evidenceCallIds": ["call_123", "call_456"],
+  "claims": [
+    { "type": "file_changed", "callId": "call_123", "target": "main.cpp" },
+    { "type": "build_succeeded", "callId": "call_456", "target": "main.cpp" }
+  ],
   "suggestedNextActions": []
 }
 ```
@@ -254,7 +263,7 @@ When no function call is required, the model returns strict `cpppilot.final.v1` 
 - `needs_input`: one concrete clarification question is supplied;
 - `failed`: available tools and evidence cannot complete the request.
 
-The runtime verifies `taskId`, Schema validity, and every evidence reference. A `completed` response claiming file changes, compilation, execution, or tests without matching successful evidence is rejected.
+The runtime verifies `taskId`, Schema validity, and every evidence reference. Tool outcomes are derived locally from the MCP tool name, exit status, and side effects. Every final claim must exactly match a locally derived outcome from its cited call. A `completed` response claiming file changes, compilation, execution, or tests without matching successful evidence is rejected.
 
 `needs_input` maps to a new `waiting-input` run status rather than `completed`. The next user message resumes the same task and model session. Cancellation remains available while waiting.
 

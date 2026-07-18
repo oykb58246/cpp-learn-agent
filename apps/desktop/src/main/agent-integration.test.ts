@@ -6,12 +6,71 @@ import { AppDatabase } from '@cpp-pet/database'
 import { WorkspaceService } from '@cpp-pet/workspace-core'
 import { ToolchainService } from '@cpp-pet/cpp-local-tools'
 import { achievementDefinitions, builtInKnowledge } from '@cpp-pet/agent-runtime'
-import { DesktopMcpAdapter, DesktopOpenAiContextBuilder, DesktopOpenAiModelFactory, McpRuntimeToolClient } from './agent-integration'
+import {
+  DatabaseRuntimeStore,
+  DesktopMcpAdapter,
+  DesktopOpenAiContextBuilder,
+  DesktopOpenAiModelFactory,
+  McpRuntimeToolClient
+} from './agent-integration'
 
 const cleanups: Array<() => void | Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
 describe('desktop H3 integration', () => {
+  it('creates an Agent project only in the explicitly authorized workspace', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-project-scope-'))
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+    const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
+    cleanups.push(() => db.close())
+    const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
+    const firstRoot = join(dir, 'first')
+    const targetRoot = join(dir, 'target')
+    mkdirSync(firstRoot)
+    mkdirSync(targetRoot)
+    const first = workspaceService.registerWorkspace(firstRoot)
+    const target = workspaceService.registerWorkspace(targetRoot)
+    workspaceService.setTrust(first.id, true)
+    workspaceService.setTrust(target.id, true)
+    const adapter = new DesktopMcpAdapter({
+      db, workspaceService, toolchainService: new ToolchainService(), buildRoot: join(dir, 'builds')
+    })
+
+    const result = await adapter.execute('project.create', {
+      workspaceId: target.id, mode: 'description', name: 'Scoped project', description: 'hello'
+    }, { signal: new AbortController().signal, onProgress: async () => undefined })
+
+    expect(result.ok).toBe(true)
+    expect((result.structuredContent as { project: { workspaceId: string } }).project.workspaceId).toBe(target.id)
+  })
+
+  it('persists runtime model sessions through the database store', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-runtime-session-'))
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+    const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
+    cleanups.push(() => db.close())
+    const now = new Date().toISOString()
+    const run = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor' as const, mode: 'auto' as const,
+      message: '继续任务', status: 'waiting-input' as const, steps: [], createdAt: now, updatedAt: now
+    }
+    db.createAgentRun(run)
+    const store = new DatabaseRuntimeStore(db)
+    const session = {
+      runId: run.id,
+      protocol: 'cpppilot.openai-session.v1',
+      state: { input: [{ role: 'user', content: [{ type: 'input_text', text: 'context' }] }] },
+      updatedAt: now
+    }
+
+    await store.saveSession(session)
+
+    expect(store.getSession(run.id)).toEqual(session)
+    expect(store.listSessions()).toEqual([session])
+    await store.deleteSession(run.id)
+    expect(store.getSession(run.id)).toBeUndefined()
+  })
+
   it('builds a strict OpenAI context envelope with the unchanged prompt and no absolute paths', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-openai-context-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
@@ -25,23 +84,91 @@ describe('desktop H3 integration', () => {
     const project = workspaceService.commitDraft(workspaceService.previewProject({
       mode: 'manual', workspaceId: workspace.id, name: '原始请求', type: 'single-file'
     }).draftId)
+    const initialDocument = workspaceService.readFile(project.id, 'main.cpp')
+    await workspaceService.writeFile(
+      project.id,
+      'main.cpp',
+      'const char* local = "C:\\Users\\alice\\private.txt"; //comment\nconst char* url = "https://example.test/docs";\nconst char* key = "sk-sensitive-context-token";\n',
+      initialDocument.contentHash,
+      false
+    )
     const prompt = '把 "Hello" 改成 "world，然后编译'
     const requestId = crypto.randomUUID()
+    const screenshot = {
+      id: crypto.randomUUID(), previewDataUrl: 'data:image/png;base64,AAAA',
+      mimeType: 'image/png' as const, width: 320, height: 200, createdAt: new Date().toISOString()
+    }
     const builder = new DesktopOpenAiContextBuilder(workspaceService, db)
 
     const context = await builder.build({
-      requestId, source: 'editor', mode: 'auto', message: prompt, projectId: project.id, activeFile: 'main.cpp'
+      requestId, source: 'screenshot', mode: 'auto', message: prompt, projectId: project.id, activeFile: 'main.cpp', screenshot
     }, requestId, 0, new AbortController().signal)
 
     expect(context).toMatchObject({
       protocol: 'cpppilot.context.v1', taskId: requestId, turn: 0,
-      task: { prompt, source: 'workspace', activeFile: 'main.cpp' },
-      workspace: { project: { id: project.id, name: '原始请求' }, activeFile: { path: 'main.cpp' } },
+      task: { prompt, source: 'screenshot', activeFile: 'main.cpp', screenshot: {
+        id: screenshot.id, mimeType: 'image/png', width: 320, height: 200, bytes: expect.any(Number)
+      } },
+      workspace: { project: { id: project.id, name: '原始请求' }, activeFile: { path: 'main.cpp', redacted: true } },
       policy: { allowedProjectId: project.id, writesRequireApproval: true }
     })
     const serialized = JSON.stringify(context)
     expect(serialized).not.toContain(workspaceRoot)
+    expect(serialized).not.toContain('C:\\Users\\alice')
+    expect(serialized).not.toContain('sk-sensitive-context-token')
+    expect(serialized).toContain('//comment')
+    expect(serialized).toContain('https://example.test/docs')
     expect(serialized).not.toContain('apiKey')
+  })
+
+  it('includes sanitized recent project tool evidence in model memory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-openai-memory-'))
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+    const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
+    cleanups.push(() => db.close())
+    const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
+    const workspaceRoot = join(dir, 'workspace')
+    mkdirSync(workspaceRoot)
+    const workspace = workspaceService.registerWorkspace(workspaceRoot)
+    workspaceService.setTrust(workspace.id, true)
+    const project = workspaceService.commitDraft(workspaceService.previewProject({
+      mode: 'manual', workspaceId: workspace.id, name: 'Evidence project', type: 'single-file'
+    }).draftId)
+    const now = new Date().toISOString()
+    const priorRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor' as const, mode: 'auto' as const,
+      message: '修复上次的编译错误', projectId: project.id, status: 'completed' as const, steps: [],
+      response: '已修复', validationSummary: '编译成功', createdAt: now, updatedAt: now, completedAt: now
+    }
+    db.createAgentRun(priorRun)
+    db.saveToolCall({
+      id: crypto.randomUUID(), runId: priorRun.id, stepId: 'tool-1', serverName: 'cpppilot-local-tools',
+      toolName: 'compiler.build', risk: 'L1', parameterSummary: {}, status: 'completed', startedAt: now,
+      finishedAt: now, durationMs: 1,
+      result: {
+        ok: true, exitCode: 0,
+        summary: 'Built C:\\Users\\alice\\private.exe using sk-sensitive-memory-token',
+        diagnostics: [], artifacts: [], sideEffects: [], retryable: false, durationMs: 1
+      }
+    })
+    const requestId = crypto.randomUUID()
+
+    const context = await new DesktopOpenAiContextBuilder(workspaceService, db).build({
+      requestId, source: 'editor', mode: 'auto', message: '继续处理', projectId: project.id, activeFile: 'main.cpp'
+    }, requestId, 0, new AbortController().signal)
+
+    expect(context.memory.recentEvidence).toEqual([
+      expect.objectContaining({
+        task: '修复上次的编译错误',
+        status: 'completed',
+        validationSummary: '编译成功',
+        tools: [expect.objectContaining({ tool: 'compiler.build', status: 'completed', ok: true })]
+      })
+    ])
+    const serialized = JSON.stringify(context.memory.recentEvidence)
+    expect(serialized).not.toContain('C:\\Users\\alice')
+    expect(serialized).not.toContain('sk-sensitive-memory-token')
+    expect(serialized).not.toContain(priorRun.id)
   })
 
   it('creates a Responses model only when an enabled profile and key exist', async () => {
@@ -289,7 +416,9 @@ describe('desktop H3 integration', () => {
     const adapter = new DesktopMcpAdapter({ db, workspaceService, toolchainService, buildRoot: join(dir, 'builds') })
     const context = { signal: new AbortController().signal, onProgress: async () => undefined }
 
-    const created = await adapter.execute('project.create', { mode: 'description', name: '成长项目', description: '输出 Hello' }, context)
+    const created = await adapter.execute('project.create', {
+      workspaceId: workspace.id, mode: 'description', name: '成长项目', description: '输出 Hello'
+    }, context)
     const projectId = (created.structuredContent as { projectId: string }).projectId
     const build = await adapter.execute('compiler.build', {
       runId: crypto.randomUUID(), projectId, relativePath: 'main.cpp', standard: 'c++17'
