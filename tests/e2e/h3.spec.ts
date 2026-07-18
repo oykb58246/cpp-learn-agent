@@ -87,7 +87,7 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
     await page.getByText('main.cpp', { exact: true }).click()
     await page.getByRole('button', { name: 'Agent', exact: true }).click()
     await expect(page.locator('.workspace-agent-panel')).toBeVisible()
-    await page.getByLabel('Agent 模式').selectOption('diagnose')
+    await expect(page.getByLabel('Agent 模式')).toHaveCount(0)
     await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('修复当前编译错误并解释根因')
     await page.getByRole('button', { name: '发送', exact: true }).click()
 

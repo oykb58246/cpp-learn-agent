@@ -114,7 +114,7 @@ test('guides a beginner through a real offline Agent experience', async () => {
 
     await setWindowSize(electronApp, page, 1024, 720)
     await page.getByRole('button', { name: '试着解释这段循环' }).click()
-    await expect(page.getByLabel('Agent 模式')).toHaveValue('explain')
+    await expect(page.getByLabel('Agent 模式')).toHaveCount(0)
     await expect(page.getByPlaceholder('向 CppPilot 提交学习任务')).toHaveValue(/for \(int i = 0; i < 3; \+\+i\)/)
     await captureWindow(electronApp, page, 'beginner-tour-agent-input-1024x720.png')
     await expectTourInsideViewport(page)

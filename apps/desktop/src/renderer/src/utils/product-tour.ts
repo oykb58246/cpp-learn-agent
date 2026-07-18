@@ -1,5 +1,3 @@
-import type { AgentStartRequest } from '@cpp-pet/contracts'
-
 export type ProductTourStepId = 'welcome' | 'navigation' | 'assistant-input' | 'assistant-result' | 'workspace-agent' | 'complete'
 export type ProductTourAgentPhase = 'idle' | 'approval' | 'running' | 'ready' | 'failed'
 
@@ -28,7 +26,6 @@ export interface SizeLike {
 
 export const agentTourSuggestion = {
   label: '试着解释这段循环',
-  mode: 'explain' as AgentStartRequest['mode'],
   message: '请用零基础能听懂的方式解释这段代码：\nfor (int i = 0; i < 3; ++i) {\n  std::cout << i << "\\n";\n}'
 }
 

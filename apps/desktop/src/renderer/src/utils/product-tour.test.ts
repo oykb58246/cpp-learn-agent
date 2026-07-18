@@ -10,7 +10,7 @@ describe('product tour model', () => {
       route: '/runs',
       interactive: true
     })
-    expect(agentTourSuggestion).toMatchObject({ mode: 'explain', label: '试着解释这段循环' })
+    expect(agentTourSuggestion).toMatchObject({ label: '试着解释这段循环' })
     expect(agentTourSuggestion.message).toContain('for (int i = 0; i < 3; ++i)')
   })
 
