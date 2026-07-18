@@ -23,7 +23,7 @@ export const agentRunStatusSchema = z.enum([
   'cancelled'
 ])
 export type AgentRunStatus = z.infer<typeof agentRunStatusSchema>
-export const agentModeSchema = z.enum(['auto', 'environment', 'explain', 'diagnose', 'solve', 'project', 'review', 'chat'])
+export const agentModeSchema = z.enum(['auto', 'environment', 'explain', 'diagnose', 'solve', 'project', 'review', 'edit', 'chat'])
 export type AgentMode = z.infer<typeof agentModeSchema>
 
 export const agentStepKindSchema = z.enum(['reason', 'resource', 'tool', 'approval', 'validate', 'respond', 'learning'])

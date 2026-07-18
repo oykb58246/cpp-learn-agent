@@ -79,6 +79,21 @@ describe('model planning gateway', () => {
     expect(plan.steps.map(step => step.toolName)).toContain('compiler.build')
   })
 
+  it('does not schedule a no-op write in deterministic edit fallback', async () => {
+    const planner = new DeterministicPlanner()
+    const plan = await planner.plan({
+      ...request,
+      mode: 'edit',
+      message: '调整输出并编译'
+    }, {
+      ...context,
+      sources: context.sources.map(source => source.kind === 'file' ? { ...source, content: 'int main() {}' } : source)
+    })
+
+    expect(plan.steps.map(step => step.toolName).filter(Boolean)).toEqual([])
+    expect(plan.steps.at(-1)?.summary).toContain('无法确定')
+  })
+
   it('rejects model output that references an unregistered tool', async () => {
     const fetcher = async () => new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({

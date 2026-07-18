@@ -23,4 +23,19 @@ describe('agent intent routing', () => {
   it('falls back to chat for open-ended questions', () => {
     expect(inferAgentMode({ message: '你好，今天适合学什么？' })).toBe('chat')
   })
+
+  it('routes explicit file-edit requests to an execution workflow', () => {
+    expect(inferAgentMode({
+      message: '帮我把 main.cpp 中的"Hello, C++Pilot!"改成"Hello, world!"，编译成功后再解释 main、cout 和 endl 的作用'
+    })).toBe('edit')
+  })
+
+  it('keeps questions about editing APIs in explanation mode', () => {
+    expect(inferAgentMode({ message: '请解释 vector 如何删除元素' })).toBe('explain')
+    expect(inferAgentMode({ message: '帮我解释如何把 cout 改成 printf' })).toBe('explain')
+  })
+
+  it('still executes edits that also request an explanation', () => {
+    expect(inferAgentMode({ message: '把 main.cpp 的 cout 改成 printf，并解释两者区别' })).toBe('edit')
+  })
 })

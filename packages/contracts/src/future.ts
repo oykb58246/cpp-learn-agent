@@ -361,7 +361,7 @@ export type LearnerProfile = z.infer<typeof learnerProfileSchema>
 
 export const agentRequestSchema = z.object({
   requestId: z.string().uuid(), source: z.enum(['main', 'editor', 'pet', 'screenshot', 'system']),
-  mode: z.enum(['environment', 'explain', 'diagnose', 'solve', 'project', 'review', 'chat']), message: z.string(),
+  mode: z.enum(['environment', 'explain', 'diagnose', 'solve', 'project', 'review', 'edit', 'chat']), message: z.string(),
   projectId: z.string().uuid().optional(), activeFile: z.string().optional(),
   selection: z.object({ startLine: z.number(), startColumn: z.number(), endLine: z.number(), endColumn: z.number() }).optional(),
   screenshotRef: z.string().optional()

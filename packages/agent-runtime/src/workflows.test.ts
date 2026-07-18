@@ -17,6 +17,7 @@ function result(summary: string, structuredContent?: unknown, ok = true): ToolRe
 
 async function execute(request: AgentStartRequest, source = 'int main() {\n  return 0\n}') {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = []
+  let finalSource = source
   let buildCount = 0
   const toolClient: RuntimeToolClient = {
     async call(name, args) {
@@ -25,6 +26,10 @@ async function execute(request: AgentStartRequest, source = 'int main() {\n  ret
       if (name === 'toolchain.probe_compiler') return result('验证通过', { candidate: { id: args.candidateId }, success: true })
       if (name === 'project.create') return result('项目已创建', { projectId, relativePath: 'main.cpp' })
       if (name === 'workspace.read_file') return result('读取成功', { content: source, contentHash: 'hash-1' })
+      if (name === 'workspace.apply_patch') {
+        finalSource = String(args.content ?? '')
+        return result('file updated', { contentHash: 'hash-2' })
+      }
       if (name === 'compiler.build') {
         buildCount += 1
         if (request.mode === 'diagnose' && buildCount === 1) return result('缺少分号', { diagnostics: [{ message: 'expected ;' }] }, false)
@@ -65,7 +70,7 @@ async function execute(request: AgentStartRequest, source = 'int main() {\n  ret
   while (run.status === 'waiting-approval') {
     run = await runtime.decide({ approvalId: run.pendingApproval!.id, decision: 'approved' })
   }
-  return { run, calls, detail: store.get(run.id)! }
+  return { run, calls, detail: store.get(run.id)!, finalSource }
 }
 
 describe('seven H3 workflows', () => {
@@ -160,5 +165,65 @@ describe('seven H3 workflows', () => {
     expect(run.status).toBe('completed')
     expect(calls).toEqual([])
     expect(run.response).toContain('下一步')
+  })
+
+  it('edits the requested file and only completes after a successful rebuild', async () => {
+    const source = '#include <iostream>\nusing namespace std;\nint Main() {\n  cout << "Hello, C++Pilot!" << endl;\n  return 0;\n}\n'
+    const { run, calls, detail, finalSource } = await execute({
+      requestId: crypto.randomUUID(), source: 'editor', mode: 'edit',
+      message: '帮我把 main.cpp 中的"Hello, C++Pilot!"改成"Hello, world!"，编译成功后再解释 main、cout 和 endl 的作用',
+      projectId, activeFile: 'main.cpp'
+    }, source)
+
+    expect(run.status).toBe('completed')
+    expect(calls.map(call => call.name)).toEqual(['workspace.read_file', 'workspace.apply_patch', 'compiler.build'])
+    expect(calls.find(call => call.name === 'workspace.apply_patch')?.args.content).toContain('"Hello, world!"')
+    expect(calls.find(call => call.name === 'workspace.apply_patch')?.args.content).toContain('int main()')
+    expect(finalSource).toContain('"Hello, world!"')
+    expect(finalSource).toContain('int main()')
+    expect(detail.timeline.some(item => item.kind === 'validation' && item.data?.toolName === 'compiler.build')).toBe(true)
+    expect(run.response).toContain('cout')
+  })
+
+  it.each([
+    {
+      name: 'backtick-delimited code',
+      source: 'int main() {\n  int value = 1;\n  return value;\n}\n',
+      message: '把 `int value = 1;` 改成 `int value = 2;`，然后编译',
+      expected: 'int value = 2;'
+    },
+    {
+      name: 'multiple quoted replacements',
+      source: 'int main() {\n  const char* a = "alpha";\n  const char* b = "left";\n}\n',
+      message: '把"alpha"改成"beta"，再把"left"改成"right"，编译验证',
+      expected: 'const char* b = "right";'
+    },
+    {
+      name: 'a single target value for the only string literal',
+      source: '#include <iostream>\nint main() { std::cout << "Hello"; }\n',
+      message: '把 main.cpp 的输出文字改成"Goodbye!"并编译',
+      expected: 'std::cout << "Goodbye!"'
+    }
+  ])('supports $name', async ({ source, message, expected }) => {
+    const { run, calls, finalSource } = await execute({
+      requestId: crypto.randomUUID(), source: 'editor', mode: 'edit', message,
+      projectId, activeFile: 'main.cpp'
+    }, source)
+
+    expect(run.status).toBe('completed')
+    expect(calls.map(call => call.name)).toEqual(['workspace.read_file', 'workspace.apply_patch', 'compiler.build'])
+    expect(finalSource).toContain(expected)
+  })
+
+  it('does not claim a file edit when the offline request has no actionable replacement', async () => {
+    const { run, calls, finalSource } = await execute({
+      requestId: crypto.randomUUID(), source: 'editor', mode: 'edit',
+      message: '调整输出并编译', projectId, activeFile: 'main.cpp'
+    }, 'int main() { return 0; }\n')
+
+    expect(run.status).toBe('completed')
+    expect(calls).toEqual([])
+    expect(finalSource).toBe('int main() { return 0; }\n')
+    expect(run.response).toContain('无法确定')
   })
 })

@@ -1,5 +1,6 @@
 import type { ContextPacket } from '@cpp-pet/contracts'
 import type { ResolvedAgentRequest, RuntimePlan, RuntimePlanner, RuntimePlanStep } from './runtime'
+import { applyRequestedEdit } from './edit-request'
 
 const ref = (stepId: string, path: string) => ({ $from: stepId, $path: path })
 
@@ -14,6 +15,7 @@ export class H3WorkflowPlanner implements RuntimePlanner {
       case 'diagnose': return this.diagnose(request, context)
       case 'solve': return this.logic(request, context)
       case 'review': return this.review(request)
+      case 'edit': return this.edit(request, context)
       case 'chat': return this.chat()
     }
   }
@@ -58,6 +60,38 @@ export class H3WorkflowPlanner implements RuntimePlanner {
     if (!request.selection && request.projectId && request.activeFile) steps.push(step('read', '读取最小文件上下文', 'tool', 'workspace.read_file', 'L0', { projectId: request.projectId, relativePath: request.activeFile }))
     steps.push({ id: 'respond', title: '按已学概念解释', kind: 'respond', summary: explainCode(request.selection?.content ?? request.message) })
     return { intent: 'explain-selection', conceptIds: inferConcepts(request.message), successCriteria: ['teaching response produced'], source: 'offline', steps }
+  }
+
+  private edit(request: ResolvedAgentRequest, context: ContextPacket): RuntimePlan {
+    if (!request.projectId || !request.activeFile) return this.missingProject('edit-and-build')
+    const source = sourceContent(context)
+    const edit = applyRequestedEdit(source, request.message)
+    if (!edit.changed) {
+      return {
+        intent: 'edit-and-build', conceptIds: inferConcepts(`${request.message}\n${source}`),
+        successCriteria: ['request an explicit replacement'], source: 'offline', workflow: 'edit-and-build',
+        responseGoal: 'ask for an unambiguous source and target edit',
+        steps: [{
+          id: 'respond', title: '请求明确的修改内容', kind: 'respond',
+          summary: `无法确定要对 ${request.activeFile} 执行的具体修改。请同时给出原内容和目标内容，例如“把 \"Hello\" 改成 \"Hello, world!\"”。`
+        }]
+      }
+    }
+    return {
+      intent: 'edit-and-build', conceptIds: inferConcepts(`${request.message}\n${source}`),
+      successCriteria: ['requested file changed', 'rebuild succeeds'], source: 'offline', workflow: 'edit-and-build',
+      responseGoal: 'report the applied file change and explain the requested C++ concepts using build evidence',
+      steps: [
+        step('read', 'Read current file', 'tool', 'workspace.read_file', 'L0', { projectId: request.projectId, relativePath: request.activeFile }),
+        step('patch', 'Apply requested file edit', 'tool', 'workspace.apply_patch', 'L2', {
+          projectId: request.projectId, relativePath: request.activeFile, expectedHash: ref('read', 'contentHash'), content: edit.content
+        }, ['write-file']),
+        step('build', 'Verify compilation', 'validate', 'compiler.build', 'L1', {
+          runId: request.requestId, projectId: request.projectId, relativePath: request.activeFile, standard: 'c++17'
+        }),
+        { id: 'respond', title: 'Report edit and explain code', kind: 'respond', summary: editResponse(request.activeFile, request.message) }
+      ]
+    }
   }
 
   private diagnose(request: ResolvedAgentRequest, context: ContextPacket): RuntimePlan {
@@ -168,6 +202,14 @@ function fixCompileError(content: string): string {
 
 function fixLogicBoundary(content: string): string {
   return content.replace(/(\bfor\s*\([^;]+;\s*[^;]+)\s*<=\s*([^;]+;)/, '$1 < $2')
+}
+
+function editResponse(relativePath: string, message: string): string {
+  const parts = [`已更新 \`${relativePath}\`，并通过重新编译验证。`]
+  if (/\bmain\b/i.test(message)) parts.push('`main` 是 C++ 程序的入口函数，程序从这里开始执行。')
+  if (/\b(?:std::)?cout\b/i.test(message)) parts.push('`cout` 是标准输出流，`<<` 会把后面的内容写到控制台。')
+  if (/\b(?:std::)?endl\b/i.test(message)) parts.push('`endl` 会输出换行并立即刷新输出缓冲区。')
+  return parts.join('\n\n')
 }
 
 function inferConcepts(text: string): string[] {

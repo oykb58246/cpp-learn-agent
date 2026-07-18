@@ -10,6 +10,7 @@ import {
   type ToolRisk
 } from '@cpp-pet/contracts'
 import type { ResolvedAgentRequest, RuntimePlan, RuntimePlanner, RuntimePlanStep } from './runtime'
+import { applyRequestedEdit } from './edit-request'
 
 type ProtocolTool = AgentPlanRequest['capabilities']['tools'][number]
 
@@ -226,8 +227,12 @@ export class ResilientPlanner implements RuntimePlanner {
 }
 
 export class DeterministicPlanner implements RuntimePlanner {
-  async plan(request: ResolvedAgentRequest): Promise<RuntimePlan> {
+  async plan(request: ResolvedAgentRequest, context: ContextPacket): Promise<RuntimePlan> {
     const common = { runId: request.requestId, projectId: request.projectId, relativePath: request.activeFile }
+    const deterministicEdit = applyRequestedEdit(
+      context.sources.find(source => source.kind === 'file')?.content ?? '',
+      request.message
+    )
     if (request.mode === 'auto') {
       return {
         intent: 'answer',
@@ -274,6 +279,23 @@ export class DeterministicPlanner implements RuntimePlanner {
       project: {
         intent: 'create_project', conceptIds: [], successCriteria: ['problem structure parsed'],
         steps: [{ id: 'parse', title: '解析项目描述', kind: 'tool', toolName: 'problem.parse', risk: 'L0', arguments: { statement: request.message } }, { id: 'respond', title: '生成项目计划', kind: 'respond' }]
+      },
+      edit: {
+        intent: 'edit_code', conceptIds: contextConcepts(request), successCriteria: ['file edit applied and verified'],
+        steps: request.projectId && request.activeFile && deterministicEdit.changed
+          ? [
+              { id: 'read', title: 'Read current file', kind: 'tool', toolName: 'workspace.read_file', risk: 'L0', arguments: common },
+              { id: 'patch', title: 'Apply requested edit', kind: 'tool', toolName: 'workspace.apply_patch', risk: 'L2', arguments: {
+                projectId: request.projectId, relativePath: request.activeFile,
+                expectedHash: { $from: 'read', $path: 'contentHash' },
+                content: deterministicEdit.content
+              }, sideEffects: ['write-file'] },
+              { id: 'build', title: 'Verify compilation', kind: 'validate', toolName: 'compiler.build', risk: 'L1', arguments: common },
+              { id: 'respond', title: 'Report edit', kind: 'respond', summary: 'The requested file edit was applied and compilation was verified.' }
+            ]
+          : request.projectId && request.activeFile
+            ? [{ id: 'respond', title: 'Request explicit edit', kind: 'respond', summary: `无法确定要对 ${request.activeFile} 执行的具体修改。请同时给出原内容和目标内容。` }]
+            : [{ id: 'respond', title: 'Request project context', kind: 'respond' }]
       },
       review: {
         intent: 'explain_code', conceptIds: [], successCriteria: ['follow-up explanation produced'],
