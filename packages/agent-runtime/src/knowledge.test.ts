@@ -42,10 +42,18 @@ describe('KnowledgeGate', () => {
     expect(transitionKnowledge('local-user', builtInKnowledge, prerequisites, 'stl.vector', 'learning').status).toBe('learning')
   })
 
-  it('allows self-claim only after a concept has entered learning', () => {
-    expect(() => transitionKnowledge('local-user', builtInKnowledge, [], 'basics.program', 'self-claimed')).toThrow('学习中')
-    const learning: LearnerKnowledge = { userId: 'local-user', conceptId: 'basics.program', status: 'learning', confidence: 0.5, updatedAt: now }
-    expect(transitionKnowledge('local-user', builtInKnowledge, [learning], 'basics.program', 'self-claimed').status).toBe('self-claimed')
+  it('allows an eligible concept to be self-claimed directly and reset to locked', () => {
+    const prerequisites: LearnerKnowledge[] = [{
+      userId: 'local-user', conceptId: 'basics.program', status: 'self-claimed',
+      confidence: 0.7, updatedAt: now
+    }]
+
+    expect(transitionKnowledge('local-user', builtInKnowledge, prerequisites, 'basics.io', 'self-claimed').status)
+      .toBe('self-claimed')
+    expect(transitionKnowledge('local-user', builtInKnowledge, prerequisites, 'basics.io', 'locked').status)
+      .toBe('locked')
+    expect(() => transitionKnowledge('local-user', builtInKnowledge, [], 'basics.io', 'self-claimed'))
+      .toThrow('前置概念')
   })
 })
 
