@@ -33,19 +33,6 @@ async function expectNoHorizontalOverflow(page: Page) {
   expect(overflowingContainers).toEqual([])
 }
 
-async function expectAgentEvidenceNotToOverlap(page: Page) {
-  const overlap = await page.evaluate(() => {
-    const response = document.querySelector<HTMLElement>('.workspace-agent-evidence > p')
-    if (!response) return []
-    const responseRect = response.getBoundingClientRect()
-    return Array.from(document.querySelectorAll<HTMLElement>('.workspace-agent-evidence .run-timeline article'))
-      .map((event, index) => ({ index, event: event.getBoundingClientRect() }))
-      .filter(({ event }) => event.bottom > responseRect.top + 1 && event.top < responseRect.bottom - 1)
-      .map(({ index }) => index)
-  })
-  expect(overlap).toEqual([])
-}
-
 async function setWindowSize(electronApp: ElectronApplication, page: Page, width: number, height: number) {
   const browserWindow = await electronApp.browserWindow(page)
   await browserWindow.evaluate((win, size) => win.setSize(size.width, size.height), { width, height })
@@ -111,12 +98,11 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
     await expect(page.locator('.approval-card')).toContainText('记录错误修复证据', { timeout: 30_000 })
     await page.getByRole('button', { name: '批准', exact: true }).click()
     await expect(page.locator('.workspace-agent-panel')).toContainText('completed', { timeout: 30_000 })
-    await expect(page.locator('.workspace-agent-panel')).toContainText('重新编译验证')
     await captureWindow(electronApp, page, 'h3-workspace-agent-1440x900.png')
 
     await setWindowSize(electronApp, page, 1024, 720)
     await expectNoHorizontalOverflow(page)
-    await expectAgentEvidenceNotToOverlap(page)
+    await expect(page.locator('.workspace-agent-evidence')).toHaveCount(0)
     await captureWindow(electronApp, page, 'h3-workspace-agent-1024x720.png')
     await setWindowSize(electronApp, page, 1440, 900)
 

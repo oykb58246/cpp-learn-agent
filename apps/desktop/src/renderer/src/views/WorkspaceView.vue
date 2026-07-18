@@ -55,7 +55,6 @@ import ProjectDialog from '../components/ProjectDialog.vue'
 import ApprovalCard from '../components/ApprovalCard.vue'
 import ConversationPanel from '../components/ConversationPanel.vue'
 import DiagnosticInboxPopover from '../components/DiagnosticInboxPopover.vue'
-import RunTimeline from '../components/RunTimeline.vue'
 import SnapshotPopover from '../components/SnapshotPopover.vue'
 import { useAppStore } from '../stores/app'
 import { useAgentStore } from '../stores/agent'
@@ -143,7 +142,6 @@ const activeDiagnostics = computed(() => {
   const normalized = normalizePath(path)
   return allDiagnostics.value.filter(item => !item.file || normalizePath(item.file) === normalized)
 })
-const agentTimeline = computed(() => agent.currentRun && 'timeline' in agent.currentRun ? agent.currentRun.timeline.slice(-6) : [])
 const agentRunning = computed(() => Boolean(agent.currentRun && !['completed', 'failed', 'cancelled'].includes(agent.currentRun.status)))
 const inboxGroups = computed(() => agent.inbox?.groups ?? [])
 const inboxCount = computed(() => inboxGroups.value.length)
@@ -971,12 +969,8 @@ async function overwriteDisk() {
         @tool-submit="submitAgent"
         @cancel-tool="agent.currentRun && agent.cancel(agent.currentRun.id)"
       >
-        <template v-if="agent.pendingApproval || agent.currentRun" #tool-status>
-          <ApprovalCard v-if="agent.pendingApproval" :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
-          <div v-else-if="agent.currentRun" class="workspace-agent-evidence">
-            <RunTimeline :events="agentTimeline" />
-            <p v-if="agent.currentRun.response">{{ agent.currentRun.response }}</p>
-          </div>
+        <template v-if="agent.pendingApproval" #tool-status>
+          <ApprovalCard :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
         </template>
       </ConversationPanel>
     </aside>
