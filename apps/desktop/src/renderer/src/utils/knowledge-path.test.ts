@@ -15,12 +15,13 @@ describe('knowledge path projection', () => {
   })
 
   it('groups same-depth siblings as parallel and identifies blocked prerequisites', () => {
-    const catalog = [node('root', 'basics'), node('left', 'branches', ['root']), node('right', 'branches', ['root']), node('finish', 'advanced', ['left', 'right'])]
+    const catalog = [node('finish', 'advanced', ['left', 'right']), node('left', 'branches', ['root']), node('root', 'basics'), node('right', 'branches', ['root'])]
     const knowledge: LearnerKnowledge[] = [{ userId: 'local-user', conceptId: 'root', status: 'self-claimed', confidence: 0.7, updatedAt: now }]
     const lanes = buildKnowledgeLanes(catalog, knowledge)
     const branch = lanes.find(lane => lane.category === 'branches')!
     const finish = lanes.find(lane => lane.category === 'advanced')!.rows[0]![0]!
 
+    expect(lanes.map(lane => lane.category)).toEqual(['basics', 'branches', 'advanced'])
     expect(branch.rows[0]!.map(item => item.node.id)).toEqual(['left', 'right'])
     expect(finish.missingPrerequisiteIds).toEqual(['left', 'right'])
     expect(finish.canAdvance).toBe(false)

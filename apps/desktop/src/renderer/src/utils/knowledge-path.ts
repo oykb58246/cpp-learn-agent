@@ -46,7 +46,17 @@ export function buildKnowledgeLanes(catalog: KnowledgeNode[], knowledge: Learner
     }
   })
 
-  return [...new Set(catalog.map(node => node.category))].map(category => {
+  const categories = [...new Set(catalog.map(node => node.category))]
+  const categoryIndex = new Map(categories.map((category, index) => [category, index]))
+  const categoryDepth = new Map(categories.map(category => [
+    category,
+    Math.min(...entries.filter(entry => entry.node.category === category).map(entry => entry.depth))
+  ]))
+
+  return categories.sort((left, right) => {
+    const byDepth = (categoryDepth.get(left) ?? 0) - (categoryDepth.get(right) ?? 0)
+    return byDepth || (categoryIndex.get(left) ?? 0) - (categoryIndex.get(right) ?? 0)
+  }).map(category => {
     const rows = new Map<number, KnowledgePathNode[]>()
     for (const entry of entries.filter(item => item.node.category === category)) {
       const row = rows.get(entry.depth) ?? []
