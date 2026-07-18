@@ -128,10 +128,23 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
 
     await page.getByRole('link', { name: '知识树' }).click()
     await expect(page.getByRole('heading', { name: '知识树' })).toBeVisible()
-    await expect(page.locator('.knowledge-summary')).toContainText('已标注学过 4')
-    await expect(page.locator('.knowledge-summary')).toContainText('尚未接触 34')
-    await expect(page.locator('.knowledge-groups')).toContainText('函数')
-    await captureWindow(electronApp, page, 'h3-knowledge-1440x900.png')
+    await expect(page.locator('.knowledge-path')).toBeVisible()
+    await expect(page.locator('.knowledge-path-lane')).toHaveCount(15)
+    await expect(page.getByRole('button', { name: '编辑背景' })).toHaveCount(0)
+    await expect(page.getByText('待复习', { exact: true })).toHaveCount(0)
+
+    const blockedArrays = page.locator('[data-concept-id="data.arrays"]')
+    await expect(blockedArrays.getByRole('button', { name: /数组 学习中/ })).toBeDisabled()
+    await expect(blockedArrays.locator('.knowledge-prerequisites')).toContainText('循环')
+
+    const ioCard = page.locator('[data-concept-id="basics.io"]')
+    await ioCard.getByRole('button', { name: /标准输入输出 已掌握/ }).click()
+    await expect(ioCard).toContainText('已掌握')
+    await captureWindow(electronApp, page, 'h3-knowledge-path-1440x900.png')
+    await setWindowSize(electronApp, page, 1024, 720)
+    await expectNoHorizontalOverflow(page)
+    await captureWindow(electronApp, page, 'h3-knowledge-path-1024x720.png')
+    await setWindowSize(electronApp, page, 1440, 900)
 
     await page.getByRole('link', { name: '设置' }).click()
     await expect(page.getByRole('heading', { name: '模型服务' })).toBeVisible()
