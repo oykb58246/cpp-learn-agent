@@ -13,7 +13,7 @@ const task = (patch: Partial<EnvironmentInstallTask>): EnvironmentInstallTask =>
 
 describe('environmentInstallOutcome', () => {
   it('requests a rescan after a successful tracked install', () => {
-    expect(environmentInstallOutcome(task({ status: 'succeeded', exitCode: 0 }))).toMatchObject({ redetect: true })
+    expect(environmentInstallOutcome(task({ status: 'succeeded', exitCode: 0 }))).toMatchObject({ redetect: true, tone: 'success' })
   })
 
   it('keeps the MSYS2 package follow-up explicit', () => {
@@ -26,7 +26,20 @@ describe('environmentInstallOutcome', () => {
   it('reports failures without triggering a rescan', () => {
     expect(environmentInstallOutcome(task({ status: 'failed', exitCode: 5 }))).toEqual({
       redetect: false,
+      tone: 'error',
       message: 'LLVM 工具集安装未成功（退出码 5），可以重试或改用官网安装。'
+    })
+  })
+
+  it('shows the tool verification failure instead of reporting a false install success', () => {
+    expect(environmentInstallOutcome(task({
+      status: 'failed',
+      exitCode: 0,
+      verificationFailure: 'WinGet 已结束，但未检测到 clangd。'
+    }))).toEqual({
+      redetect: false,
+      tone: 'error',
+      message: 'WinGet 已结束，但未检测到 clangd。'
     })
   })
 })

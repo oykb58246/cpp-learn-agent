@@ -2,7 +2,7 @@
 
 面向 C++ 初学者的 Windows 桌面学习 Agent。项目通过代码工作区、教学型 Agent 和桌面宠物，将环境配置、知识学习、代码编写、错误诊断、逻辑纠错与项目实践连接成一条可执行、可验证、可追踪的学习流程。
 
-> **当前状态：开发中。** H2 C++ 开发能力已完成交接基线，后续进入 H3 Agent 业务阶段。本文“规划能力”描述的是完整产品目标，不代表相关功能已经全部实现。
+> **当前状态：H3 已完成交接基线。** H1 工程基础、H2 C++ 开发能力以及 H3 Agent、MCP、知识与成长闭环均已交付，后续进入 H4 桌面宠物、系统截图、最终视觉、安装器和兼容性收口。
 
 ## 项目简介
 
@@ -76,7 +76,7 @@ flowchart TB
 
 ## 当前进展
 
-当前仓库已完成 H1 基础工程，并开始建设 H2 C++ 开发能力，现已包含：
+当前仓库已完成 H1、H2 和 H3 交接基线，现已包含：
 
 - Electron、Vue 3、TypeScript 与 pnpm workspace 工程骨架。
 - 基于 `contextBridge`、Zod 和共享类型的 IPC 契约。
@@ -100,8 +100,15 @@ flowchart TB
 - 中文项目路径的调试源码暂存与源位置回映射。
 - 文件侧边栏、快照侧边栏和底部输出面板支持拖拽调整、键盘微调、双击复位与尺寸持久化。
 - 成功、语法错误、链接错误、死循环、崩溃、逻辑错误和 CMake 工程固定 C++ 样例库。
+- 纯 TypeScript Agent Runtime，包含意图、最小上下文、计划、知识边界、L0-L3 策略、审批、执行、验证、取消、重试、时限和可审计 Timeline。
+- 真实 MCP stdio Host/Worker、24 个本地工具、7 个资源、8 个教学 Prompt，以及 Progress、Cancellation、超时和进程内降级通道。
+- OpenAI-compatible BYOK 模型网关、Electron `safeStorage` 密钥隔离和无密钥可运行的确定性离线规划器。
+- 环境、项目创建、选区解释、编译错误、逻辑错误、截图上下文和复习成长七条 Agent 工作流。
+- 38 个有向无环 C++ 知识节点、错误本、1/3/7/14/30 天复习调度、XP、4 个成长阶段、17 枚勋章和 PetEvent。
+- 工作区 Agent 入口、审批 Patch Diff、Agent 记录、知识树、练习、报告和模型设置页面。
+- `node:sqlite` WAL 数据库、H3 v4-v7 迁移、事务回滚、运行恢复、学习事件和奖励幂等。
 
-DAP/LLDB/MSVC 调试、Agent/MCP、知识树、成长系统和桌面宠物仍属于后续工作。本机未安装 clangd 和 clang-tidy，因此两者的真实工具执行仍需在 LLVM 环境补充验收。
+透明桌宠窗口、托盘、全局快捷键、屏幕区域选择、OCR、最终视觉和安装器属于 H4。当前验证机器未安装 CMake、CTest、clangd 和 clang-tidy，因此这些工具在本机验证可恢复的缺失提示；安装对应工具后可进入现有真实执行分支。
 
 ## 技术栈
 
@@ -112,8 +119,8 @@ DAP/LLDB/MSVC 调试、Agent/MCP、知识树、成长系统和桌面宠物仍属
 | UI | Element Plus、Lucide、Design Tokens |
 | 编辑器 | Monaco Editor；标准 clangd / LSP 客户端与 Provider |
 | C++ 工具 | GCC / Clang / MSVC 编译运行；CMake、CTest、clang-tidy、VS Code；GDB/MI 单文件调试 |
-| Agent（规划） | MCP SDK、可配置文本/多模态模型 Gateway |
-| 数据 | SQLite、better-sqlite3、WAL |
+| Agent | MCP TypeScript SDK、OpenAI-compatible Gateway、确定性离线 Planner |
+| 数据 | Node/Electron 内置 `node:sqlite`、SQLite WAL |
 | 校验 | Zod、Vitest、Playwright |
 
 ## 环境要求
@@ -130,7 +137,7 @@ pnpm install
 pnpm dev
 ```
 
-首次启动开发环境时，项目会为 Electron 重建 `better-sqlite3` 等原生依赖。
+项目使用 VS Code 开发，不要求安装 Visual Studio IDE 或 Visual Studio C++ Build Tools。只有在学习者主动选择 MSVC 作为 C++ 工具链时，才需要单独安装对应的 MSVC Build Tools；应用数据库和 Electron 启动均不依赖它。
 
 应用首次使用会自动进入环境初始化向导。选择“稍后配置”时会提示找回路径，首页也会保留可关闭的环境提醒；可在“设置 → C++ 工具链 → 环境向导”再次打开。已经使用过旧版本的本地数据不会被强制重新引导。
 
@@ -154,10 +161,15 @@ cpp-learn-agent/
 |   `-- desktop/          # Electron 主进程、Preload 与 Vue Renderer
 |-- packages/
 |   |-- contracts/        # 共享类型、Schema 与 IPC 契约
+|   |-- agent-runtime/    # Agent 状态机、策略、模型、知识与工作流
 |   |-- cpp-local-tools/  # 工具链探测、受限进程与烟雾验证
 |   |-- database/         # SQLite、迁移与数据访问
 |   |-- ui-kit/           # 设计变量与共享 UI 基础
 |   `-- workspace-core/   # 工作区、文件、项目、搜索与快照
+|-- docs/
+|   |-- handoff-a/        # H1 历史交接
+|   |-- handoff-b/        # H2 历史交接
+|   `-- handoff-c/        # H3 当前交接基线
 |-- tests/
 |   `-- e2e/              # Electron Playwright 端到端测试
 |-- package.json
@@ -188,5 +200,12 @@ cpp-learn-agent/
 - [H2 运行手册](./docs/handoff-b/runbook.md)：工具链、clangd、断点调试和原生 ABI 操作。
 - [H2 契约说明](./docs/handoff-b/contracts.md)：编译、语言服务、调试与外部编辑器 IPC。
 - [H2 已知问题](./docs/handoff-b/known-issues.md)：本机工具缺失和当前后端范围。
+- [H3 架构说明](./docs/handoff-c/architecture.md)：Agent Runtime、MCP、数据库、进程边界和 H4 接入点。
+- [H3 契约说明](./docs/handoff-c/contracts.md)：Run、审批、学习、IPC 和 PetEvent 稳定接口。
+- [H3 MCP 能力目录](./docs/handoff-c/mcp-catalog.md)：Tools、Resources、Prompts、风险和超时。
+- [H3 运行手册](./docs/handoff-c/runbook.md)：VS Code 开发、启动、验证、演示和故障排查。
+- [H3 测试报告](./docs/handoff-c/test-report.md)：单元、集成、Electron E2E、构建环境和限制。
+- [H3 接收清单](./docs/handoff-c/h3-acceptance.md)：规格逐项证据和成员 D/H4 接入检查。
+- [H3 已知问题](./docs/handoff-c/known-issues.md)：当前工具环境、bundle 体积和 H4 范围。
 
 本项目为软件工程课程大作业，计划由 4 人在 16 周内协作完成。

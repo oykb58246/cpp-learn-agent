@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "userId": "local-user",
+  "knowledge": [
+    { "conceptId": "basics.program", "status": "verified", "confidence": 1 },
+    { "conceptId": "basics.variables", "status": "verified", "confidence": 1 },
+    { "conceptId": "basics.types", "status": "learning", "confidence": 0.6 },
+    { "conceptId": "control.loops", "status": "review", "confidence": 0.6 }
+  ],
+  "errorBook": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "category": "compile",
+      "title": "编译错误修复",
+      "evidence": "重新编译通过",
+      "conceptIds": ["functions.basic"],
+      "status": "resolved",
+      "occurrences": 1
+    }
+  ],
+  "reviews": [
+    {
+      "id": "20000000-0000-4000-8000-000000000002",
+      "errorBookEntryId": "20000000-0000-4000-8000-000000000001",
+      "conceptId": "functions.basic",
+      "prompt": "重新分析：编译错误修复",
+      "expectedEvidence": "编译或测试验证通过",
+      "intervalIndex": 0,
+      "status": "pending"
+    }
+  ],
+  "summary": {
+    "xp": 30,
+    "level": 1,
+    "growthStage": 1,
+    "achievements": ["first-build", "first-fix"]
+  }
+}

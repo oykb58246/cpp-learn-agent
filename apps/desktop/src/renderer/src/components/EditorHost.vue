@@ -4,6 +4,7 @@ import type { Diagnostic } from '@cpp-pet/contracts'
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js'
 import 'monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution.js'
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker.js?worker'
+import { editorSelection, type AgentEditorSelection } from '../utils/editor-selection'
 
 const FONT_MIN = 11
 const FONT_MAX = 28
@@ -29,6 +30,7 @@ const emit = defineEmits<{
   toggleBreakpoint: [line: number]
   languageFailed: [reason: string]
   'font-size-change': [size: number]
+  selection: [value: AgentEditorSelection | undefined]
 }>()
 const host = ref<HTMLElement | null>(null)
 const models = new Map<string, monaco.editor.ITextModel>()
@@ -295,6 +297,10 @@ onMounted(() => {
       emit('change', editor?.getValue() ?? '')
       scheduleLanguageSync()
     }
+  })
+  editor.onDidChangeCursorSelection(event => {
+    const model = editor?.getModel()
+    emit('selection', model ? editorSelection(event.selection, range => model.getValueInRange(range)) : undefined)
   })
   editor.onMouseDown(event => {
     if (props.readOnly || event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return

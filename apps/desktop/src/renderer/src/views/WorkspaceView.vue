@@ -5,9 +5,9 @@ import {
   AlertCircle,
   ArrowDownToLine,
   ArrowUpFromLine,
+  Bot,
   Boxes,
   Bug,
-  Camera,
   CheckCheck,
   CornerDownRight,
   Copy,
@@ -41,6 +41,9 @@ import type {
   DebugCommand,
   DebugSessionState,
   Diagnostic,
+  DiagnosticExplanationSnapshot,
+  DiagnosticOccurrence,
+  AgentStartRequest,
   FileTreeNode,
   ProgramRunResult,
   StaticAnalysisResult
@@ -49,23 +52,33 @@ import DiffEditorHost from '../components/DiffEditorHost.vue'
 import EditorHost from '../components/EditorHost.vue'
 import FileTree from '../components/FileTree.vue'
 import ProjectDialog from '../components/ProjectDialog.vue'
+import ApprovalCard from '../components/ApprovalCard.vue'
+import ConversationPanel from '../components/ConversationPanel.vue'
+import DiagnosticInboxPopover from '../components/DiagnosticInboxPopover.vue'
+import SnapshotPopover from '../components/SnapshotPopover.vue'
 import { useAppStore } from '../stores/app'
+import { useAgentStore } from '../stores/agent'
 import { useWorkspaceStore } from '../stores/workspace'
+import type { AgentEditorSelection } from '../utils/editor-selection'
+import { diagnosticBadgeLabel } from '../utils/diagnostic-inbox'
 
 const app = useAppStore()
 const store = useWorkspaceStore()
+const agent = useAgentStore()
 const route = useRoute()
 const router = useRouter()
 const workspaceView = ref<HTMLElement | null>(null)
 const dialog = ref(false)
 const search = ref('')
-const snapshotLabel = ref('')
-const inspectorOpen = ref(true)
+const snapshotOpen = ref(false)
 const contextNode = ref<FileTreeNode | null>(null)
 const contextPos = ref({ x: 0, y: 0 })
 const active = computed(() => store.activeTab)
 const editorHost = ref<InstanceType<typeof EditorHost> | null>(null)
 const editorFontSize = ref(13)
+const agentOpen = ref(false)
+const inboxOpen = ref(false)
+const agentSelection = ref<AgentEditorSelection>()
 const diffOpen = ref(false)
 const panelOpen = ref(true)
 const panelTab = ref<'output' | 'problems' | 'debug'>('output')
@@ -123,6 +136,15 @@ const allDiagnostics = computed(() => [
   ...diagnostics.value,
   ...Object.values(languageDiagnostics.value).flat()
 ])
+const activeDiagnostics = computed(() => {
+  const path = active.value?.relativePath
+  if (!path) return []
+  const normalized = normalizePath(path)
+  return allDiagnostics.value.filter(item => !item.file || normalizePath(item.file) === normalized)
+})
+const agentRunning = computed(() => Boolean(agent.currentRun && !['completed', 'failed', 'cancelled'].includes(agent.currentRun.status)))
+const inboxGroups = computed(() => agent.inbox?.groups ?? [])
+const inboxCount = computed(() => inboxGroups.value.length)
 const outputText = computed(() => {
   const chunks: string[] = []
   if (buildResult.value) {
@@ -166,6 +188,7 @@ const outputText = computed(() => {
 })
 
 onMounted(async () => {
+  agent.subscribe()
   window.addEventListener('resize', fitLayoutToViewport)
   stopLanguageDiagnostics = window.cppPet.language.onDiagnostics(event => {
     if (event.projectId !== store.currentProject?.id) return
@@ -174,7 +197,7 @@ onMounted(async () => {
       [normalizePath(event.relativePath)]: event.diagnostics
     }
   })
-  await store.loadProjects()
+  await Promise.all([store.loadProjects(), agent.refreshAll()])
   const id = route.params.projectId as string | undefined
   if (id) await store.openProject(id)
   else if (store.projects[0]) {
@@ -188,6 +211,7 @@ onBeforeUnmount(() => {
   stopResize()
   window.removeEventListener('resize', fitLayoutToViewport)
   stopLanguageDiagnostics?.()
+  agent.dispose()
   if (debugState.value && !['exited', 'error'].includes(debugState.value.status)) {
     void window.cppPet.debug.command({ sessionId: debugState.value.sessionId, command: 'stop' })
   }
@@ -195,7 +219,7 @@ onBeforeUnmount(() => {
 watch(() => route.params.projectId, async id => {
   if (typeof id === 'string' && id !== store.currentProject?.id) await store.openProject(id)
 })
-watch(() => active.value?.relativePath, () => { diffOpen.value = false })
+watch(() => active.value?.relativePath, () => { diffOpen.value = false; agentSelection.value = undefined })
 watch(
   () => [app.settings.sidebarWidth, app.settings.inspectorWidth, app.settings.bottomPanelHeight] as const,
   ([savedSidebarWidth, savedInspectorWidth, savedBottomPanelHeight]) => {
@@ -208,10 +232,13 @@ watch(
   { immediate: true }
 )
 watch(() => store.currentProject?.id, async id => {
+  inboxOpen.value = false
+  snapshotOpen.value = false
   languageDiagnostics.value = {}
   languageAvailable.value = false
   languageStatusText.value = id ? '正在检测 clangd…' : ''
   if (!id) return
+  await agent.loadProjectAgent(id)
   const result = await window.cppPet.language.status({ projectId: id })
   if (!result.ok) {
     languageStatusText.value = result.error.message
@@ -227,7 +254,7 @@ function clamp(value: number, min: number, max: number) {
 function resizeLimit(target: ResizeTarget) {
   const width = workspaceView.value?.clientWidth ?? window.innerWidth
   const height = workspaceView.value?.clientHeight ?? window.innerHeight
-  if (target === 'sidebar') return { min: 180, max: Math.min(480, width - (inspectorOpen.value ? inspectorWidth.value : 0) - minimumEditorWidth) }
+  if (target === 'sidebar') return { min: 180, max: Math.min(480, width - (agentOpen.value ? inspectorWidth.value : 0) - minimumEditorWidth) }
   if (target === 'inspector') return { min: 220, max: Math.min(480, width - sidebarWidth.value - minimumEditorWidth) }
   return { min: 120, max: Math.min(560, height - 180) }
 }
@@ -245,7 +272,7 @@ function fitLayoutToViewport() {
     bottomPanelHeight.value = app.settings.bottomPanelHeight
   }
   setResizeValue('sidebar', sidebarWidth.value)
-  if (inspectorOpen.value) setResizeValue('inspector', inspectorWidth.value)
+  if (agentOpen.value) setResizeValue('inspector', inspectorWidth.value)
   if (panelOpen.value) setResizeValue('panel', bottomPanelHeight.value)
 }
 function beginResize(target: ResizeTarget, event: PointerEvent) {
@@ -349,6 +376,47 @@ function languageFailed(reason: string) {
   languageAvailable.value = false
   languageStatusText.value = reason
 }
+
+function toggleAgentPanel() {
+  agentOpen.value = !agentOpen.value
+}
+
+function toggleDiagnosticInbox() {
+  if (inboxCount.value) inboxOpen.value = !inboxOpen.value
+}
+
+async function submitAgent(request: AgentStartRequest) {
+  agentOpen.value = true
+  if (store.currentProject && agent.agentProjectId !== store.currentProject.id) await agent.loadProjectAgent(store.currentProject.id)
+  await agent.submitAgent({
+    message: request.message,
+    mode: request.mode,
+    ...(request.activeFile ? { activeFile: request.activeFile } : {}),
+    ...(request.selection ? { selection: { ...request.selection } } : {}),
+    ...(request.diagnostics?.length ? { diagnostics: request.diagnostics.map(item => ({ ...item, relatedConceptIds: [...item.relatedConceptIds] })) } : {})
+  })
+}
+
+async function navigateInboxOccurrence(occurrence: DiagnosticOccurrence) {
+  if (!occurrence.file || !occurrence.line) return
+  inboxOpen.value = false
+  await showLocation({ relativePath: occurrence.file, line: occurrence.line, column: occurrence.column ?? 1 })
+}
+
+async function explainDiagnostic(snapshot: DiagnosticExplanationSnapshot, createNew: boolean) {
+  inboxOpen.value = false
+  agentOpen.value = true
+  if (createNew || !agent.currentConversationId) await agent.createConversation(snapshot.title)
+  await agent.sendMessage({
+    message: `请结合我的 C++ 学习背景，解释这个错误：${snapshot.title}`,
+    diagnostic: snapshot,
+    ...(active.value?.relativePath ? { activeFile: active.value.relativePath } : {})
+  })
+}
+
+async function decideAgent(decision: 'approved' | 'rejected') {
+  if (agent.pendingApproval) await agent.decide(agent.pendingApproval.id, decision)
+}
 async function runSearch() { await store.search(search.value) }
 function create(kind: 'file' | 'directory') { Object.assign(entryDialog, { visible: true, mode: 'create', kind, source: '', value: '' }) }
 function menu(event: MouseEvent, node: FileTreeNode) {
@@ -369,7 +437,7 @@ function beginEntryAction(mode: 'rename' | 'copy' | 'move') {
   closeMenu()
 }
 async function remove() { if (contextNode.value) await store.removeEntry(contextNode.value.relativePath); closeMenu() }
-async function snapshot() { await store.createSnapshot(snapshotLabel.value || '手动快照'); snapshotLabel.value = '' }
+async function snapshot(label: string) { await store.createSnapshot(label) }
 async function submitEntryAction() {
   const value = entryDialog.value.trim()
   if (!value) return
@@ -623,7 +691,7 @@ async function overwriteDisk() {
 </script>
 
 <template>
-  <div ref="workspaceView" :class="['workspace-view', { 'without-inspector': !inspectorOpen }]" :style="layoutStyle">
+  <div ref="workspaceView" :class="['workspace-view', { 'without-inspector': !agentOpen }]" :style="layoutStyle">
     <aside class="workspace-sidebar">
       <div class="sidebar-heading">
         <el-select
@@ -689,8 +757,45 @@ async function overwriteDisk() {
         </button>
         <span class="tabs-spacer" />
         <button class="save-command" :disabled="!active?.dirty || store.saving || active?.conflicted" title="保存" @click="saveActive"><Save :size="15" />{{ store.saving ? '保存中' : '保存' }}</button>
-        <button class="icon-command" title="快照" @click="inspectorOpen = !inspectorOpen"><History :size="16" /></button>
+        <button
+          data-tour="workspace-agent-toggle"
+          :class="['icon-command agent-toggle', { active: agentOpen }]"
+          type="button"
+          title="Agent"
+          aria-label="Agent"
+          :aria-expanded="agentOpen"
+          @click="toggleAgentPanel"
+        ><Bot :size="16" /></button>
+        <button
+          :class="['icon-command snapshot-toggle', { active: snapshotOpen }]"
+          type="button"
+          title="快照"
+          aria-label="快照"
+          aria-controls="workspace-snapshot-popover"
+          :aria-expanded="snapshotOpen"
+          @click.stop="snapshotOpen = !snapshotOpen"
+        ><History :size="16" /></button>
+        <button
+          v-if="inboxCount"
+          :class="['icon-command agent-inbox-toggle', { active: inboxOpen, attention: agent.inbox?.attention }]"
+          type="button"
+          title="错误收件箱"
+          aria-label="错误收件箱"
+          :aria-expanded="inboxOpen"
+          @click="toggleDiagnosticInbox"
+        ><AlertCircle :size="16" /><span class="agent-inbox-badge">{{ diagnosticBadgeLabel(inboxCount) }}</span></button>
       </div>
+
+      <SnapshotPopover
+        v-if="snapshotOpen"
+        id="workspace-snapshot-popover"
+        :snapshots="store.snapshots"
+        :project="store.currentProject"
+        @close="snapshotOpen = false"
+        @create="snapshot"
+        @restore="store.restoreSnapshot"
+        @remove="store.removeSnapshot"
+      />
 
       <div class="editor-toolbar">
         <button class="tool-command" :disabled="!canBuild" title="编译当前 C++ 文件" @click="build(false)"><Hammer :size="15" />编译</button>
@@ -724,6 +829,15 @@ async function overwriteDisk() {
         <span class="toolbar-status" :title="languageStatusText">{{ debuggerBusy ? '调试器正在执行…' : debugState?.status === 'stopped' ? `调试暂停：${debugState.reason ?? '断点'}` : executing === 'build' ? '正在编译…' : executing === 'run' ? '程序正在运行…' : executing === 'cmake' ? '正在构建工程…' : executing === 'ctest' ? '正在运行测试…' : executing === 'analysis' ? '正在静态分析…' : active?.dirty ? '等待自动保存' : active ? `${languageAvailable ? 'clangd 已连接' : '基础编辑模式'} · 已保存` : '' }}</span>
         <button class="panel-toggle" @click="panelOpen = !panelOpen"><Terminal :size="15" />{{ panelOpen ? '隐藏面板' : '显示面板' }}</button>
       </div>
+
+      <DiagnosticInboxPopover
+        v-if="inboxOpen && inboxCount"
+        :groups="inboxGroups"
+        @acknowledge="agent.acknowledgeInbox()"
+        @close="inboxOpen = false"
+        @navigate="navigateInboxOccurrence"
+        @explain="explainDiagnostic"
+      />
 
       <div v-if="active?.conflicted" class="conflict-band">
         <AlertCircle :size="15" /><span>磁盘版本已变化，当前未保存内容尚未覆盖。</span>
@@ -760,6 +874,7 @@ async function overwriteDisk() {
           @toggle-breakpoint="toggleBreakpoint"
           @language-failed="languageFailed"
           @font-size-change="editorFontSize = $event"
+          @selection="agentSelection = $event"
         />
         <div v-else class="editor-empty">
           <div class="cpp-glyph">C++</div>
@@ -834,34 +949,38 @@ async function overwriteDisk() {
     </section>
 
     <div
-      v-if="inspectorOpen"
+      v-if="agentOpen"
       class="workspace-resizer workspace-resizer-inspector"
       role="separator"
-      aria-label="调整快照侧边栏宽度"
+      aria-label="调整 Agent 侧边栏宽度"
       aria-orientation="vertical"
       :aria-valuenow="inspectorWidth"
       aria-valuemin="220"
       aria-valuemax="480"
       tabindex="0"
-      title="拖动调整快照侧边栏宽度，双击恢复默认"
+      title="拖动调整 Agent 侧边栏宽度，双击恢复默认"
       @pointerdown="beginResize('inspector', $event)"
       @dblclick="resetResize('inspector')"
       @keydown="resizeWithKeyboard('inspector', $event)"
     />
-    <aside v-if="inspectorOpen" class="workspace-inspector">
-      <header><div><Camera :size="17" /><strong>快照</strong></div><button class="icon-command" @click="inspectorOpen = false"><X :size="15" /></button></header>
-      <div class="snapshot-create"><input v-model="snapshotLabel" placeholder="快照标签" /><button @click="snapshot"><Plus :size="15" />创建</button></div>
-      <div class="snapshot-list">
-        <article v-for="item in store.snapshots" :key="item.id">
-          <div><strong>{{ item.label }}</strong><span>{{ item.entries.length }} 个文件 · {{ new Date(item.createdAt).toLocaleString() }}</span></div>
-          <button title="恢复快照" @click="store.restoreSnapshot(item.id)"><RotateCcw :size="15" /></button>
-          <button title="删除快照" @click="store.removeSnapshot(item.id)"><Trash2 :size="15" /></button>
-        </article>
-        <div v-if="!store.snapshots.length" class="inspector-empty">保存文件或手动创建快照后，版本记录会显示在这里。</div>
-      </div>
-      <section class="project-meta" v-if="store.currentProject">
-        <h3>项目</h3><dl><div><dt>类型</dt><dd>{{ store.currentProject.type }}</dd></div><div><dt>来源</dt><dd>{{ store.currentProject.creationMode }}</dd></div><div><dt>Root</dt><dd>{{ store.currentProject.relativeRoot }}</dd></div></dl>
-      </section>
+    <aside v-if="agentOpen" class="workspace-inspector workspace-agent-inspector">
+      <ConversationPanel
+        data-tour="workspace-agent-panel"
+        :project-id="store.currentProject?.id"
+        :active-file="active?.relativePath"
+        :selection="agentSelection"
+        :diagnostics="activeDiagnostics"
+        :approval-pending="Boolean(agent.pendingApproval)"
+        :tool-busy="agentRunning || agent.running"
+        :tool-status="agent.currentRun?.status"
+        @close="agentOpen = false"
+        @tool-submit="submitAgent"
+        @cancel-tool="agent.currentRun && agent.cancel(agent.currentRun.id)"
+      >
+        <template #approval>
+          <ApprovalCard v-if="agent.pendingApproval" :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
+        </template>
+      </ConversationPanel>
     </aside>
 
     <div v-if="contextNode" class="context-menu" :style="{ left: `${contextPos.x}px`, top: `${contextPos.y}px` }">

@@ -36,8 +36,47 @@ import type {
   VscodeOpenRequest,
   VscodeOpenResult
 } from './future'
+import type {
+  AgentRun,
+  AgentRunDetail,
+  AgentRunStatus,
+  AgentStartRequest,
+  ApprovalDecision,
+  ModelProfile,
+  ModelProfileInput
+} from './agent'
+import type { PetEvent } from './future'
+import type {
+  BackgroundProfile,
+  BackgroundProfileInput,
+  ErrorBookEntry,
+  KnowledgeNode,
+  KnowledgeStatus,
+  LearnerKnowledge,
+  LearnerSummary,
+  ReviewItem
+} from './learning'
+import type {
+  AgentConversation,
+  AgentMessage,
+  ConversationArchiveInput,
+  ConversationChangedEvent,
+  ConversationCreateInput,
+  ConversationMessageDelta,
+  ConversationMessagesInput,
+  ConversationRetryInput,
+  ConversationSendInput,
+  ConversationSendResult,
+  ConversationAgentSubmitResult,
+  ConversationStopInput,
+  DiagnosticInboxChangedEvent
+} from './conversation'
 export { ipc } from './ipc'
 export * from './future'
+export * from './agent'
+export * from './learning'
+export * from './conversation'
+export * from './agent-protocol'
 
 export const themeSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themeSchema>
@@ -173,6 +212,9 @@ export interface AppSettings {
   onboardingCompleted: boolean
   onboardingStatus: 'pending' | 'completed' | 'skipped'
   onboardingReminderDismissed: boolean
+  productTourStatus: 'pending' | 'in-progress' | 'completed' | 'dismissed'
+  productTourStep: number
+  productTourWelcomeSeen: boolean
 }
 export interface AppBootstrap {
   version: string; platform: string; recoveryMode: boolean; settings: AppSettings
@@ -180,8 +222,6 @@ export interface AppBootstrap {
 }
 export interface MockDashboard {
   environment: Array<{ id: string; label: string; status: 'ready' | 'missing' | 'checking'; detail: string }>
-  learning: { concept: string; progress: number; reviewCount: number; level: number }
-  tasks: Array<{ id: string; title: string; meta: string; status: 'todo' | 'blocked' | 'done' }>
 }
 
 export interface CppPetApi {
@@ -268,6 +308,53 @@ export interface CppPetApi {
   program: {
     run(input: ProgramRunRequest): Promise<ApiResult<ProgramRunResult>>
     stop(input: ProgramStopRequest): Promise<ApiResult<ProgramStopResult>>
+  }
+  diagnostics: {
+    listActive(input: { projectId: string }): Promise<ApiResult<DiagnosticInboxChangedEvent>>
+    acknowledge(input: { projectId: string }): Promise<ApiResult<DiagnosticInboxChangedEvent>>
+    onChanged(listener: (event: DiagnosticInboxChangedEvent) => void): () => void
+  }
+  conversations: {
+    list(input: { projectId: string }): Promise<ApiResult<AgentConversation[]>>
+    create(input: ConversationCreateInput): Promise<ApiResult<AgentConversation>>
+    archive(input: ConversationArchiveInput): Promise<ApiResult<AgentConversation>>
+    messages(input: ConversationMessagesInput): Promise<ApiResult<AgentMessage[]>>
+    send(input: ConversationSendInput): Promise<ApiResult<ConversationSendResult>>
+    submitAgent(input: ConversationSendInput): Promise<ApiResult<ConversationAgentSubmitResult>>
+    stop(input: ConversationStopInput): Promise<ApiResult<AgentMessage | null>>
+    retry(input: ConversationRetryInput): Promise<ApiResult<ConversationSendResult>>
+    onDelta(listener: (event: ConversationMessageDelta) => void): () => void
+    onChanged(listener: (event: ConversationChangedEvent) => void): () => void
+  }
+  agent: {
+    start(input: AgentStartRequest): Promise<ApiResult<AgentRun>>
+    get(input: { runId: string }): Promise<ApiResult<AgentRunDetail>>
+    list(input?: { status?: AgentRunStatus; projectId?: string; limit?: number }): Promise<ApiResult<AgentRun[]>>
+    cancel(input: { runId: string }): Promise<ApiResult<AgentRun>>
+    onChanged(listener: (run: AgentRun) => void): () => void
+  }
+  approvals: {
+    decide(input: ApprovalDecision): Promise<ApiResult<AgentRun>>
+  }
+  learning: {
+    catalog(): Promise<ApiResult<KnowledgeNode[]>>
+    knowledge(input?: { userId?: string }): Promise<ApiResult<LearnerKnowledge[]>>
+    updateKnowledge(input: { userId?: string; conceptId: string; status: KnowledgeStatus }): Promise<ApiResult<LearnerKnowledge>>
+    background(input?: { userId?: string }): Promise<ApiResult<BackgroundProfile | null>>
+    saveBackground(input: BackgroundProfileInput & { userId?: string }): Promise<ApiResult<BackgroundProfile>>
+    errors(input?: { userId?: string; status?: ErrorBookEntry['status'] }): Promise<ApiResult<ErrorBookEntry[]>>
+    reviews(input?: { userId?: string; dueOnly?: boolean }): Promise<ApiResult<ReviewItem[]>>
+    summary(input?: { userId?: string }): Promise<ApiResult<LearnerSummary>>
+  }
+  model: {
+    list(): Promise<ApiResult<ModelProfile[]>>
+    save(input: ModelProfileInput): Promise<ApiResult<ModelProfile>>
+    remove(input: { profileId: string }): Promise<ApiResult<void>>
+    clearKey(input: { profileId: string }): Promise<ApiResult<ModelProfile>>
+    test(input: { profileId: string }): Promise<ApiResult<{ ok: boolean; latencyMs: number; detail: string }>>
+  }
+  pet: {
+    onEvent(listener: (event: PetEvent) => void): () => void
   }
   mocks: { getDashboard(): Promise<ApiResult<MockDashboard>> }
 }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { basename, join } from 'node:path'
 import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
@@ -10,10 +10,21 @@ import { GdbMiSession } from '@cpp-pet/cpp-local-tools/debugger'
 import { DomainError, safePath, WorkspaceService } from '@cpp-pet/workspace-core'
 import {
   buildRequestSchema,
+  agentRunStatusSchema,
+  agentStartRequestSchema,
+  approvalDecisionSchema,
+  backgroundProfileInputSchema,
   cmakeBuildRequestSchema,
   ctestRunRequestSchema,
+  conversationArchiveInputSchema,
+  conversationCreateInputSchema,
+  conversationMessagesInputSchema,
+  conversationRetryInputSchema,
+  conversationSendInputSchema,
+  conversationStopInputSchema,
   debugCommandRequestSchema,
   debugStartRequestSchema,
+  diagnosticsProjectInputSchema,
   environmentInstallRequestSchema,
   environmentOpenDownloadRequestSchema,
   failure,
@@ -22,6 +33,8 @@ import {
   languageDocumentSyncSchema,
   languagePositionRequestSchema,
   languageStatusRequestSchema,
+  knowledgeStatusSchema,
+  modelProfileInputSchema,
   programRunRequestSchema,
   programStopRequestSchema,
   projectDraftInputSchema,
@@ -31,16 +44,42 @@ import {
   type ApiResult,
   type AppError,
   type AppSettings,
+  type CppStandard,
   type EnvironmentInstallTask
 } from '@cpp-pet/contracts'
+import { achievementDefinitions, AgentRuntime, builtInKnowledge, KnowledgeGate, OpenAiCompatiblePlanner, StreamingModelGateway, transitionKnowledge } from '@cpp-pet/agent-runtime'
 import { z } from 'zod'
+import { createWindowOptions } from './window-options'
+import { AgentHost } from './agent-host'
+import { ModelSecretStore } from './model-secret-store'
+import { createMcpWorkerParameters } from './mcp-worker-config'
+import { petEventForRun } from './pet-events'
+import { installationVerificationFailure, visiblePowerShellTerminalArguments } from './environment-install'
+import { DiagnosticIncidentService } from './diagnostic-incident-service'
+import { ConversationService } from './conversation-service'
+import {
+  DatabaseRuntimeStore,
+  DesktopContextBuilder,
+  DesktopMcpAdapter,
+  DesktopPlanner,
+  McpRuntimeToolClient
+} from './agent-integration'
 
 let mainWindow: BrowserWindow | null = null
 let database: AppDatabase | null = null
 let workspaceService: WorkspaceService | null = null
+let agentHost: AgentHost | null = null
+let agentToolClient: McpRuntimeToolClient | null = null
+let modelSecrets: ModelSecretStore | null = null
+let diagnosticIncidentService: DiagnosticIncidentService | null = null
+let conversationService: ConversationService | null = null
+let agentTransport: 'starting' | 'stdio' | 'in-memory-fallback' | 'failed' = 'starting'
+let agentStartupError: string | null = null
+let shutdownStarted = false
+let lastLearnerLevel = 1
 const toolchainService = new ToolchainService()
 const activeRuns = new Map<string, AbortController>()
-const buildArtifacts = new Map<string, { path: string; projectId: string; projectRoot: string; artifactName: string }>()
+const buildArtifacts = new Map<string, { path: string; projectId: string; projectRoot: string; artifactName: string; relativePath: string; standard: CppStandard }>()
 const cmakeBuilds = new Map<string, { directory: string; sourceDirectory: string; projectId: string; configuration: 'Debug' | 'Release' }>()
 const languageSessions = new Map<string, ClangdSession>()
 const debugSessions = new Map<string, GdbMiSession>()
@@ -51,6 +90,21 @@ if (process.env.CPP_PET_USER_DATA) app.setPath('userData', process.env.CPP_PET_U
 const requiredServices = () => {
   if (!database || !workspaceService) throw new Error('Application services are not ready')
   return { database, workspaceService }
+}
+const requiredAgentServices = () => {
+  if (!agentHost || !modelSecrets) {
+    if (agentStartupError) throw new ToolExecutionError('AGENT_STARTUP_FAILED', '本地 Agent 服务启动失败。', `重启应用；若问题持续，请检查 MCP Worker。${agentStartupError}`, true)
+    throw new ToolExecutionError('AGENT_STARTING', '本地 Agent 服务仍在启动。', '稍候几秒后重试。', true)
+  }
+  return { agentHost, modelSecrets, ...requiredServices() }
+}
+const requiredDiagnosticService = () => {
+  if (!diagnosticIncidentService) throw new Error('Diagnostic service is not ready')
+  return diagnosticIncidentService
+}
+const requiredConversationService = () => {
+  if (!conversationService) throw new Error('Conversation service is not ready')
+  return conversationService
 }
 const startRun = (runId: string): AbortController => {
   if (activeRuns.has(runId)) throw new ToolExecutionError('RUN_ID_IN_USE', '当前任务标识正在使用。', '等待当前任务结束后重试。', true)
@@ -94,7 +148,10 @@ function registerIpc(): void {
     customCursor: z.boolean().optional(),
     onboardingCompleted: z.boolean().optional(),
     onboardingStatus: z.enum(['pending', 'completed', 'skipped']).optional(),
-    onboardingReminderDismissed: z.boolean().optional()
+    onboardingReminderDismissed: z.boolean().optional(),
+    productTourStatus: z.enum(['pending', 'in-progress', 'completed', 'dismissed']).optional(),
+    productTourStep: z.number().int().min(0).max(5).optional(),
+    productTourWelcomeSeen: z.boolean().optional()
   }), input => {
     const { database } = requiredServices()
     const settings = database.updateSettings(input as Partial<AppSettings>)
@@ -193,7 +250,10 @@ function registerIpc(): void {
         signal: controller.signal
       })
       const artifactName = basename(result.artifactPath)
-      if (result.success) buildArtifacts.set(buildId, { path: result.artifactPath, projectId: input.projectId, projectRoot: root, artifactName })
+      if (result.success) buildArtifacts.set(buildId, {
+        path: result.artifactPath, projectId: input.projectId, projectRoot: root, artifactName,
+        relativePath: input.relativePath, standard: input.standard
+      })
       database.addEvent({
         eventId: randomUUID(),
         type: result.success ? 'compiler.build.succeeded' : 'compiler.build.failed',
@@ -203,7 +263,7 @@ function registerIpc(): void {
         projectId: input.projectId,
         payload: { runId: input.runId, buildId, relativePath: input.relativePath, profileId: profile.id, diagnostics: result.diagnostics.length }
       })
-      return {
+      const response = {
         runId: input.runId,
         buildId,
         projectId: input.projectId,
@@ -215,6 +275,8 @@ function registerIpc(): void {
         diagnostics: result.diagnostics,
         builtAt: new Date().toISOString()
       }
+      requiredDiagnosticService().recordBuild(input, response)
+      return response
     } finally {
       activeRuns.delete(input.runId)
     }
@@ -432,29 +494,39 @@ function registerIpc(): void {
       `$exitCode = 1`,
       `try { winget install --id '${target.packageId}' --exact --source winget --interactive --accept-source-agreements --accept-package-agreements; $exitCode = $LASTEXITCODE } catch { Write-Error $_; $exitCode = 1 }`,
       `if ($exitCode -eq 0) { Write-Host '安装完成，CppPilot 将自动重新检测环境。' -ForegroundColor Green } else { Write-Host \"安装未成功，退出码: $exitCode\" -ForegroundColor Red }`,
+      `if ($exitCode -ne 0) { Read-Host 'Installation failed. Press Enter to close.' }`,
       `Start-Sleep -Seconds 3`,
       `exit $exitCode`
     ].join('; ')
-    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', command], {
+    const child = spawn(process.env.ComSpec ?? 'cmd.exe', visiblePowerShellTerminalArguments(`CppPilot install ${target.label}`, command), {
       detached: true,
       stdio: 'ignore',
       windowsHide: false
     })
     let finished = false
-    const finishTask = (status: EnvironmentInstallTask['status'], exitCode: number | null) => {
+    const finishTask = async (status: EnvironmentInstallTask['status'], exitCode: number | null) => {
       if (finished) return
       finished = true
+      let verificationFailure: string | undefined
+      if (status === 'succeeded') {
+        try {
+          verificationFailure = installationVerificationFailure(task.target, await toolchainService.detect())
+        } catch {
+          verificationFailure = 'WinGet 已结束，但 CppPilot 无法验证安装结果。请重新检测环境。'
+        }
+      }
       const completed: EnvironmentInstallTask = {
         ...task,
-        status,
+        status: verificationFailure ? 'failed' : status,
         finishedAt: new Date().toISOString(),
-        exitCode
+        exitCode,
+        ...(verificationFailure ? { verificationFailure } : {})
       }
       environmentInstallTasks.set(task.taskId, completed)
       mainWindow?.webContents.send(ipc.environmentInstallChanged, completed)
     }
-    child.once('error', () => finishTask('failed', null))
-    child.once('close', code => finishTask(code === 0 ? 'succeeded' : 'failed', code))
+    child.once('error', () => { void finishTask('failed', null) })
+    child.once('close', code => { void finishTask(code === 0 ? 'succeeded' : 'failed', code) })
     mainWindow?.webContents.send(ipc.environmentInstallChanged, task)
     child.unref()
     return { launched: true, target: input.target, packageId: target.packageId, task }
@@ -595,6 +667,9 @@ function registerIpc(): void {
         projectId: artifact.projectId,
         payload: { runId: input.runId, buildId: input.buildId, exitCode: process.exitCode, timedOut: process.timedOut }
       })
+      requiredDiagnosticService().recordRun({
+        projectId: artifact.projectId, relativePath: artifact.relativePath, standard: artifact.standard
+      }, result)
       return result
     } finally {
       activeRuns.delete(input.runId)
@@ -605,6 +680,161 @@ function registerIpc(): void {
     controller?.abort()
     return { runId: input.runId, stopped: Boolean(controller) }
   })
+  handle(ipc.diagnosticsListActive, diagnosticsProjectInputSchema, input => requiredDiagnosticService().list(input.projectId))
+  handle(ipc.diagnosticsAcknowledge, diagnosticsProjectInputSchema, input => requiredDiagnosticService().acknowledge(input.projectId))
+  handle(ipc.conversationsList, diagnosticsProjectInputSchema, input => requiredConversationService().list(input))
+  handle(ipc.conversationsCreate, conversationCreateInputSchema, input => requiredConversationService().create(input))
+  handle(ipc.conversationsArchive, conversationArchiveInputSchema, input => requiredConversationService().archive(input))
+  handle(ipc.conversationsMessages, conversationMessagesInputSchema, input => requiredConversationService().messages(input))
+  handle(ipc.conversationsSend, conversationSendInputSchema, input => requiredConversationService().send(input))
+  handle(ipc.conversationsAgentSubmit, conversationSendInputSchema, async input => {
+    const conversation = requiredConversationService()
+    const exchange = conversation.beginAgentTask(input)
+    const requestId = randomUUID()
+    const diagnostics = input.diagnostics ?? input.diagnostic?.occurrences.map(occurrence => ({
+      source: 'compiler' as const,
+      severity: 'error' as const,
+      ...(occurrence.file ? { file: occurrence.file } : {}),
+      ...(occurrence.line ? { line: occurrence.line } : {}),
+      ...(occurrence.column ? { column: occurrence.column } : {}),
+      rawMessage: occurrence.rawMessage,
+      normalizedMessage: occurrence.normalizedMessage,
+      relatedConceptIds: []
+    }))
+    const request = {
+      requestId,
+      source: 'editor',
+      mode: input.mode ?? 'auto',
+      message: input.message,
+      projectId: input.projectId,
+      ...(input.activeFile ? { activeFile: input.activeFile } : {}),
+      ...(input.selection ? { selection: input.selection } : {}),
+      ...(diagnostics?.length ? { diagnostics } : {}),
+      conversationId: input.conversationId,
+      assistantMessageId: exchange.assistant.id
+    } as const
+    const task = requiredAgentServices().agentHost.start(request)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    const run = requiredAgentServices().agentHost.list().find(item => item.requestId === requestId) ?? await task
+    return { ...exchange, run }
+  })
+  handle(ipc.conversationsStop, conversationStopInputSchema, input => requiredConversationService().stop(input))
+  handle(ipc.conversationsRetry, conversationRetryInputSchema, input => requiredConversationService().retry(input))
+  handle(ipc.agentStart, agentStartRequestSchema, input => requiredAgentServices().agentHost.start(input))
+  handle(ipc.agentGet, z.object({ runId: z.string().uuid() }), input => {
+    const run = requiredAgentServices().agentHost.get(input.runId)
+    if (!run) throw new ToolExecutionError('AGENT_RUN_NOT_FOUND', 'Agent 记录不存在。', '刷新 Agent 记录列表。')
+    return run
+  })
+  handle(ipc.agentList, z.object({
+    status: agentRunStatusSchema.optional(),
+    projectId: z.string().uuid().optional(),
+    limit: z.number().int().min(1).max(200).default(50)
+  }).optional(), input => requiredServices().database.listAgentRuns(input ? {
+    ...(input.status ? { status: input.status } : {}),
+    ...(input.projectId ? { projectId: input.projectId } : {}),
+    limit: input.limit
+  } : {}))
+  handle(ipc.agentCancel, z.object({ runId: z.string().uuid() }), input => requiredAgentServices().agentHost.cancel(input.runId))
+  handle(ipc.approvalDecide, approvalDecisionSchema, input => requiredAgentServices().agentHost.decide(input))
+  handle(ipc.learningCatalog, empty, () => requiredServices().database.listKnowledgeNodes())
+  handle(ipc.learningBackgroundGet, z.object({ userId: z.string().min(1).max(100).default('local-user') }).optional(), input => {
+    const { database } = requiredServices()
+    const userId = input?.userId ?? 'local-user'
+    const saved = database.getBackgroundProfile(userId)
+    if (saved) return saved
+    const legacyStates = database.listLearnerKnowledge(userId)
+    if (!legacyStates.length) return null
+    const studiedConceptIds = legacyStates
+      .filter(item => ['learning', 'self-claimed', 'verified', 'review'].includes(item.status))
+      .map(item => item.conceptId)
+    const focusConceptIds = [...new Set(database.listErrorBookEntries(userId, 'open').flatMap(item => item.conceptIds))]
+    return database.saveBackgroundProfile({
+      userId,
+      onboardingCompleted: true,
+      startingPoint: 'some-experience',
+      studiedConceptIds,
+      focusConceptIds,
+      updatedAt: new Date().toISOString()
+    })
+  })
+  handle(ipc.learningBackgroundSave, backgroundProfileInputSchema.extend({ userId: z.string().min(1).max(100).optional() }), input => {
+    const { database } = requiredServices()
+    const known = new Set(database.listKnowledgeNodes().map(node => node.id))
+    const studiedConceptIds = [...new Set(input.studiedConceptIds.filter(id => known.has(id)))]
+    const focusConceptIds = [...new Set(input.focusConceptIds.filter(id => known.has(id)))]
+    return database.saveBackgroundProfile({
+      userId: input.userId ?? 'local-user',
+      onboardingCompleted: input.onboardingCompleted,
+      startingPoint: input.startingPoint,
+      studiedConceptIds,
+      focusConceptIds,
+      updatedAt: new Date().toISOString()
+    })
+  })
+  handle(ipc.learningKnowledge, z.object({ userId: z.string().min(1).max(100).default('local-user') }).optional(), input => requiredServices().database.listLearnerKnowledge(input?.userId ?? 'local-user'))
+  handle(ipc.learningUpdateKnowledge, z.object({
+    userId: z.string().min(1).max(100).default('local-user'),
+    conceptId: z.string().min(1).max(100),
+    status: knowledgeStatusSchema
+  }), input => {
+    if (input.status === 'verified') throw new DomainError('LEARNING_VERIFICATION_REQUIRED', '已验证状态只能由工具证据产生。', '先完成编译、测试或复习验证。')
+    const now = new Date().toISOString()
+    const { database } = requiredServices()
+    try {
+      const state = transitionKnowledge(input.userId, builtInKnowledge, database.listLearnerKnowledge(input.userId), input.conceptId, input.status, now)
+      return database.upsertLearnerKnowledge({ ...state, lastEvidenceId: `user:${randomUUID()}` })
+    } catch (error) {
+      throw new DomainError('KNOWLEDGE_PREREQUISITE_REQUIRED', error instanceof Error ? error.message : String(error), '先完成知识树中标出的前置节点。')
+    }
+  })
+  handle(ipc.learningErrors, z.object({
+    userId: z.string().min(1).max(100).default('local-user'),
+    status: z.enum(['open', 'resolved', 'reviewing']).optional()
+  }).optional(), input => requiredServices().database.listErrorBookEntries(input?.userId ?? 'local-user', input?.status))
+  handle(ipc.learningReviews, z.object({ userId: z.string().min(1).max(100).default('local-user'), dueOnly: z.boolean().default(false) }).optional(), input => requiredServices().database.listReviewItems(input?.userId ?? 'local-user', input?.dueOnly ?? false))
+  handle(ipc.learningSummary, z.object({ userId: z.string().min(1).max(100).default('local-user') }).optional(), input => requiredServices().database.getLearnerSummary(input?.userId ?? 'local-user'))
+  handle(ipc.modelList, empty, () => requiredServices().database.listModelProfiles())
+  handle(ipc.modelSave, modelProfileInputSchema, input => {
+    const { database, modelSecrets } = requiredAgentServices()
+    const existing = input.id ? database.getModelProfile(input.id) : undefined
+    const now = new Date().toISOString()
+    const id = input.id ?? randomUUID()
+    if (input.apiKey) modelSecrets.set(id, input.apiKey)
+    const profile = {
+      id,
+      name: input.name,
+      baseUrl: input.baseUrl,
+      model: input.model,
+      enabled: input.enabled,
+      timeoutMs: input.timeoutMs,
+      apiKeyConfigured: modelSecrets.has(id),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    }
+    return database.saveModelProfile(profile)
+  })
+  handle(ipc.modelRemove, z.object({ profileId: z.string().uuid() }), input => {
+    const { database, modelSecrets } = requiredAgentServices()
+    modelSecrets.clear(input.profileId)
+    database.removeModelProfile(input.profileId)
+  })
+  handle(ipc.modelClearKey, z.object({ profileId: z.string().uuid() }), input => {
+    const { database, modelSecrets } = requiredAgentServices()
+    const profile = database.getModelProfile(input.profileId)
+    if (!profile) throw new ToolExecutionError('MODEL_PROFILE_NOT_FOUND', '模型配置不存在。', '刷新模型配置列表。')
+    modelSecrets.clear(input.profileId)
+    return database.saveModelProfile({ ...profile, apiKeyConfigured: false, updatedAt: new Date().toISOString() })
+  })
+  handle(ipc.modelTest, z.object({ profileId: z.string().uuid() }), async input => {
+    const { database, modelSecrets } = requiredAgentServices()
+    const profile = database.getModelProfile(input.profileId)
+    const apiKey = modelSecrets.get(input.profileId)
+    if (!profile || !apiKey) throw new ToolExecutionError('MODEL_NOT_CONFIGURED', '模型配置或 API Key 不完整。', '保存模型地址、模型名和 API Key。')
+    const started = Date.now()
+    await new OpenAiCompatiblePlanner({ profile, apiKey }).plan({ requestId: randomUUID(), source: 'system', mode: 'chat', message: '连接测试' }, { requestId: randomUUID(), sources: [], conceptIds: [], tokenEstimate: 0, truncated: false }, new AbortController().signal)
+    return { ok: true, latencyMs: Date.now() - started, detail: '模型返回了有效结构化计划。' }
+  })
   handle(ipc.mockDashboard, empty, () => {
     const { database } = requiredServices()
     const activeId = database.getSettings().activeToolchainId
@@ -613,10 +843,15 @@ function registerIpc(): void {
       environment: [
         { id: 'vscode', label: 'VS Code', status: 'checking' as const, detail: '前往设置页执行本机环境检测' },
         { id: 'compiler', label: 'C++ 工具链', status: activeProfile ? 'ready' as const : 'checking' as const, detail: activeProfile ? `${activeProfile.family.toUpperCase()} ${activeProfile.version}` : '等待真实编译验证与绑定' },
-        { id: 'agent', label: '教学 Agent', status: 'missing' as const, detail: '成员 C 阶段接入' }
-      ],
-      learning: { concept: '循环与边界', progress: 42, reviewCount: 3, level: 2 },
-      tasks: [{ id: '1', title: '完成第一个 C++ 项目', meta: '工作区基础流程', status: 'todo' as const }, { id: '2', title: '检查循环边界错题', meta: '3 条待复习', status: 'blocked' as const }]
+        {
+          id: 'agent',
+          label: '教学 Agent',
+          status: agentHost ? 'ready' as const : agentTransport === 'failed' ? 'missing' as const : 'checking' as const,
+          detail: agentHost
+            ? agentTransport === 'stdio' ? 'Agent Runtime 与 stdio MCP 已连接' : 'stdio MCP 不可用，已切换进程内本地工具通道'
+            : agentStartupError ?? '正在连接本地 Agent 服务'
+        }
+      ]
     }
   })
 }
@@ -649,26 +884,14 @@ function createWindow(): void {
   const theme = database?.getSettings().theme ?? 'system'
   const chrome = windowChrome(theme)
   const iconPath = join(__dirname, '../../build/icon.ico')
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1024,
-    minHeight: 720,
-    show: false,
-    autoHideMenuBar: true,
-    title: 'CppPilot：带桌面宠物的 C++ 学习 Agent',
-    icon: existsSync(iconPath) ? iconPath : undefined,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: chrome.titleBarOverlay,
+  mainWindow = new BrowserWindow(createWindowOptions({
+    iconPath,
+    iconExists: existsSync(iconPath),
+    titleBarColor: chrome.titleBarOverlay.color,
+    symbolColor: chrome.titleBarOverlay.symbolColor,
     backgroundColor: chrome.backgroundColor,
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true
-    }
-  })
+    preloadPath: join(__dirname, '../preload/index.cjs')
+  }))
   mainWindow.once('ready-to-show', () => {
     applyWindowChrome(theme)
     mainWindow?.show()
@@ -679,10 +902,13 @@ function createWindow(): void {
   else void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const userData = app.getPath('userData')
   rmSync(join(userData, 'builds'), { recursive: true, force: true })
   database = new AppDatabase(join(userData, 'data', 'cpp-pet.sqlite')); workspaceService = new WorkspaceService(database, join(userData, 'snapshots'))
+  diagnosticIncidentService = new DiagnosticIncidentService(database)
+  diagnosticIncidentService.onChanged(event => mainWindow?.webContents.send(ipc.diagnosticsChanged, event))
+  if (!database.recoveryMode) database.recoverInterruptedAgentRuns()
   if (process.env.CPP_PET_E2E_SEED_ROOT && database.listProjects().length === 0) {
     mkdirSync(process.env.CPP_PET_E2E_SEED_ROOT, { recursive: true })
     const workspace = workspaceService.registerWorkspace(process.env.CPP_PET_E2E_SEED_ROOT)
@@ -690,17 +916,83 @@ app.whenReady().then(() => {
     const draft = workspaceService.previewProject({ mode: 'manual', workspaceId: workspace.id, name: '边界练习', type: 'single-file' })
     workspaceService.commitDraft(draft.draftId)
   }
+  database.seedKnowledge(builtInKnowledge)
+  database.seedAchievementDefinitions(achievementDefinitions)
+  lastLearnerLevel = database.getLearnerSummary('local-user').level
+  modelSecrets = new ModelSecretStore(join(userData, 'data', 'model-secrets.json'), {
+    encryptString(value) {
+      if (!safeStorage.isEncryptionAvailable()) throw new ToolExecutionError('SAFE_STORAGE_UNAVAILABLE', '当前系统无法安全保存 API Key。', '使用支持系统密钥保护的 Windows 用户会话。')
+      return safeStorage.encryptString(value)
+    },
+    decryptString(value) {
+      if (!safeStorage.isEncryptionAvailable()) throw new ToolExecutionError('SAFE_STORAGE_UNAVAILABLE', '当前系统无法解密 API Key。', '使用保存该密钥的 Windows 用户会话。')
+      return safeStorage.decryptString(value)
+    }
+  })
+  conversationService = new ConversationService({
+    db: database,
+    workspace: workspaceService,
+    secrets: modelSecrets,
+    gateway: new StreamingModelGateway(),
+    nodes: builtInKnowledge
+  })
+  conversationService.onDelta(event => mainWindow?.webContents.send(ipc.conversationsDelta, event))
+  conversationService.onChanged(event => mainWindow?.webContents.send(ipc.conversationsChanged, event))
   nativeTheme.themeSource = database.getSettings().theme
   registerIpc()
   createWindow()
   nativeTheme.on('updated', () => applyWindowChrome())
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+  try {
+    agentToolClient = await McpRuntimeToolClient.connectStdio(createMcpWorkerParameters(process.execPath, join(__dirname, 'mcp-worker.js'), userData))
+    agentTransport = 'stdio'
+  } catch (error) {
+    agentStartupError = error instanceof Error ? error.message : String(error)
+    try {
+      agentToolClient = await McpRuntimeToolClient.connect(new DesktopMcpAdapter({
+        db: database,
+        workspaceService,
+        toolchainService,
+        buildRoot: join(userData, 'builds', 'agent-fallback')
+      }))
+      agentTransport = 'in-memory-fallback'
+    } catch (fallbackError) {
+      agentTransport = 'failed'
+      agentStartupError = `${agentStartupError}; ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+      return
+    }
+  }
+  const runtime = new AgentRuntime({
+    store: new DatabaseRuntimeStore(database),
+    contextBuilder: new DesktopContextBuilder(workspaceService, database),
+    planner: new DesktopPlanner(database, modelSecrets!),
+    toolClient: agentToolClient,
+    knowledgeGate: new KnowledgeGate(builtInKnowledge)
+  })
+  agentHost = new AgentHost(runtime)
+  agentHost.onChanged(run => {
+    conversationService?.handleAgentRunChanged(run)
+    mainWindow?.webContents.send(ipc.agentChanged, run)
+    const currentLevel = database?.getLearnerSummary('local-user').level ?? lastLearnerLevel
+    mainWindow?.webContents.send(ipc.petChanged, petEventForRun(run, lastLearnerLevel, currentLevel))
+    lastLearnerLevel = currentLevel
+  })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('before-quit', () => {
-  for (const controller of activeRuns.values()) controller.abort()
-  for (const session of languageSessions.values()) void session.dispose()
-  for (const session of debugSessions.values()) void session.dispose()
-  stopWatching?.()
-  database?.close()
+app.on('before-quit', event => {
+  if (shutdownStarted) return
+  event.preventDefault()
+  shutdownStarted = true
+    for (const controller of activeRuns.values()) controller.abort()
+  conversationService?.shutdown()
+  void (async () => {
+    await Promise.allSettled(agentHost ? [agentHost.shutdown()] : [])
+    await Promise.allSettled([
+      ...(agentToolClient ? [agentToolClient.close()] : []),
+      ...[...languageSessions.values()].map(session => session.dispose()),
+      ...[...debugSessions.values()].map(session => session.dispose())
+    ])
+    stopWatching?.()
+    database?.close()
+  })().finally(() => app.quit())
 })

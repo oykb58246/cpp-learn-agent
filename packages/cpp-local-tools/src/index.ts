@@ -16,6 +16,8 @@ import type {
   ToolchainProfile
 } from '@cpp-pet/contracts'
 
+export * from './mcp/index'
+
 export class ToolExecutionError extends Error {
   constructor(readonly code: string, message: string, readonly userAction: string, readonly retryable = false) {
     super(message)
@@ -228,6 +230,48 @@ const candidateId = (family: string, compilerPath: string) => `${family}:${creat
 const cmdQuote = (value: string) => `"${value.replaceAll('"', '""')}"`
 const buildIgnoredDirectories = new Set(['.git', 'node_modules', 'build', 'dist', 'out'])
 
+export function mergeWindowsPathEnvironment(
+  baseEnvironment: NodeJS.ProcessEnv,
+  machinePath: string | undefined,
+  userPath: string | undefined
+): NodeJS.ProcessEnv {
+  const entries = [...pathEntries(baseEnvironment), ...pathEntries({ Path: machinePath }), ...pathEntries({ Path: userPath })]
+  const seen = new Set<string>()
+  const mergedPath = entries.filter(entry => {
+    const key = pathKey(entry)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }).join(';')
+  const environment = Object.fromEntries(Object.entries(baseEnvironment).filter(([key]) => key.toLowerCase() !== 'path'))
+  return { ...environment, Path: mergedPath }
+}
+
+async function refreshWindowsPathEnvironment(baseEnvironment: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
+  if (process.platform !== 'win32') return baseEnvironment
+  const windowsDirectory = baseEnvironment.SystemRoot ?? baseEnvironment.windir ?? 'C:\\Windows'
+  const powershellPath = join(windowsDirectory, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  if (!existsSync(powershellPath)) return baseEnvironment
+  const command = [
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    "$machine = [Environment]::ExpandEnvironmentVariables([string][Environment]::GetEnvironmentVariable('Path', 'Machine'))",
+    "$user = [Environment]::ExpandEnvironmentVariables([string][Environment]::GetEnvironmentVariable('Path', 'User'))",
+    '[pscustomobject]@{ machine = $machine; user = $user } | ConvertTo-Json -Compress'
+  ].join('; ')
+  const result = await runProcess(powershellPath, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], {
+    env: baseEnvironment,
+    timeoutMs: 5_000,
+    maxOutputBytes: 64 * 1024
+  })
+  if (result.exitCode !== 0) return baseEnvironment
+  try {
+    const value = JSON.parse(result.stdout.replace(/^\uFEFF/, '').trim()) as { machine?: string; user?: string }
+    return mergeWindowsPathEnvironment(baseEnvironment, value.machine, value.user)
+  } catch {
+    return baseEnvironment
+  }
+}
+
 function stageProjectSource(source: string, destination: string): void {
   rmSync(destination, { recursive: true, force: true })
   mkdirSync(destination, { recursive: true })
@@ -375,6 +419,11 @@ export function parseCtestSummary(output: string): { total: number; passed: numb
     const total = Number(summary[3] ?? 0)
     return { total, failed, passed: Math.max(0, total - failed) }
   }
+  const allPassed = output.match(/100% tests passed out of\s*(\d+)/i)
+  if (allPassed) {
+    const total = Number(allPassed[1] ?? 0)
+    return { total, passed: total, failed: 0 }
+  }
   const noTests = /No tests were found/i.test(output)
   return noTests ? { total: 0, passed: 0, failed: 0 } : { total: 0, passed: 0, failed: 0 }
 }
@@ -488,13 +537,15 @@ async function visualStudioCandidates(): Promise<Array<{ compilerPath: string; e
 
 export class ToolchainService {
   private candidates = new Map<string, ToolchainCandidate>()
+  private detectionEnvironment: NodeJS.ProcessEnv = process.env
 
   async detect(): Promise<ToolchainDetectionResult> {
-    const tools = await this.detectTools()
+    this.detectionEnvironment = await refreshWindowsPathEnvironment(process.env)
+    const tools = await this.detectTools(this.detectionEnvironment)
     const toolPath = (kind: DevelopmentTool['kind']) => tools.find(tool => tool.kind === kind)?.path
     const candidates: ToolchainCandidate[] = []
 
-    const gccPaths = findExecutables(['g++.exe'], process.env, [...commonExecutables['g++.exe']])
+    const gccPaths = findExecutables(['g++.exe'], this.detectionEnvironment, [...commonExecutables['g++.exe']])
     for (const compilerPath of gccPaths) {
       const result = await executableVersion(compilerPath)
       const output = `${result.stdout}\n${result.stderr}`
@@ -505,7 +556,7 @@ export class ToolchainService {
         compilerPath,
         version: parseCompilerVersion(output),
         targetArch: targetArch(output),
-        source: pathEntries(process.env).some(entry => pathKey(compilerPath).startsWith(`${pathKey(entry)}/`)) ? 'path' : 'common-location',
+        source: pathEntries(this.detectionEnvironment).some(entry => pathKey(compilerPath).startsWith(`${pathKey(entry)}/`)) ? 'path' : 'common-location',
         ...(debuggerPath ? { debuggerPath } : {}),
         ...(toolPath('clangd') ? { languageServerPath: toolPath('clangd') } : {}),
         ...(toolPath('cmake') ? { cmakeGenerator: toolPath('ninja') ? 'Ninja' : 'MinGW Makefiles' } : {}),
@@ -513,7 +564,7 @@ export class ToolchainService {
       })
     }
 
-    const clangPaths = findExecutables(['clang++.exe'], process.env, [...commonExecutables['clang++.exe']])
+    const clangPaths = findExecutables(['clang++.exe'], this.detectionEnvironment, [...commonExecutables['clang++.exe']])
     for (const compilerPath of clangPaths) {
       const result = await executableVersion(compilerPath)
       const output = `${result.stdout}\n${result.stderr}`
@@ -525,7 +576,7 @@ export class ToolchainService {
         compilerPath,
         version: parseCompilerVersion(output),
         targetArch: targetArch(output),
-        source: pathEntries(process.env).some(entry => pathKey(compilerPath).startsWith(`${pathKey(entry)}/`)) ? 'path' : 'common-location',
+        source: pathEntries(this.detectionEnvironment).some(entry => pathKey(compilerPath).startsWith(`${pathKey(entry)}/`)) ? 'path' : 'common-location',
         ...(debuggerPath ? { debuggerPath } : {}),
         ...(languageServerPath ? { languageServerPath } : {}),
         ...(toolPath('cmake') ? { cmakeGenerator: toolPath('ninja') ? 'Ninja' : 'NMake Makefiles' } : {}),
@@ -636,7 +687,7 @@ export class ToolchainService {
     const item = toolNames.find(tool => tool.kind === kind)
     if (!item) return undefined
     const extras = item.names.flatMap(name => commonExecutables[name as keyof typeof commonExecutables] ?? [])
-    return findExecutables(item.names, process.env, extras)[0]
+    return findExecutables(item.names, this.detectionEnvironment, extras)[0]
   }
 
   async buildCmakeProject(options: CmakeBuildOptions): Promise<CmakeBuildOutput> {
@@ -829,11 +880,11 @@ export class ToolchainService {
     return runProcess(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', command], options)
   }
 
-  private async detectTools(): Promise<DevelopmentTool[]> {
+  private async detectTools(environment: NodeJS.ProcessEnv): Promise<DevelopmentTool[]> {
     const tools: DevelopmentTool[] = []
     for (const item of toolNames) {
       const extras = item.names.flatMap(name => commonExecutables[name as keyof typeof commonExecutables] ?? [])
-      const path = findExecutables(item.names, process.env, extras)[0]
+      const path = findExecutables(item.names, environment, extras)[0]
       if (!path) continue
       const result = await executableVersion(path)
       const output = `${result.stdout}\n${result.stderr}`

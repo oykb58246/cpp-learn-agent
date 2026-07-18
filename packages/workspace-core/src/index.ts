@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFileSync, cpSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, cpSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
 import { createGzip, createGunzip } from 'node:zlib'
 import { pipeline } from 'node:stream/promises'
@@ -19,6 +19,22 @@ export function safePath(root: string, relativePath: string, allowMissing = true
   const rootReal = realpathSync(root); const candidate = resolve(rootReal, normalize(relativePath))
   const rel = relative(rootReal, candidate)
   if (rel.startsWith(`..${sep}`) || rel === '..' || isAbsolute(rel)) throw new DomainError('WS_PATH_OUTSIDE_ROOT', '路径越出了工作区。', '请仅操作当前项目文件。')
+  let lexicalCursor = rootReal
+  for (const segment of rel.split(sep)) {
+    lexicalCursor = join(lexicalCursor, segment)
+    try {
+      if (!lstatSync(lexicalCursor).isSymbolicLink()) continue
+      const linkedReal = realpathSync(lexicalCursor)
+      const linkedRel = relative(rootReal, linkedReal)
+      if (linkedRel.startsWith(`..${sep}`) || linkedRel === '..' || isAbsolute(linkedRel)) {
+        throw new DomainError('WS_PATH_OUTSIDE_ROOT', '符号链接指向了工作区外。', '移除该链接后重试。')
+      }
+    } catch (error) {
+      if (error instanceof DomainError) throw error
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') break
+      throw new DomainError('WS_PATH_OUTSIDE_ROOT', '路径中的符号链接无法安全解析。', '移除该链接后重试。')
+    }
+  }
   let cursor = candidate
   while (!existsSync(cursor)) { const parent = dirname(cursor); if (parent === cursor) break; cursor = parent }
   if (!allowMissing && !existsSync(candidate)) throw new DomainError('FILE_NOT_FOUND', '文件不存在。', '刷新文件树后重试。')

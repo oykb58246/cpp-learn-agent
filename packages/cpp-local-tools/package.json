@@ -5,16 +5,33 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": { "types": "./src/index.ts", "default": "./src/index.ts" },
-    "./language-server": { "types": "./src/language-server.ts", "default": "./src/language-server.ts" },
-    "./debugger": { "types": "./src/debugger.ts", "default": "./src/debugger.ts" }
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./language-server": {
+      "types": "./src/language-server.ts",
+      "default": "./src/language-server.ts"
+    },
+    "./debugger": {
+      "types": "./src/debugger.ts",
+      "default": "./src/debugger.ts"
+    },
+    "./mcp": {
+      "types": "./src/mcp/index.ts",
+      "default": "./src/mcp/index.ts"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run src"
   },
-  "dependencies": { "@cpp-pet/contracts": "workspace:*" },
+  "dependencies": {
+    "@cpp-pet/contracts": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "4.4.3"
+  },
   "devDependencies": {
     "@types/node": "^22.19.13",
     "typescript": "^5.9.3",

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowRight, Bot, CheckCircle2, CircleAlert, Clock3, FolderOpen, Plus, Search, ShieldCheck, Wrench, X } from 'lucide-vue-next'
+import { ArrowRight, Bot, BookOpen, CircleAlert, Clock3, FolderOpen, MessageSquare, Plus, Search, Wrench, X } from 'lucide-vue-next'
 import ProjectDialog from '../components/ProjectDialog.vue'
+import BeginnerQuickStart from '../components/BeginnerQuickStart.vue'
 import { useAppStore } from '../stores/app'
 import { useWorkspaceStore } from '../stores/workspace'
 
@@ -58,6 +59,11 @@ function goAgentRuns() {
   void router.push('/runs')
 }
 
+function continueLatestProject() {
+  const project = projects.value[0]
+  if (project) void openProject(project.id)
+}
+
 function goOnboarding() {
   void router.push('/onboarding')
 }
@@ -65,13 +71,14 @@ function goOnboarding() {
 
 <template>
   <div class="home-view page-scroll">
-    <section class="page-header">
+    <section class="page-header" data-tour="home-primary">
       <div>
         <p class="eyebrow">今日工作台</p>
-        <h1>继续你的 C++ 学习</h1>
-        <p>项目、错误和工具状态都在同一个可追踪工作流中。</p>
+        <h1>开始处理你的 C++ 问题</h1>
+        <p>打开一个项目开始编写、编译和调试；遇到不懂的概念或报错时，随时向助教提问。</p>
       </div>
-      <button class="primary-command" @click="dialog = true"><Plus :size="17" />新建项目</button>
+      <button v-if="projects[0]" class="primary-command" @click="continueLatestProject"><FolderOpen :size="17" />打开项目并继续</button>
+      <button v-else class="primary-command" @click="dialog = true"><Plus :size="17" />新建项目</button>
     </section>
 
     <section v-if="app.bootstrap?.recoveryMode" class="recovery-banner">
@@ -109,6 +116,8 @@ function goOnboarding() {
       </div>
     </section>
 
+    <BeginnerQuickStart />
+
     <section class="command-row">
       <div class="search-field"><Search :size="17" /><input v-model="query" placeholder="查找最近项目" /></div>
       <button class="secondary-command" @click="dialog = true"><FolderOpen :size="17" />导入项目</button>
@@ -125,9 +134,9 @@ function goOnboarding() {
         </header>
         <div v-if="!projects.length" class="empty-state">
           <FolderOpen :size="28" />
-          <strong>还没有学习项目</strong>
-          <span>选择一个工作区，然后创建单文件、多文件或 CMake 项目。</span>
-          <button class="primary-command" @click="dialog = true">建立第一个项目</button>
+          <strong>还没有项目</strong>
+          <span>先创建或导入一个 C++ 项目。打开后可以直接编辑、编译、运行，或让助教协助排错。</span>
+          <button class="primary-command" @click="dialog = true">创建第一个项目</button>
         </div>
         <button v-for="project in projects" :key="project.id" class="project-row" @click="openProject(project.id)">
           <span class="project-icon">C++</span>
@@ -151,38 +160,26 @@ function goOnboarding() {
         <section class="plain-section learning-section">
           <header>
             <div>
-              <h2>学习进度</h2>
-              <span>确定性 Mock · C 阶段接入</span>
+              <h2>你现在可以做什么</h2>
+              <span>从项目或问题开始，不需要完成课程</span>
             </div>
           </header>
-          <div class="concept-line">
-            <div>
-              <span>当前知识</span>
-              <strong>{{ app.dashboard?.learning.concept }}</strong>
-            </div>
-            <b>{{ app.dashboard?.learning.progress }}%</b>
+          <div class="assistant-action-row">
+            <FolderOpen :size="17" /><div><strong>打开或创建项目</strong><span>在工作区里编辑、构建和运行 C++ 代码。</span></div><button class="icon-command" title="新建项目" @click="dialog = true"><Plus :size="16" /></button>
           </div>
-          <div class="progress-track"><i :style="{ width: `${app.dashboard?.learning.progress ?? 0}%` }" /></div>
-          <div class="learning-meta">
-            <span><ShieldCheck :size="15" />等级 {{ app.dashboard?.learning.level }}</span>
-            <span><CircleAlert :size="15" />待复习 {{ app.dashboard?.learning.reviewCount }}</span>
+          <div class="assistant-action-row">
+            <MessageSquare :size="17" /><div><strong>向助教描述问题</strong><span>可解释代码、分析报错或协助定位逻辑问题。</span></div><button class="icon-command" title="打开助教记录" @click="goAgentRuns"><ArrowRight :size="16" /></button>
           </div>
         </section>
         <section class="plain-section task-section">
           <header>
             <div>
-              <h2>待处理</h2>
-              <span>下一步建议</span>
+              <h2>助教如何解释</h2>
+              <span>基于你主动提供的背景调整说明</span>
             </div>
           </header>
-          <div v-for="task in app.dashboard?.tasks" :key="task.id" class="task-row">
-            <CheckCircle2 v-if="task.status === 'done'" :size="16" />
-            <CircleAlert v-else-if="task.status === 'blocked'" :size="16" />
-            <span v-else class="task-circle" />
-            <div>
-              <strong>{{ task.title }}</strong>
-              <span>{{ task.meta }}</span>
-            </div>
+          <div class="assistant-action-row">
+            <BookOpen :size="17" /><div><strong>查看知识树</strong><span>标注学过的概念和希望重点解释的内容；未标注概念会在讲解时先做介绍。</span></div><button class="icon-command" title="打开知识树" @click="router.push('/knowledge')"><ArrowRight :size="16" /></button>
           </div>
         </section>
       </aside>

@@ -2,9 +2,25 @@ import { describe, expect, it } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { parseClangTidyDiagnostics, parseCompilerDiagnostics, parseCompilerVersion, parseCtestSummary, runProcess, runtimeDiagnostics, ToolchainService, vscodeOpenArgs } from './index'
+import { mergeWindowsPathEnvironment, parseClangTidyDiagnostics, parseCompilerDiagnostics, parseCompilerVersion, parseCtestSummary, runProcess, runtimeDiagnostics, ToolchainService, vscodeOpenArgs } from './index'
 
 describe('cpp-local-tools', () => {
+  it('merges live Windows PATH values into a stale process environment', () => {
+    const environment = mergeWindowsPathEnvironment(
+      { Path: 'C:\\app-bin;C:\\Windows\\System32', PATHEXT: '.EXE' },
+      'C:\\Windows\\System32;C:\\Program Files\\CMake\\bin',
+      'C:\\Users\\learner\\AppData\\Local\\Programs\\LLVM\\bin'
+    )
+
+    expect(environment.Path).toBe([
+      'C:\\app-bin',
+      'C:\\Windows\\System32',
+      'C:\\Program Files\\CMake\\bin',
+      'C:\\Users\\learner\\AppData\\Local\\Programs\\LLVM\\bin'
+    ].join(';'))
+    expect(environment.PATHEXT).toBe('.EXE')
+  })
+
   it('normalizes compiler versions', () => {
     expect(parseCompilerVersion('g++ (Rev2, Built by MSYS2 project) 14.2.0')).toBe('14.2.0')
     expect(parseCompilerVersion('g++.exe (MinGW.org GCC-6.3.0-1) 6.3.0')).toBe('6.3.0')
@@ -62,6 +78,7 @@ describe('cpp-local-tools', () => {
   it('parses CTest summaries', () => {
     expect(parseCtestSummary('100% tests passed, 0 tests failed out of 3')).toEqual({ total: 3, passed: 3, failed: 0 })
     expect(parseCtestSummary('50% tests passed, 1 tests failed out of 2')).toEqual({ total: 2, passed: 1, failed: 1 })
+    expect(parseCtestSummary('100% tests passed out of 1')).toEqual({ total: 1, passed: 1, failed: 0 })
   })
 
   it('opens VS Code in a new window and keeps file positioning', () => {
@@ -107,6 +124,7 @@ describe('cpp-local-tools', () => {
       expect(compileCommands).toContain(projectRoot.replaceAll('\\', '/'))
       expect(compileCommands).not.toContain(build.sourceDirectory.replaceAll('\\', '/'))
       const tests = await service.runCtest({ ctestPath, buildDirectory, configuration: 'Debug' })
+      expect(tests.total, `${tests.process.stdout}\n${tests.process.stderr}`).toBe(1)
       expect(tests).toMatchObject({ success: true, total: 1, passed: 1, failed: 0 })
     } finally {
       rmSync(buildDirectory, { recursive: true, force: true })

@@ -4,8 +4,6 @@ directories:
   output: ../../release
 files:
   - out/**
-asarUnpack:
-  - node_modules/better-sqlite3/**
 win:
   target: dir
   icon: build/icon.ico

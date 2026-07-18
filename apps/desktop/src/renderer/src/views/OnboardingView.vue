@@ -44,6 +44,7 @@ const selectedCandidateId = ref('')
 const selectedWorkspaceId = ref('')
 const toolchainMessage = ref('')
 const installMessage = ref('')
+const installMessageTone = ref<'neutral' | 'success' | 'error'>('neutral')
 const installingTarget = ref<EnvironmentInstallTarget | ''>('')
 const installTasks = ref<EnvironmentInstallTask[]>([])
 const installerStatus = ref<EnvironmentInstallerStatus | null>(null)
@@ -190,6 +191,7 @@ async function handleInstallChanged(task: EnvironmentInstallTask) {
   upsertInstallTask(task)
   const outcome = environmentInstallOutcome(task)
   installMessage.value = outcome.message
+  installMessageTone.value = outcome.tone
   if (outcome.redetect) {
     await detectEnvironment()
     if (task.target !== 'msys2') installMessage.value = `${installCatalog[task.target].label}安装完成，环境已重新检测。`
@@ -199,6 +201,7 @@ async function handleInstallChanged(task: EnvironmentInstallTask) {
 async function installWithWinget(target: EnvironmentInstallTarget) {
   installingTarget.value = target
   installMessage.value = ''
+  installMessageTone.value = 'neutral'
   const result = await window.cppPet.environment.install({ target })
   installingTarget.value = ''
   if (!result.ok) {
@@ -209,6 +212,7 @@ async function installWithWinget(target: EnvironmentInstallTarget) {
   installMessage.value = result.data.launched
     ? `${installCatalog[target].label} 安装终端已打开，完成后本页会自动重新检测。`
     : '已取消打开安装终端。'
+  installMessageTone.value = result.data.launched ? 'neutral' : 'error'
 }
 
 async function bindSelected() {
@@ -333,7 +337,7 @@ function candidateMeta(candidate: ToolchainCandidate) {
               </div>
             </article>
             <p v-if="!installerStatus?.available" class="installer-note">{{ installerStatus?.reason ?? '正在检查 WinGet…' }}</p>
-            <p v-if="installMessage" class="installer-note success">{{ installMessage }}</p>
+            <p v-if="installMessage" class="installer-note" :class="installMessageTone">{{ installMessage }}</p>
           </section>
         </template>
         <footer>
