@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import { localToolDefinitions } from './registry'
 import { createOpenAiToolRegistry } from './openai-tools'
 
@@ -34,17 +35,55 @@ describe('MCP to OpenAI function registry', () => {
 
   it('uses null for strict optional fields and restores local defaults before execution', () => {
     const registry = createOpenAiToolRegistry(localToolDefinitions)
-    const projectId = crypto.randomUUID()
+    const runId = crypto.randomUUID()
     const tool = registry.tools.find(item => item.name === 'program_run')!
     const properties = tool.parameters.properties as Record<string, any>
 
+    expect(properties).not.toHaveProperty('runId')
+    expect(tool.parameters.required).not.toContain('runId')
     expect(properties.input.anyOf).toContainEqual({ type: 'null' })
     expect(properties.timeoutMs.anyOf).toContainEqual({ type: 'null' })
     expect(registry.parse('program_run', {
-      runId: projectId, buildId: 'build-1', input: null, timeoutMs: null
-    }).arguments).toEqual({
-      runId: projectId, buildId: 'build-1', input: '', timeoutMs: 5_000
+      buildId: 'build-1', input: null, timeoutMs: null
+    }, { runId }).arguments).toEqual({
+      runId, buildId: 'build-1', input: '', timeoutMs: 5_000
     })
+  })
+
+  it('overrides a model-supplied runId with the runtime binding', () => {
+    const registry = createOpenAiToolRegistry(localToolDefinitions)
+    const runId = crypto.randomUUID()
+    const projectId = crypto.randomUUID()
+
+    expect(registry.parse('compiler_build', {
+      runId: crypto.randomUUID(), projectId, relativePath: 'main.cpp', standard: 'c++17'
+    }, { runId }).arguments).toEqual({
+      runId, projectId, relativePath: 'main.cpp', standard: 'c++17'
+    })
+  })
+
+  it('hides runId from every model-facing tool that uses the runtime binding', () => {
+    const registry = createOpenAiToolRegistry(localToolDefinitions)
+    const names = localToolDefinitions.flatMap(definition => {
+      const schema = z.toJSONSchema(definition.inputSchema) as Record<string, any>
+      return Object.hasOwn(schema.properties ?? {}, 'runId')
+        ? [registry.functionNameFor(definition.name)]
+        : []
+    })
+
+    expect(names).toHaveLength(7)
+    for (const name of names) {
+      expect(name).toBeTypeOf('string')
+      const parameters = registry.tools.find(tool => tool.name === name)?.parameters
+      expect(parameters, name).toBeDefined()
+      expect(parameters?.properties, name).not.toHaveProperty('runId')
+      expect(parameters?.required, name).not.toContain('runId')
+    }
+  })
+
+  it.each([null, [], 'invalid', 42])('rejects non-object runtime-managed arguments: %j', value => {
+    const registry = createOpenAiToolRegistry(localToolDefinitions)
+    expect(() => registry.parse('compiler_build', value, { runId: crypto.randomUUID() })).toThrow(/object/i)
   })
 
   it('does not expose unsupported defaults, formats, or refinements to OpenAI', () => {

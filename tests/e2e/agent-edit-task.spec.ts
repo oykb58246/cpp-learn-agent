@@ -89,23 +89,32 @@ test('修改代码、编译验证并解释指定概念', async () => {
       const detail = await window.cppPet.agent.get({ runId: runs.data[0].id })
       if (!detail.ok) return null
       return {
+        runId: detail.data.id,
         content: document.data.content,
         status: detail.data.status,
-        tools: detail.data.toolCalls.map(call => ({ name: call.toolName, status: call.status, ok: call.result?.ok }))
+        tools: detail.data.toolCalls.map(call => ({
+          name: call.toolName,
+          status: call.status,
+          ok: call.result?.ok,
+          argumentRunId: call.parameterSummary.runId
+        }))
       }
     }, projectId)
-    expect(evidence).toEqual({
+    expect(evidence).toMatchObject({
       content: '#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Hello, world!" << endl;\n    return 0;\n}\n',
       status: 'completed',
       tools: [
         { name: 'workspace.read_file', status: 'completed', ok: true },
         { name: 'workspace.apply_patch', status: 'completed', ok: true },
-        { name: 'compiler.build', status: 'completed', ok: true }
+        { name: 'compiler.build', status: 'completed', ok: true, argumentRunId: evidence?.runId }
       ]
     })
     const firstContextRequest = modelFixture.requests.find(item => (item.input as any[])?.some(input => input.role === 'user'))
     const contextText = (firstContextRequest?.input as any[])?.find(input => input.role === 'user')?.content?.[0]?.text
     expect(JSON.parse(contextText).task.prompt).toBe(request)
+    const compilerTool = (firstContextRequest?.tools as any[])?.find(tool => tool.name === 'compiler_build')
+    expect(compilerTool?.parameters?.properties).not.toHaveProperty('runId')
+    expect(compilerTool?.parameters?.required).not.toContain('runId')
     expect(modelFixture.requests.some(item => JSON.stringify(item).includes('compiler.build'))).toBe(true)
   } finally {
     await electronApp.close()

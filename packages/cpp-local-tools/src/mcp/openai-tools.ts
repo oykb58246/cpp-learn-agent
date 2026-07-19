@@ -7,23 +7,31 @@ export interface ParsedOpenAiToolCall {
   arguments: Record<string, unknown>
 }
 
+export interface OpenAiToolRuntimeBindings {
+  runId: string
+}
+
 export interface OpenAiToolRegistry {
   readonly tools: OpenAiFunctionTool[]
   resolve(functionName: string): LocalToolDefinition | undefined
   functionNameFor(mcpName: string): string | undefined
-  parse(functionName: string, args: unknown): ParsedOpenAiToolCall
+  parse(functionName: string, args: unknown, bindings?: OpenAiToolRuntimeBindings): ParsedOpenAiToolCall
 }
 
 export function createOpenAiToolRegistry(definitions: LocalToolDefinition[]): OpenAiToolRegistry {
-  const byFunctionName = new Map<string, LocalToolDefinition>()
+  const byFunctionName = new Map<string, {
+    definition: LocalToolDefinition
+    runtimeManagedProperties: Set<string>
+  }>()
   const byMcpName = new Map<string, string>()
   const tools = definitions.map(definition => {
     const functionName = openAiFunctionName(definition.name)
     if (byFunctionName.has(functionName)) throw new Error(`Duplicate OpenAI function alias: ${functionName}`)
-    byFunctionName.set(functionName, definition)
-    byMcpName.set(definition.name, functionName)
     const raw = z.toJSONSchema(definition.inputSchema) as Record<string, unknown>
-    const parameters = strictSchema(raw)
+    const { schema, properties: runtimeManagedProperties } = hideRuntimeManagedProperties(raw)
+    byFunctionName.set(functionName, { definition, runtimeManagedProperties })
+    byMcpName.set(definition.name, functionName)
+    const parameters = strictSchema(schema)
     return openAiFunctionToolSchema.parse({
       type: 'function',
       name: functionName,
@@ -35,13 +43,22 @@ export function createOpenAiToolRegistry(definitions: LocalToolDefinition[]): Op
 
   return {
     tools,
-    resolve: functionName => byFunctionName.get(functionName),
+    resolve: functionName => byFunctionName.get(functionName)?.definition,
     functionNameFor: mcpName => byMcpName.get(mcpName),
-    parse(functionName, args) {
-      const definition = byFunctionName.get(functionName)
-      if (!definition) throw new Error(`Unknown OpenAI function: ${functionName}`)
+    parse(functionName, args, bindings) {
+      const registered = byFunctionName.get(functionName)
+      if (!registered) throw new Error(`Unknown OpenAI function: ${functionName}`)
       const withoutNulls = omitNullValues(args)
-      return { definition, arguments: definition.inputSchema.parse(withoutNulls) }
+      const boundArguments = isRecord(withoutNulls) ? { ...withoutNulls } : withoutNulls
+      if (registered.runtimeManagedProperties.has('runId')) {
+        if (!bindings?.runId) throw new Error(`Runtime binding runId is required for ${functionName}`)
+        if (!isRecord(boundArguments)) throw new Error(`OpenAI function arguments must be an object: ${functionName}`)
+        boundArguments.runId = bindings.runId
+      }
+      return {
+        definition: registered.definition,
+        arguments: registered.definition.inputSchema.parse(boundArguments)
+      }
     }
   }
 }
@@ -50,6 +67,28 @@ function openAiFunctionName(name: string): string {
   const alias = name.replace(/[^A-Za-z0-9_-]/g, '_')
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(alias)) throw new Error(`MCP tool name cannot be mapped to OpenAI: ${name}`)
   return alias
+}
+
+function hideRuntimeManagedProperties(value: Record<string, unknown>): {
+  schema: Record<string, unknown>
+  properties: Set<string>
+} {
+  const properties = isRecord(value.properties) ? { ...value.properties } : {}
+  const runtimeManaged = new Set<string>()
+  if (Object.hasOwn(properties, 'runId')) {
+    runtimeManaged.add('runId')
+    delete properties.runId
+  }
+  return {
+    schema: {
+      ...value,
+      properties,
+      ...(Array.isArray(value.required)
+        ? { required: value.required.filter(item => item !== 'runId') }
+        : {})
+    },
+    properties: runtimeManaged
+  }
 }
 
 function strictSchema(value: unknown): Record<string, unknown> {

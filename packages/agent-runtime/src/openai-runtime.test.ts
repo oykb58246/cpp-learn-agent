@@ -106,6 +106,10 @@ function createHarness(outputs: OpenAiResponseOutputItem[][], options: {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = []
   const registeredToolNames = options.registeredToolNames ?? [options.toolName ?? 'workspace_read_file']
   const advertisedToolNames = options.advertisedToolNames ?? registeredToolNames
+  const runtimeManagedRunIdTools = new Set([
+    'compiler_build', 'program_run', 'program_stop', 'cmake_build',
+    'ctest_run', 'analysis_clang_tidy', 'tests_run_cases'
+  ])
   const model: OpenAiAgentModel = {
     profile: options.profile ?? profile,
     tools: advertisedToolNames.map(advertisedTool),
@@ -133,15 +137,20 @@ function createHarness(outputs: OpenAiResponseOutputItem[][], options: {
         risk: options.risks?.[name] ?? options.risk ?? 'L0', timeoutMs: 1_000
       }
     },
-    parse(name, raw) {
+    parse(name, raw, bindings?: { runId: string }) {
       if (!registeredToolNames.includes(name)) throw new Error(`Unknown OpenAI function: ${name}`)
       if (options.parseErrorOnce) { options.parseErrorOnce = false; throw new Error('relativePath is required') }
+      const args = { ...(raw as Record<string, unknown>) }
+      if (runtimeManagedRunIdTools.has(name)) {
+        if (!bindings?.runId) throw new Error('Missing runtime runId binding')
+        args.runId = bindings.runId
+      }
       return {
         definition: {
           name: name.replaceAll('_', '.'), title: name, description: name,
           risk: options.risks?.[name] ?? options.risk ?? 'L0', timeoutMs: 1_000
         },
-        arguments: raw as Record<string, unknown>
+        arguments: args
       }
     }
   }
@@ -372,6 +381,40 @@ describe('OpenAiAgentRuntime', () => {
     ]))
   })
 
+  it('restores a pending call with the same runtime-managed runId', async () => {
+    const requestId = crypto.randomUUID()
+    const store = new InMemoryRuntimeStore()
+    const options = { store, risk: 'L2' as const, toolName: 'tests_run_cases' }
+    const first = createHarness([[
+      functionCall('call_cases', 'tests_run_cases', {
+        projectId,
+        relativePath: 'main.cpp',
+        cases: [{ input: '', expectedOutput: 'ok' }]
+      })
+    ]], options)
+    const initial = await first.runtime.start({ requestId, source: 'main', mode: 'auto', message: 'run tests', projectId })
+    const waiting = await approveRemote(first.runtime, initial)
+    expect(waiting.pendingApproval?.parameterSummary).toMatchObject({ runId: waiting.id })
+
+    const resumed = createHarness([[final(requestId, 'completed', ['call_cases'])]], options)
+    expect(await resumed.runtime.restore()).toEqual([waiting.id])
+    const completed = await resumed.runtime.decide({
+      approvalId: waiting.pendingApproval!.id,
+      decision: 'approved'
+    })
+
+    expect(completed.status).toBe('completed')
+    expect(resumed.calls).toEqual([{
+      name: 'tests.run.cases',
+      args: {
+        runId: waiting.id,
+        projectId,
+        relativePath: 'main.cpp',
+        cases: [{ input: '', expectedOutput: 'ok' }]
+      }
+    }])
+  })
+
   it('preserves resumable waiting sessions during an orderly shutdown', async () => {
     const requestId = crypto.randomUUID()
     const store = new InMemoryRuntimeStore()
@@ -570,6 +613,26 @@ describe('OpenAiAgentRuntime', () => {
     expect(serialized).toContain('[redacted]')
   })
 
+  it('binds runtime-managed runId without requiring the model to provide it', async () => {
+    const requestId = crypto.randomUUID()
+    const { runtime, calls } = createHarness([
+      [functionCall('call_build', 'compiler_build', {
+        projectId, relativePath: 'main.cpp', standard: 'c++17'
+      })],
+      [final(requestId, 'completed', ['call_build'])]
+    ], { registeredToolNames: ['compiler_build'] })
+    const initial = await runtime.start({ requestId, source: 'main', mode: 'auto', message: 'compile', projectId })
+
+    const completed = await approveRemote(runtime, initial)
+
+    expect(completed.status).toBe('completed')
+    expect(initial.id).not.toBe(requestId)
+    expect(calls).toEqual([{
+      name: 'compiler.build',
+      args: { runId: initial.id, projectId, relativePath: 'main.cpp', standard: 'c++17' }
+    }])
+  })
+
   it('accepts action claims only when they match locally derived tool outcomes', async () => {
     const requestId = crypto.randomUUID()
     const claims = [
@@ -581,7 +644,7 @@ describe('OpenAiAgentRuntime', () => {
         projectId, relativePath: 'main.cpp', expectedHash: 'hash', content: 'changed'
       })],
       [functionCall('call_build', 'compiler_build', {
-        runId: requestId, projectId, relativePath: 'main.cpp', standard: 'c++17'
+        projectId, relativePath: 'main.cpp', standard: 'c++17'
       })],
       [final(requestId, 'completed', ['call_patch', 'call_build'], { primary: 'edit_code', claims })]
     ], {
@@ -667,7 +730,6 @@ describe('OpenAiAgentRuntime', () => {
     const { runtime, calls } = createHarness([
       [functionCall('call_nested', 'workspace_read_file', {
         projectId,
-        runId: requestId,
         relativePath: 'main.cpp',
         nestedArguments
       })]
@@ -910,7 +972,7 @@ describe('OpenAiAgentRuntime', () => {
     const { runtime, calls } = createHarness([
       [functionCall('call_project', 'project_create', { workspaceId, mode: 'description', name: 'demo', description: 'hello' })],
       [functionCall('call_project_build', 'compiler_build', {
-        runId: requestId, projectId: createdProjectId, relativePath: 'main.cpp', standard: 'c++17'
+        projectId: createdProjectId, relativePath: 'main.cpp', standard: 'c++17'
       })],
       [final(requestId, 'completed', ['call_project', 'call_project_build'], { primary: 'create_project', claims })]
     ], {
@@ -948,7 +1010,7 @@ describe('OpenAiAgentRuntime', () => {
       })],
       [functionCall('call_read_path', 'workspace_read_file', { projectId, relativePath: 'src/helper.cpp' })],
       [functionCall('call_build_path', 'compiler_build', {
-        runId: requestId, projectId, relativePath: 'src/helper.cpp', standard: 'c++17'
+        projectId, relativePath: 'src/helper.cpp', standard: 'c++17'
       })],
       [final(requestId, 'completed', ['call_create_path', 'call_build_path'], { primary: 'edit_code', claims })]
     ], {
@@ -967,7 +1029,7 @@ describe('OpenAiAgentRuntime', () => {
     const requestId = crypto.randomUUID()
     const { runtime, calls } = createHarness([[
       functionCall('call_foreign_build', 'program_run', {
-        runId: requestId, buildId: 'build-from-another-run', input: '', timeoutMs: 1_000
+        buildId: 'build-from-another-run', input: '', timeoutMs: 1_000
       })
     ]], { toolName: 'program_run' })
     const initial = await runtime.start({ requestId, source: 'main', mode: 'auto', message: '运行程序' })
@@ -994,6 +1056,33 @@ describe('OpenAiAgentRuntime', () => {
 
     expect(failed).toMatchObject({ status: 'failed', errorCode: 'MODEL_PROFILE_CHANGED' })
     expect(resumed.requests).toHaveLength(0)
+  })
+
+  it('does not execute a restored approved tool after the model contract changed', async () => {
+    const requestId = crypto.randomUUID()
+    const store = new InMemoryRuntimeStore()
+    const first = createHarness([[
+      functionCall('call_old_contract', 'workspace_apply_patch', {
+        projectId, relativePath: 'main.cpp', expectedHash: 'hash', content: 'changed'
+      })
+    ]], { store, risk: 'L2', toolName: 'workspace_apply_patch' })
+    const initial = await first.runtime.start({ requestId, source: 'main', mode: 'auto', message: 'edit', projectId })
+    const waiting = await approveRemote(first.runtime, initial)
+
+    const resumed = createHarness([], {
+      store,
+      risk: 'L2',
+      toolName: 'workspace_apply_patch',
+      profile: { ...profile, baseUrl: 'https://different.example/v1' }
+    })
+    expect(await resumed.runtime.restore()).toEqual([waiting.id])
+    const failed = await resumed.runtime.decide({
+      approvalId: waiting.pendingApproval!.id,
+      decision: 'approved'
+    })
+
+    expect(failed).toMatchObject({ status: 'failed', errorCode: 'MODEL_PROFILE_CHANGED' })
+    expect(resumed.calls).toHaveLength(0)
   })
 
   it('rejects a restored pending call whose persisted arguments no longer match the signed model item', async () => {

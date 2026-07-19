@@ -136,7 +136,7 @@ function nextOutput(options: {
     const successfulBuild = builds.find(item => item.ok === true)
     if (builds.length === 0) {
       return [call(`recovery_build_initial_${taskId}`, 'compiler_build', {
-        runId: taskId, projectId, relativePath: 'main.cpp', standard: 'c++17'
+        projectId, relativePath: 'main.cpp', standard: 'c++17'
       })]
     }
     if (!patch) {
@@ -149,7 +149,7 @@ function nextOutput(options: {
     }
     if (!successfulBuild) {
       return [call(`recovery_build_final_${taskId}`, 'compiler_build', {
-        runId: taskId, projectId, relativePath: 'main.cpp', standard: 'c++17'
+        projectId, relativePath: 'main.cpp', standard: 'c++17'
       })]
     }
     const evidenceCallIds = [patch.callId, successfulBuild.callId]
@@ -172,7 +172,7 @@ function nextOutput(options: {
       })]
     }
     if (!tools.has('compiler.build')) {
-      return [call(`build_${taskId}`, 'compiler_build', { runId: taskId, projectId, relativePath: 'main.cpp', standard: 'c++17' })]
+      return [call(`build_${taskId}`, 'compiler_build', { projectId, relativePath: 'main.cpp', standard: 'c++17' })]
     }
     const evidenceCallIds = observations.map(item => item.callId)
     return [final(taskId, 'edit_code', evidenceCallIds,
@@ -189,7 +189,7 @@ function nextOutput(options: {
       })]
     }
     if (!tools.has('compiler.build')) {
-      return [call(`build_${taskId}`, 'compiler_build', { runId: taskId, projectId, relativePath: 'main.cpp', standard: 'c++17' })]
+      return [call(`build_${taskId}`, 'compiler_build', { projectId, relativePath: 'main.cpp', standard: 'c++17' })]
     }
     const evidenceCallIds = observations.map(item => item.callId)
     return [final(taskId, 'edit_code', evidenceCallIds, '已补充分号并通过编译。根因是输出语句末尾缺少语句终止符 `;`。', {

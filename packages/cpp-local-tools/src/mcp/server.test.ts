@@ -67,6 +67,20 @@ describe('CppPilot local MCP server', () => {
     expect('structuredContent' in result && result.structuredContent).toMatchObject({ ok: true, exitCode: 0 })
   })
 
+  it('keeps runId required for direct MCP clients', async () => {
+    const { client, calls } = await setup()
+    const tools = await client.listTools()
+    const compiler = tools.tools.find(tool => tool.name === 'compiler.build')
+
+    expect(compiler?.inputSchema.required).toContain('runId')
+    const result = await client.callTool({
+      name: 'compiler.build',
+      arguments: { projectId: crypto.randomUUID(), relativePath: 'main.cpp', standard: 'c++17' }
+    })
+    expect('isError' in result && result.isError).toBe(true)
+    expect(calls).toHaveLength(0)
+  })
+
   it('rejects a path traversal before invoking the adapter', async () => {
     const { client, calls } = await setup()
     const result = await client.callTool({

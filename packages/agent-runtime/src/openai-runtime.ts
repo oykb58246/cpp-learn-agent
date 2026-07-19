@@ -66,7 +66,7 @@ interface AgentToolDefinition {
 export interface OpenAiAgentToolRegistry {
   readonly tools: OpenAiFunctionTool[]
   resolve(functionName: string): AgentToolDefinition | undefined
-  parse(functionName: string, args: unknown): {
+  parse(functionName: string, args: unknown, bindings: { runId: string }): {
     definition: AgentToolDefinition
     arguments: Record<string, unknown>
   }
@@ -376,6 +376,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
           await this.drive(state)
           return
         }
+        await this.ensureModel(state)
         const call = state.pendingCall
         delete state.pendingCall
         await this.executeTool(state, call)
@@ -563,7 +564,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
     }
     let parsed: ReturnType<OpenAiAgentToolRegistry['parse']>
     try {
-      parsed = this.options.registry.parse(item.name, rawArguments)
+      parsed = this.options.registry.parse(item.name, rawArguments, { runId: state.run.id })
     } catch (error) {
       const definition = this.options.registry.resolve(item.name)
       if (!definition) throw new AgentLoopFailure('MODEL_PROTOCOL_INVALID', error instanceof Error ? error.message : String(error))
@@ -832,7 +833,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
           continue
         }
         if (key === 'runId') {
-          if (typeof nested !== 'string' || nested !== state.request.requestId) {
+          if (typeof nested !== 'string' || nested !== state.run.id) {
             throw new AgentLoopFailure('TOOL_POLICY_VIOLATION', 'Tool runId does not belong to the current task.')
           }
           continue
@@ -969,7 +970,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
   ): PendingToolCall {
     if (stored.item.status !== undefined && stored.item.status !== 'completed') throw new Error('Pending call is not complete')
     const raw = JSON.parse(stored.item.arguments) as unknown
-    const parsed = this.options.registry.parse(stored.item.name, raw)
+    const parsed = this.options.registry.parse(stored.item.name, raw, { runId: state.run.id })
     if (stableJson(parsed.arguments) !== stableJson(stored.arguments)) throw new Error('Pending arguments were modified')
     const approval = state.run.pendingApproval
     if (
