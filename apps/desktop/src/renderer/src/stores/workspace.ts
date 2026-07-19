@@ -3,6 +3,8 @@ import { ElMessageBox } from 'element-plus'
 import type { AppError, FileDocument, FileTreeNode, Project, ProjectDraft, ProjectDraftInput, SearchResult, SnapshotManifest } from '@cpp-pet/contracts'
 
 export interface OpenTab extends FileDocument { draft: string; dirty: boolean; conflicted: boolean; conflictDocument?: FileDocument }
+const pendingWorkspaceSaves = new WeakMap<object, Promise<void>>()
+
 export const useWorkspaceStore = defineStore('workspace', {
   state: () => ({ projects: [] as Project[], currentProject: null as Project | null, tree: [] as FileTreeNode[], tabs: [] as OpenTab[], activePath: '', snapshots: [] as SnapshotManifest[], searchResults: [] as SearchResult[], loading: false, saving: false, error: null as AppError | null }),
   getters: { activeTab: state => state.tabs.find(x => x.relativePath === state.activePath) ?? null },
@@ -18,13 +20,47 @@ export const useWorkspaceStore = defineStore('workspace', {
     },
     edit(content: string) { const tab = this.activeTab; if (tab) { tab.draft = content; tab.dirty = tab.draft !== tab.content } },
     async save() { if (this.activePath) await this.savePath(this.activePath) },
+    async syncActiveDraftForAgent() {
+      const path = this.activePath
+      if (!path) return true
+      await this.savePath(path)
+      const tab = this.tabs.find(item => item.relativePath === path)
+      return !tab || (!tab.dirty && !tab.conflicted)
+    },
     async savePath(path: string) {
-      const tab = this.tabs.find(item => item.relativePath === path); if (!tab || !tab.dirty || tab.conflicted) return
+      let tab = this.tabs.find(item => item.relativePath === path); if (!tab || !tab.dirty || tab.conflicted) return
+      const pending = pendingWorkspaceSaves.get(this)
+      if (pending) {
+        await pending
+        tab = this.tabs.find(item => item.relativePath === path)
+        if (tab?.dirty && !tab.conflicted) await this.savePath(path)
+        return
+      }
+      const draft = tab.draft
       this.saving = true
-      const result = await window.cppPet.files.write({ projectId: tab.projectId, relativePath: tab.relativePath, content: tab.draft, expectedHash: tab.contentHash, createSnapshot: true })
-      if (result.ok) Object.assign(tab, result.data, { draft: result.data.content, dirty: false, conflicted: false, conflictDocument: undefined })
-      else { this.error = result.error; if (result.error.code === 'FILE_REVISION_CONFLICT') tab.conflicted = true }
-      this.saving = false; await this.refreshSnapshots()
+      const save = (async () => {
+        const result = await window.cppPet.files.write({ projectId: tab.projectId, relativePath: tab.relativePath, content: draft, expectedHash: tab.contentHash, createSnapshot: true })
+        if (result.ok) {
+          const latestDraft = tab.draft
+          Object.assign(tab, result.data, {
+            draft: latestDraft,
+            dirty: latestDraft !== result.data.content,
+            conflicted: false,
+            conflictDocument: undefined
+          })
+        } else {
+          this.error = result.error
+          if (result.error.code === 'FILE_REVISION_CONFLICT') tab.conflicted = true
+        }
+        await this.refreshSnapshots()
+      })()
+      pendingWorkspaceSaves.set(this, save)
+      try {
+        await save
+      } finally {
+        if (pendingWorkspaceSaves.get(this) === save) pendingWorkspaceSaves.delete(this)
+        this.saving = false
+      }
     },
     async closeTab(path: string) { const tab = this.tabs.find(x => x.relativePath === path); if (tab?.dirty) { try { await ElMessageBox.confirm('当前修改尚未保存，关闭后将丢失。', '关闭文件', { confirmButtonText: '关闭', cancelButtonText: '返回编辑', type: 'warning' }) } catch { return } } this.tabs = this.tabs.filter(x => x.relativePath !== path); if (this.activePath === path) this.activePath = this.tabs.at(-1)?.relativePath ?? '' },
     async createEntry(path: string, kind: 'file' | 'directory') { if (!this.currentProject) return; const result = await window.cppPet.files.create({ projectId: this.currentProject.id, relativePath: path, kind }); result.ok ? await this.refreshTree() : this.error = result.error },

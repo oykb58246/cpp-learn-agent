@@ -6,6 +6,7 @@ import type { AgentStartRequest, Diagnostic } from '@cpp-pet/contracts'
 import type { AgentEditorSelection } from '../utils/editor-selection'
 import { renderMarkdown } from '../utils/markdown'
 import { useAgentStore } from '../stores/agent'
+import { isAgentRunBusy } from '../utils/agent-run-state'
 import AgentComposer from './AgentComposer.vue'
 
 const props = withDefaults(defineProps<{
@@ -26,7 +27,12 @@ const streaming = computed(() => agent.messages.some(item => item.role === 'assi
 const activeTask = computed(() => Boolean(
   agent.currentRun
   && agent.currentRun.conversationId === agent.currentConversationId
-  && !['completed', 'failed', 'cancelled'].includes(agent.currentRun.status)
+  && isAgentRunBusy(agent.currentRun.status)
+))
+const cancellableTask = computed(() => Boolean(
+  agent.currentRun
+  && agent.currentRun.conversationId === agent.currentConversationId
+  && agent.currentRun.status === 'waiting-input'
 ))
 
 watch(() => agent.messages.map(item => `${item.id}:${item.content.length}:${item.status}`).join('|'), async () => {
@@ -36,20 +42,24 @@ watch(() => agent.messages.map(item => `${item.id}:${item.content.length}:${item
 
 async function submit(request: AgentStartRequest) {
   if (props.projectId && agent.agentProjectId !== props.projectId) await agent.loadProjectAgent(props.projectId)
-  if (request.mode !== 'chat') {
-    emit('tool-submit', request)
-    return
-  }
-  await agent.sendMessage({
-    message: request.message,
+  emit('tool-submit', request)
+}
+
+function retry(itemId: string) {
+  const index = agent.messages.findIndex(item => item.id === itemId)
+  const user = agent.messages.slice(0, index).reverse().find(item => item.role === 'user')
+  if (!user) return
+  emit('tool-submit', {
+    source: 'editor', mode: 'auto', message: user.content,
+    ...(props.projectId ? { projectId: props.projectId } : {}),
     ...(props.activeFile ? { activeFile: props.activeFile } : {}),
-    ...(props.selection ? { selection: { ...props.selection } } : {})
+    ...(props.selection ? { selection: { ...props.selection } } : {}),
+    ...(props.diagnostics?.length ? { diagnostics: props.diagnostics.map(item => ({ ...item, relatedConceptIds: [...item.relatedConceptIds] })) } : {})
   })
 }
 
 async function cancel() {
-  if (activeTask.value) emit('cancel-tool')
-  else if (streaming.value) await agent.stopMessage()
+  if (activeTask.value || cancellableTask.value) emit('cancel-tool')
 }
 
 async function archiveCurrent() {
@@ -101,7 +111,7 @@ async function archiveCurrent() {
           <span>{{ item.errorMessage }}</span>
           <button v-if="item.errorCode === 'MODEL_NOT_CONFIGURED'" type="button" @click="router.push('/settings')"><Settings :size="13" />模型设置</button>
         </div>
-        <button v-if="['failed', 'stopped', 'interrupted'].includes(item.status)" class="message-retry" type="button" @click="agent.retryMessage(item.id)"><RotateCcw :size="13" />重试</button>
+        <button v-if="['failed', 'stopped', 'interrupted'].includes(item.status)" class="message-retry" type="button" @click="retry(item.id)"><RotateCcw :size="13" />重试</button>
       </article>
     </div>
 
@@ -113,6 +123,7 @@ async function archiveCurrent() {
       :selection="selection"
       :diagnostics="diagnostics"
       :busy="streaming || activeTask || toolBusy"
+      :cancellable="cancellableTask"
       @submit="submit"
       @cancel="cancel"
     />

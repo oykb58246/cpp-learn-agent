@@ -5,58 +5,74 @@ import { tmpdir } from 'node:os'
 import { AppDatabase } from '@cpp-pet/database'
 import { WorkspaceService } from '@cpp-pet/workspace-core'
 import { ToolchainService } from '@cpp-pet/cpp-local-tools'
-import { AgentRuntime, H3WorkflowPlanner, KnowledgeGate, achievementDefinitions, builtInKnowledge } from '@cpp-pet/agent-runtime'
-import { DatabaseRuntimeStore, DesktopContextBuilder, DesktopMcpAdapter, DesktopPlanner, McpRuntimeToolClient } from './agent-integration'
+import { achievementDefinitions, builtInKnowledge } from '@cpp-pet/agent-runtime'
+import {
+  DatabaseRuntimeStore,
+  DesktopMcpAdapter,
+  DesktopOpenAiContextBuilder,
+  DesktopOpenAiModelFactory,
+  McpRuntimeToolClient
+} from './agent-integration'
 
 const cleanups: Array<() => void | Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
 describe('desktop H3 integration', () => {
-  it('runs through MCP and persists the real file evidence timeline', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-integration-'))
+  it('creates an Agent project only in the explicitly authorized workspace', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-project-scope-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
     cleanups.push(() => db.close())
     const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
-    const workspaceRoot = join(dir, 'workspace')
-    mkdirSync(workspaceRoot)
-    const workspace = workspaceService.registerWorkspace(workspaceRoot)
-    workspaceService.setTrust(workspace.id, true)
-    const draft = workspaceService.previewProject({ mode: 'manual', workspaceId: workspace.id, name: 'Agent 解释', type: 'single-file' })
-    const project = workspaceService.commitDraft(draft.draftId)
-    const document = workspaceService.readFile(project.id, 'main.cpp')
-    await workspaceService.writeFile(project.id, 'main.cpp', 'int main() { return 0; }\n', document.contentHash, false)
-
-    const adapter = new DesktopMcpAdapter({ db, workspaceService, toolchainService: new ToolchainService(), buildRoot: join(dir, 'builds') })
-    const toolClient = await McpRuntimeToolClient.connect(adapter)
-    cleanups.push(() => toolClient.close())
-    const store = new DatabaseRuntimeStore(db)
-    const runtime = new AgentRuntime({
-      store,
-      contextBuilder: new DesktopContextBuilder(workspaceService, db),
-      planner: new H3WorkflowPlanner(),
-      toolClient,
-      knowledgeGate: new KnowledgeGate(builtInKnowledge)
+    const firstRoot = join(dir, 'first')
+    const targetRoot = join(dir, 'target')
+    mkdirSync(firstRoot)
+    mkdirSync(targetRoot)
+    const first = workspaceService.registerWorkspace(firstRoot)
+    const target = workspaceService.registerWorkspace(targetRoot)
+    workspaceService.setTrust(first.id, true)
+    workspaceService.setTrust(target.id, true)
+    const adapter = new DesktopMcpAdapter({
+      db, workspaceService, toolchainService: new ToolchainService(), buildRoot: join(dir, 'builds')
     })
 
-    const run = await runtime.start({
-      requestId: crypto.randomUUID(), source: 'editor', mode: 'explain', message: '解释选区',
-      projectId: project.id, activeFile: 'main.cpp',
-      selection: { startLine: 1, startColumn: 14, endLine: 1, endColumn: 22, content: 'return 0;' },
-      diagnostics: [{ source: 'compiler', severity: 'warning', rawMessage: 'unused', normalizedMessage: '未使用的返回值', relatedConceptIds: [] }]
-    })
+    const result = await adapter.execute('project.create', {
+      workspaceId: target.id, mode: 'description', name: 'Scoped project', description: 'hello'
+    }, { signal: new AbortController().signal, onProgress: async () => undefined })
 
-    expect(run.status).toBe('completed')
-    const detail = db.getAgentRun(run.id)
-    expect(detail?.timeline.some(event => event.kind === 'tool' && event.data?.toolName === 'workspace.read_file')).toBe(false)
-    expect(run.response).toContain('return')
-    const contextData = detail?.timeline.find(event => event.kind === 'context')?.data as { sources?: Array<{ kind?: string }> } | undefined
-    expect(contextData?.sources?.some(source => source.kind === 'selection')).toBe(true)
-    expect(contextData?.sources?.some(source => source.kind === 'diagnostic')).toBe(true)
+    expect(result.ok).toBe(true)
+    expect((result.structuredContent as { project: { workspaceId: string } }).project.workspaceId).toBe(target.id)
   })
 
-  it('builds selection context without exposing the complete file', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-selection-context-'))
+  it('persists runtime model sessions through the database store', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-runtime-session-'))
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+    const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
+    cleanups.push(() => db.close())
+    const now = new Date().toISOString()
+    const run = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor' as const, mode: 'auto' as const,
+      message: '继续任务', status: 'waiting-input' as const, steps: [], createdAt: now, updatedAt: now
+    }
+    db.createAgentRun(run)
+    const store = new DatabaseRuntimeStore(db)
+    const session = {
+      runId: run.id,
+      protocol: 'cpppilot.openai-session.v1',
+      state: { input: [{ role: 'user', content: [{ type: 'input_text', text: 'context' }] }] },
+      updatedAt: now
+    }
+
+    await store.saveSession(session)
+
+    expect(store.getSession(run.id)).toEqual(session)
+    expect(store.listSessions()).toEqual([session])
+    await store.deleteSession(run.id)
+    expect(store.getSession(run.id)).toBeUndefined()
+  })
+
+  it('builds a strict OpenAI context envelope with the unchanged prompt and no absolute paths', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-openai-context-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
     cleanups.push(() => db.close())
@@ -66,40 +82,123 @@ describe('desktop H3 integration', () => {
     const workspace = workspaceService.registerWorkspace(workspaceRoot)
     workspaceService.setTrust(workspace.id, true)
     const project = workspaceService.commitDraft(workspaceService.previewProject({
-      mode: 'manual', workspaceId: workspace.id, name: '最小上下文', type: 'single-file'
+      mode: 'manual', workspaceId: workspace.id, name: '原始请求', type: 'single-file'
     }).draftId)
-    const builder = new DesktopContextBuilder(workspaceService, db)
+    const initialDocument = workspaceService.readFile(project.id, 'main.cpp')
+    await workspaceService.writeFile(
+      project.id,
+      'main.cpp',
+      'const char* local = "C:\\Users\\alice\\private.txt"; //comment\nconst char* url = "https://example.test/docs";\nconst char* key = "sk-sensitive-context-token";\n',
+      initialDocument.contentHash,
+      false
+    )
+    const prompt = '把 "Hello" 改成 "world，然后编译'
+    const requestId = crypto.randomUUID()
+    const screenshot = {
+      id: crypto.randomUUID(), previewDataUrl: 'data:image/png;base64,AAAA',
+      mimeType: 'image/png' as const, width: 320, height: 200, createdAt: new Date().toISOString()
+    }
+    const builder = new DesktopOpenAiContextBuilder(workspaceService, db)
 
     const context = await builder.build({
-      requestId: crypto.randomUUID(), source: 'editor', mode: 'explain', message: '解释选区', projectId: project.id, activeFile: 'main.cpp',
-      selection: { startLine: 1, startColumn: 1, endLine: 1, endColumn: 10, content: 'return 0;' }
-    })
+      requestId, source: 'screenshot', mode: 'auto', message: prompt, projectId: project.id, activeFile: 'main.cpp', screenshot
+    }, requestId, 0, new AbortController().signal)
 
-    expect(context.sources.map(item => item.kind)).toEqual(expect.arrayContaining(['selection', 'project-tree', 'learning', 'tool']))
-    expect(context.sources.some(item => item.kind === 'file')).toBe(false)
+    expect(context).toMatchObject({
+      protocol: 'cpppilot.context.v1', taskId: requestId, turn: 0,
+      task: { prompt, source: 'screenshot', activeFile: 'main.cpp', screenshot: {
+        id: screenshot.id, mimeType: 'image/png', width: 320, height: 200, bytes: expect.any(Number)
+      } },
+      workspace: { project: { id: project.id, name: '原始请求' }, activeFile: { path: 'main.cpp', redacted: true } },
+      policy: { allowedProjectId: project.id, writesRequireApproval: true }
+    })
+    const serialized = JSON.stringify(context)
+    expect(serialized).not.toContain(workspaceRoot)
+    expect(serialized).not.toContain('C:\\Users\\alice')
+    expect(serialized).not.toContain('sk-sensitive-context-token')
+    expect(serialized).toContain('//comment')
+    expect(serialized).toContain('https://example.test/docs')
+    expect(serialized).not.toContain('apiKey')
   })
 
-  it('requests L3 approval without exposing secrets before remote planning', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-remote-approval-'))
+  it('includes sanitized recent project tool evidence in model memory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-openai-memory-'))
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+    const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
+    cleanups.push(() => db.close())
+    const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
+    const workspaceRoot = join(dir, 'workspace')
+    mkdirSync(workspaceRoot)
+    const workspace = workspaceService.registerWorkspace(workspaceRoot)
+    workspaceService.setTrust(workspace.id, true)
+    const project = workspaceService.commitDraft(workspaceService.previewProject({
+      mode: 'manual', workspaceId: workspace.id, name: 'Evidence project', type: 'single-file'
+    }).draftId)
+    const now = new Date().toISOString()
+    const priorRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor' as const, mode: 'auto' as const,
+      message: '修复上次的编译错误', projectId: project.id, status: 'completed' as const, steps: [],
+      response: '已修复', validationSummary: '编译成功', createdAt: now, updatedAt: now, completedAt: now
+    }
+    db.createAgentRun(priorRun)
+    db.saveToolCall({
+      id: crypto.randomUUID(), runId: priorRun.id, stepId: 'tool-1', serverName: 'cpppilot-local-tools',
+      toolName: 'compiler.build', risk: 'L1', parameterSummary: {}, status: 'completed', startedAt: now,
+      finishedAt: now, durationMs: 1,
+      result: {
+        ok: true, exitCode: 0,
+        summary: 'Built C:\\Users\\alice\\private.exe using sk-sensitive-memory-token',
+        diagnostics: [], artifacts: [], sideEffects: [], retryable: false, durationMs: 1
+      }
+    })
+    const requestId = crypto.randomUUID()
+
+    const context = await new DesktopOpenAiContextBuilder(workspaceService, db).build({
+      requestId, source: 'editor', mode: 'auto', message: '继续处理', projectId: project.id, activeFile: 'main.cpp'
+    }, requestId, 0, new AbortController().signal)
+
+    expect(context.memory.recentEvidence).toEqual([
+      expect.objectContaining({
+        task: '修复上次的编译错误',
+        status: 'completed',
+        validationSummary: '编译成功',
+        tools: [expect.objectContaining({ tool: 'compiler.build', status: 'completed', ok: true })]
+      })
+    ])
+    const serialized = JSON.stringify(context.memory.recentEvidence)
+    expect(serialized).not.toContain('C:\\Users\\alice')
+    expect(serialized).not.toContain('sk-sensitive-memory-token')
+    expect(serialized).not.toContain(priorRun.id)
+  })
+
+  it('creates a Responses model only when an enabled profile and key exist', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-responses-model-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
     cleanups.push(() => db.close())
     const now = new Date().toISOString()
     const profile = db.saveModelProfile({
-      id: crypto.randomUUID(), name: '课程模型', baseUrl: 'https://example.test/v1', model: 'teacher', enabled: true,
+      id: crypto.randomUUID(), name: 'Responses', baseUrl: 'https://example.test/v1', model: 'gpt-5', enabled: true,
       timeoutMs: 10_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
     })
-    const planner = new DesktopPlanner(db, { get: id => id === profile.id ? 'top-secret-key' : undefined })
+    const bodies: Record<string, any>[] = []
+    const fetcher = (async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return Response.json({ id: 'response-test', status: 'completed', output: [] })
+    }) as typeof fetch
+    const tools = [{
+      type: 'function' as const, name: 'workspace_read_file', description: 'Read', strict: true as const,
+      parameters: { type: 'object', properties: {}, required: [], additionalProperties: false }
+    }]
+    const factory = new DesktopOpenAiModelFactory(db, { get: id => id === profile.id ? 'secret' : undefined }, tools, fetcher)
 
-    const approval = planner.contextApproval?.(
-      { requestId: crypto.randomUUID(), source: 'editor', mode: 'explain', message: '解释代码' },
-      { requestId: crypto.randomUUID(), sources: [{ kind: 'selection', label: 'main.cpp:1-2', content: 'top-secret-code', trusted: true }], conceptIds: [], tokenEstimate: 4, truncated: false }
-    )
-    const serialized = JSON.stringify(approval)
+    const model = await factory.create(new AbortController().signal)
+    await model!.respond([], new AbortController().signal)
 
-    expect(approval).toMatchObject({ risk: 'L3', sideEffects: ['remote-request'] })
-    expect(serialized).not.toContain('top-secret-code')
-    expect(serialized).not.toContain('top-secret-key')
+    expect(model?.profile.id).toBe(profile.id)
+    expect(bodies[0]).toMatchObject({ model: 'gpt-5', tools, store: false, parallel_tool_calls: false })
+    expect(JSON.stringify(bodies[0])).not.toContain('secret')
+    expect(await new DesktopOpenAiModelFactory(db, { get: () => undefined }, tools, fetcher).create(new AbortController().signal)).toBeUndefined()
   })
 
   it('connects to the local MCP server through a spawned stdio process', async () => {
@@ -317,7 +416,9 @@ describe('desktop H3 integration', () => {
     const adapter = new DesktopMcpAdapter({ db, workspaceService, toolchainService, buildRoot: join(dir, 'builds') })
     const context = { signal: new AbortController().signal, onProgress: async () => undefined }
 
-    const created = await adapter.execute('project.create', { mode: 'description', name: '成长项目', description: '输出 Hello' }, context)
+    const created = await adapter.execute('project.create', {
+      workspaceId: workspace.id, mode: 'description', name: '成长项目', description: '输出 Hello'
+    }, context)
     const projectId = (created.structuredContent as { projectId: string }).projectId
     const build = await adapter.execute('compiler.build', {
       runId: crypto.randomUUID(), projectId, relativePath: 'main.cpp', standard: 'c++17'
@@ -508,89 +609,4 @@ describe('desktop H3 integration', () => {
     expect(diagnostics).toMatchObject({ runId: run.id, diagnostics: [{ normalizedMessage: '缺少分号' }] })
   })
 
-  it.runIf(process.platform === 'win32')('executes all seven H3 workflows through the real H2 adapter', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-seven-workflows-'))
-    cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
-    const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
-    cleanups.push(() => db.close())
-    db.seedKnowledge(builtInKnowledge)
-    db.seedAchievementDefinitions(achievementDefinitions)
-    const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
-    const workspaceRoot = join(dir, 'workspace')
-    mkdirSync(workspaceRoot)
-    const workspace = workspaceService.registerWorkspace(workspaceRoot)
-    workspaceService.setTrust(workspace.id, true)
-    const project = workspaceService.commitDraft(workspaceService.previewProject({
-      mode: 'manual', workspaceId: workspace.id, name: '七工作流', type: 'single-file'
-    }).draftId)
-    const now = new Date().toISOString()
-    for (const conceptId of ['basics.program', 'basics.variables', 'basics.types', 'basics.operators', 'basics.expressions', 'control.conditions', 'control.loops', 'functions.basic']) {
-      db.upsertLearnerKnowledge({ userId: 'local-user', conceptId, status: 'verified', confidence: 1, verifiedAt: now, lastEvidenceId: 'fixture:knowledge', updatedAt: now })
-    }
-    const adapter = new DesktopMcpAdapter({ db, workspaceService, toolchainService: new ToolchainService(), buildRoot: join(dir, 'builds') })
-    const toolClient = await McpRuntimeToolClient.connect(adapter)
-    cleanups.push(() => toolClient.close())
-    const runtime = new AgentRuntime({
-      store: new DatabaseRuntimeStore(db), contextBuilder: new DesktopContextBuilder(workspaceService, db),
-      planner: new H3WorkflowPlanner(), toolClient, knowledgeGate: new KnowledgeGate(builtInKnowledge)
-    })
-    const complete = async (input: Parameters<AgentRuntime['start']>[0]) => {
-      let run = await runtime.start(input)
-      while (run.status === 'waiting-approval') {
-        run = await runtime.decide({ approvalId: run.pendingApproval!.id, decision: 'approved' })
-      }
-      expect(run.status).toBe('completed')
-      return db.getAgentRun(run.id)!
-    }
-
-    const environment = await complete({ requestId: crypto.randomUUID(), source: 'main', mode: 'environment', message: '检测并绑定本机 C++ 环境' })
-    const createdProject = await complete({ requestId: crypto.randomUUID(), source: 'main', mode: 'project', message: '创建一个输出 Hello 的控制台程序' })
-    const explain = await complete({
-      requestId: crypto.randomUUID(), source: 'editor', mode: 'explain', message: '解释 return', projectId: project.id, activeFile: 'main.cpp',
-      selection: { startLine: 1, startColumn: 14, endLine: 1, endColumn: 22, content: 'return 0;' }
-    })
-
-    let document = workspaceService.readFile(project.id, 'main.cpp')
-    await workspaceService.writeFile(project.id, 'main.cpp', '#include <iostream>\nint main() {\n  std::cout << "missing semicolon"\n  return 0;\n}\n', document.contentHash, false)
-    const diagnose = await complete({
-      requestId: crypto.randomUUID(), source: 'editor', mode: 'diagnose', message: '修复当前编译错误并解释根因', projectId: project.id, activeFile: 'main.cpp'
-    })
-
-    document = workspaceService.readFile(project.id, 'main.cpp')
-    const logicSource = [
-      '#include <iostream>',
-      'int main() {',
-      '  int n = 0;',
-      '  if (!(std::cin >> n)) return 0;',
-      '  if (n == 3) { for (int i = 0; i <= n; ++i) { if (i) std::cout << " "; std::cout << i; } }',
-      '  else { std::cout << "none"; }',
-      '  return 0;',
-      '}',
-      ''
-    ].join('\n')
-    await workspaceService.writeFile(project.id, 'main.cpp', logicSource, document.contentHash, false)
-    const logic = await complete({
-      requestId: crypto.randomUUID(), source: 'editor', mode: 'solve',
-      message: '检查循环边界。输入：3\n输出：0 1 2\n输入：1\n输出：none\n输入：2\n输出：none\n输入：4\n输出：none\n输入：5\n输出：none',
-      projectId: project.id, activeFile: 'main.cpp'
-    })
-
-    const screenshot = await complete({
-      requestId: crypto.randomUUID(), source: 'screenshot', mode: 'explain', message: '解释截图中的代码',
-      screenshot: { id: crypto.randomUUID(), previewDataUrl: 'data:image/png;base64,AA==', mimeType: 'image/png', width: 10, height: 10, createdAt: new Date().toISOString() }
-    })
-    const details = [environment, createdProject, explain, diagnose, logic, screenshot]
-    expect(details).toHaveLength(6)
-    for (const detail of details) {
-      expect(detail.timeline.map(item => item.kind)).toEqual(expect.arrayContaining([
-        'intent', 'context', 'plan', 'policy', 'validation', 'response'
-      ]))
-    }
-    expect(environment.toolCalls.map(item => item.toolName)).toEqual(expect.arrayContaining(['toolchain.detect_compilers', 'toolchain.probe_compiler', 'toolchain.bind_compiler']))
-    expect(createdProject.toolCalls.map(item => item.toolName)).toEqual(expect.arrayContaining(['project.create', 'compiler.build']))
-    expect(explain.response).toContain('return')
-    expect(diagnose.timeline.some(item => item.kind === 'validation')).toBe(true)
-    expect(logic.timeline.some(item => item.kind === 'validation')).toBe(true)
-    expect(screenshot.approvals.some(item => item.risk === 'L3' && item.status === 'approved')).toBe(true)
-  }, 120_000)
 })

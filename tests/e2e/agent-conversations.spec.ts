@@ -75,6 +75,11 @@ async function openProject(page: Page, projectId: string) {
   await page.getByText('main.cpp', { exact: true }).click()
 }
 
+async function approveModelContext(page: Page) {
+  await expect(page.locator('.approval-card')).toContainText('发送上下文到 OpenAI 模型', { timeout: 30_000 })
+  await page.getByRole('button', { name: '批准', exact: true }).click()
+}
+
 async function capture(electronApp: ElectronApplication, page: Page, name: string) {
   const browserWindow = await electronApp.browserWindow(page)
   const png = await browserWindow.evaluate(async win => (await win.capturePage()).toPNG().toString('base64'))
@@ -239,6 +244,7 @@ test('persists a grouped diagnostic inbox and explains it in a streamed project 
   await page.getByRole('button', { name: '错误收件箱', exact: true }).click()
   await page.locator('.diagnostic-group-summary').click()
   await page.getByRole('button', { name: '创建新对话' }).click()
+  await approveModelContext(page)
   await expect(page.locator('.workspace-agent-panel')).toBeVisible()
   await expect(page.locator('.conversation-transcript')).toContainText('先看共同原因', { timeout: 30_000 })
   await expect(page.locator('.conversation-transcript')).toContainText('两个出现位置')
@@ -274,6 +280,7 @@ test('renders assistant Markdown and removes unsafe HTML', async () => {
     await page.getByRole('button', { name: /Agent/ }).click()
     await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('Markdown 渲染测试')
     await page.getByRole('button', { name: '发送', exact: true }).click()
+    await approveModelContext(page)
 
     const reply = page.locator('.conversation-message.assistant').last()
     await expect(reply.locator('.message-markdown')).toBeVisible({ timeout: 30_000 })
@@ -313,10 +320,12 @@ test('keeps conversations isolated by project and supports stopping then retryin
     await page.getByRole('button', { name: /Agent/ }).click()
     await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('停止测试')
     await page.getByRole('button', { name: '发送', exact: true }).click()
-    await expect(page.locator('.conversation-transcript')).toContainText('尚未完成的回答', { timeout: 30_000 })
+    await approveModelContext(page)
+    await expect(page.getByTitle('停止 Agent')).toBeVisible({ timeout: 30_000 })
     await page.getByTitle('停止 Agent').click()
     await expect(page.locator('.conversation-message.stopped')).toBeVisible()
     await page.locator('.conversation-message.stopped').getByRole('button', { name: '重试' }).click()
+    await approveModelContext(page)
     await expect(page.locator('.conversation-transcript')).toContainText('这次回答已经完成', { timeout: 30_000 })
 
     const second = await page.evaluate(async () => {

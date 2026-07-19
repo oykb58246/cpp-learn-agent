@@ -40,6 +40,7 @@ import type {
   AgentRun,
   AgentRunDetail,
   AgentRunStatus,
+  AgentContinueRequest,
   AgentStartRequest,
   ApprovalDecision,
   ModelProfile,
@@ -77,6 +78,7 @@ export * from './agent'
 export * from './learning'
 export * from './conversation'
 export * from './agent-protocol'
+export * from './openai-agent'
 
 export const themeSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themeSchema>
@@ -319,15 +321,12 @@ export interface CppPetApi {
     create(input: ConversationCreateInput): Promise<ApiResult<AgentConversation>>
     archive(input: ConversationArchiveInput): Promise<ApiResult<AgentConversation>>
     messages(input: ConversationMessagesInput): Promise<ApiResult<AgentMessage[]>>
-    send(input: ConversationSendInput): Promise<ApiResult<ConversationSendResult>>
     submitAgent(input: ConversationSendInput): Promise<ApiResult<ConversationAgentSubmitResult>>
-    stop(input: ConversationStopInput): Promise<ApiResult<AgentMessage | null>>
-    retry(input: ConversationRetryInput): Promise<ApiResult<ConversationSendResult>>
-    onDelta(listener: (event: ConversationMessageDelta) => void): () => void
     onChanged(listener: (event: ConversationChangedEvent) => void): () => void
   }
   agent: {
     start(input: AgentStartRequest): Promise<ApiResult<AgentRun>>
+    continue(input: AgentContinueRequest): Promise<ApiResult<AgentRun>>
     get(input: { runId: string }): Promise<ApiResult<AgentRunDetail>>
     list(input?: { status?: AgentRunStatus; projectId?: string; limit?: number }): Promise<ApiResult<AgentRun[]>>
     cancel(input: { runId: string }): Promise<ApiResult<AgentRun>>

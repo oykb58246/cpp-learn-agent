@@ -5,6 +5,7 @@ import {
   type AgentExecutionEvidence,
   type AgentWorkflow,
   type AgentStartRequest,
+  type AgentContinueRequest,
   type AgentStep,
   type Approval,
   type ApprovalDecision,
@@ -71,12 +72,24 @@ export interface RuntimeToolProgress {
   message: string
 }
 
+export interface RuntimeSessionRecord {
+  runId: string
+  protocol: string
+  state: unknown
+  updatedAt: string
+}
+
 export interface RuntimeStore {
   create(run: AgentRun): void | Promise<void>
   update(run: AgentRun): void | Promise<void>
   append(event: TimelineEvent): void | Promise<void>
   saveApproval(approval: Approval): void | Promise<void>
   saveToolCall(call: ToolCall): void | Promise<void>
+  saveSession(session: RuntimeSessionRecord): void | Promise<void>
+  deleteSession(runId: string): void | Promise<void>
+  saveCheckpoint(run: AgentRun, session?: RuntimeSessionRecord): void | Promise<void>
+  getSession(runId: string): RuntimeSessionRecord | undefined
+  listSessions(): RuntimeSessionRecord[]
   get(runId: string): AgentRunDetail | undefined
   list(): AgentRun[]
 }
@@ -116,11 +129,23 @@ export interface AgentRuntimeOptions {
   totalTimeoutMs?: number
 }
 
+export interface AgentRuntimeController {
+  onChanged(listener: (run: AgentRun) => void): () => void
+  start(input: AgentStartRequest): Promise<AgentRun>
+  continue(input: AgentContinueRequest): Promise<AgentRun>
+  get(runId: string): AgentRunDetail | undefined
+  list(): AgentRun[]
+  decide(input: ApprovalDecision): Promise<AgentRun>
+  cancel(runId: string): Promise<AgentRun>
+  shutdown(): Promise<void>
+}
+
 export class InMemoryRuntimeStore implements RuntimeStore {
   private readonly runs = new Map<string, AgentRun>()
   private readonly timeline = new Map<string, TimelineEvent[]>()
   private readonly approvals = new Map<string, Approval[]>()
   private readonly toolCalls = new Map<string, ToolCall[]>()
+  private readonly sessions = new Map<string, RuntimeSessionRecord>()
 
   create(run: AgentRun): void { this.runs.set(run.id, structuredClone(run)) }
   update(run: AgentRun): void { this.runs.set(run.id, structuredClone(run)) }
@@ -142,6 +167,24 @@ export class InMemoryRuntimeStore implements RuntimeStore {
     if (index >= 0) items[index] = structuredClone(call)
     else items.push(structuredClone(call))
     this.toolCalls.set(call.runId, items)
+  }
+  saveSession(session: RuntimeSessionRecord): void {
+    this.sessions.set(session.runId, structuredClone(session))
+  }
+  deleteSession(runId: string): void { this.sessions.delete(runId) }
+  getSession(runId: string): RuntimeSessionRecord | undefined {
+    const session = this.sessions.get(runId)
+    return session ? structuredClone(session) : undefined
+  }
+  listSessions(): RuntimeSessionRecord[] {
+    return [...this.sessions.values()].map(session => structuredClone(session))
+  }
+  saveCheckpoint(run: AgentRun, session?: RuntimeSessionRecord): void {
+    const nextRun = structuredClone(run)
+    const nextSession = session ? structuredClone(session) : undefined
+    this.runs.set(run.id, nextRun)
+    if (nextSession) this.sessions.set(run.id, nextSession)
+    else this.sessions.delete(run.id)
   }
   get(runId: string): AgentRunDetail | undefined {
     const run = this.runs.get(runId)
@@ -222,6 +265,10 @@ export class AgentRuntime {
     }
     if (this.isTerminal(run.status)) this.executions.delete(run.id)
     return structuredClone(run)
+  }
+
+  async continue(_input: AgentContinueRequest): Promise<AgentRun> {
+    throw new Error('Legacy Agent runs do not support model clarification')
   }
 
   get(runId: string): AgentRunDetail | undefined { return this.options.store.get(runId) }

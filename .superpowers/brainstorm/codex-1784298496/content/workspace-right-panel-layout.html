@@ -1,0 +1,96 @@
+<style>
+  .layout-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; align-items:start; }
+  .layout-card { cursor:pointer; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--bg-secondary); transition:.15s ease; }
+  .layout-card:hover { border-color:var(--accent); transform:translateY(-1px); }
+  .layout-card.selected { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 25%,transparent); }
+  .mock-app { height:330px; display:grid; grid-template-rows:30px 1fr; background:#0f1722; color:#dce7f5; font:10px/1.35 ui-sans-serif,system-ui; }
+  .mock-titlebar { display:flex; align-items:center; gap:10px; padding:0 9px; border-bottom:1px solid #293748; background:#172231; }
+  .mock-titlebar b { font-size:11px; }
+  .mock-shell { display:grid; grid-template-columns:50px 1fr 112px; min-height:0; }
+  .mock-files { padding:10px 6px; border-right:1px solid #293748; color:#8292a6; }
+  .mock-main { display:grid; grid-template-rows:32px 1fr 68px; min-width:0; }
+  .mock-toolbar { display:flex; align-items:center; gap:5px; padding:0 7px; border-bottom:1px solid #293748; background:#172231; }
+  .mock-icon { display:grid; place-items:center; width:22px; height:22px; border:1px solid #334257; border-radius:4px; color:#a9bad0; }
+  .mock-icon.active { color:#5da9ff; background:#203a57; border-color:#487caf; }
+  .mock-code { position:relative; padding:14px 10px; color:#8bbef0; background:#0d151f; font-family:ui-monospace,monospace; }
+  .mock-code div { margin:5px 0; }
+  .mock-output { padding:7px; border-top:1px solid #293748; color:#8d9aad; }
+  .mock-agent { display:grid; grid-template-rows:34px 1fr 57px; min-width:0; border-left:1px solid #334257; background:#172231; }
+  .mock-agent-head { display:flex; align-items:center; justify-content:space-between; padding:0 7px; border-bottom:1px solid #293748; }
+  .mock-agent-head b { font-size:9px; }
+  .mock-chat { padding:9px 7px; overflow:hidden; color:#aebbd0; }
+  .bubble { margin-bottom:8px; padding:6px; border-radius:5px; background:#202e40; }
+  .bubble.you { margin-left:14px; color:#e5edf7; background:#24476b; }
+  .mock-compose { margin:6px; padding:6px; border:1px solid #3a4b61; border-radius:4px; color:#71839a; }
+  .snapshot-pop { position:absolute; z-index:2; top:6px; right:6px; width:105px; border:1px solid #40546c; border-radius:6px; background:#192638; box-shadow:0 8px 18px #05090f99; }
+  .snapshot-pop header { display:flex; align-items:center; justify-content:space-between; padding:7px; border-bottom:1px solid #304158; font-weight:700; color:#e4edf9; }
+  .snapshot-pop div { padding:7px; border-bottom:1px solid #29394e; color:#aebbd0; }
+  .snapshot-pop div:last-child { border-bottom:0; }
+  .snapshot-drawer { position:absolute; z-index:2; inset:0 0 0 auto; width:112px; padding:8px; border-left:1px solid #40546c; background:#192638; box-shadow:-8px 0 18px #05090f88; }
+  .snapshot-drawer b { display:block; margin-bottom:9px; }
+  .snapshot-drawer div { margin:6px 0; padding:7px 4px; border-top:1px solid #304158; }
+  .mock-tabs { display:flex; gap:2px; padding:4px; border-bottom:1px solid #293748; }
+  .mock-tabs span { flex:1; padding:5px 2px; text-align:center; color:#8191a5; }
+  .mock-tabs .on { color:#65adff; border-bottom:2px solid #65adff; }
+  .card-copy { padding:12px 13px 14px; }
+  .card-copy h3 { margin:0 0 5px; font-size:15px; }
+  .card-copy p { margin:0; color:var(--text-secondary); font-size:12px; line-height:1.5; }
+  .recommend { display:inline-block; margin-bottom:7px; padding:2px 6px; border-radius:4px; background:color-mix(in srgb,var(--accent) 18%,transparent); color:var(--accent); font-size:10px; font-weight:700; }
+  @media (max-width:980px) { .layout-grid { grid-template-columns:1fr; } }
+</style>
+
+<h2>Agent 右栏与快照入口</h2>
+<p class="subtitle">三种方案都让 Agent 代替当前快照侧栏；区别只在快照从哪里打开、以什么方式展开。</p>
+
+<div class="layout-grid">
+  <div class="layout-card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="mock-app">
+      <div class="mock-titlebar"><b>CppPilot</b><span>项目 · 力扣hot100</span></div>
+      <div class="mock-shell">
+        <div class="mock-files">文件<br><br>main.cpp<br>README</div>
+        <div class="mock-main">
+          <div class="mock-toolbar"><span>▶</span><span>■</span><span style="flex:1"></span><span class="mock-icon active">↶</span><span class="mock-icon">☷</span></div>
+          <div class="mock-code">
+            <div>#include &lt;iostream&gt;</div><div>int main() {</div><div>&nbsp; cout &lt;&lt; "Hello";</div><div>}</div>
+            <div class="snapshot-pop"><header><span>快照</span><span>＋</span></header><div>保存前 · main.cpp</div><div>手动检查点</div></div>
+          </div>
+          <div class="mock-output">输出　问题 1　调试</div>
+        </div>
+        <div class="mock-agent"><div class="mock-agent-head"><b>▣ CppPilot Agent</b><span>＋ ···</span></div><div class="mock-chat"><div class="bubble you">这个报错是什么意思？</div><div class="bubble">第 5 行缺少分号。先看 cout 语句的结尾。</div></div><div class="mock-compose">向 Agent 提问…</div></div>
+      </div>
+    </div>
+    <div class="card-copy"><span class="recommend">推荐</span><h3>A. 工具栏弹出快照</h3><p>复用现有历史按钮，在编辑区右上角弹出紧凑面板。Agent 始终占据右栏，快照即用即关。</p></div>
+  </div>
+
+  <div class="layout-card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="mock-app">
+      <div class="mock-titlebar"><b>CppPilot</b><span>项目 · 力扣hot100</span></div>
+      <div class="mock-shell">
+        <div class="mock-files">文件<br><br>main.cpp<br>README</div>
+        <div class="mock-main">
+          <div class="mock-toolbar"><span>▶</span><span>■</span><span style="flex:1"></span><span class="mock-icon">☷</span></div>
+          <div class="mock-code"><div>#include &lt;iostream&gt;</div><div>int main() {</div><div>&nbsp; cout &lt;&lt; "Hello";</div><div>}</div><div class="snapshot-drawer"><b>快照　×</b><div>＋ 创建快照</div><div>保存前 · main.cpp</div><div>手动检查点</div></div></div>
+          <div class="mock-output">输出　问题 1　调试</div>
+        </div>
+        <div class="mock-agent"><div class="mock-agent-head"><b>▣ CppPilot Agent</b><span class="mock-icon active">↶</span></div><div class="mock-chat"><div class="bubble you">这个报错是什么意思？</div><div class="bubble">第 5 行缺少分号。</div></div><div class="mock-compose">向 Agent 提问…</div></div>
+      </div>
+    </div>
+    <div class="card-copy"><h3>B. Agent 头部抽屉</h3><p>快照按钮放在 Agent 标题栏，点击后从右侧覆盖 Agent。关联明确，但查看快照时会暂时挡住对话。</p></div>
+  </div>
+
+  <div class="layout-card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="mock-app">
+      <div class="mock-titlebar"><b>CppPilot</b><span>项目 · 力扣hot100</span></div>
+      <div class="mock-shell">
+        <div class="mock-files">文件<br><br>main.cpp<br>README</div>
+        <div class="mock-main">
+          <div class="mock-toolbar"><span>▶</span><span>■</span><span style="flex:1"></span><span class="mock-icon">☷</span></div>
+          <div class="mock-code"><div>#include &lt;iostream&gt;</div><div>int main() {</div><div>&nbsp; cout &lt;&lt; "Hello";</div><div>}</div></div>
+          <div class="mock-output">输出　问题 1　调试</div>
+        </div>
+        <div class="mock-agent"><div class="mock-tabs"><span class="on">Agent</span><span>快照</span></div><div class="mock-chat"><div class="bubble you">这个报错是什么意思？</div><div class="bubble">第 5 行缺少分号。</div></div><div class="mock-compose">向 Agent 提问…</div></div>
+      </div>
+    </div>
+    <div class="card-copy"><h3>C. 右栏双标签</h3><p>Agent 与快照共享侧栏，通过标签切换。结构最稳定，但快照仍是一级功能，视觉存在感偏高。</p></div>
+  </div>
+</div>

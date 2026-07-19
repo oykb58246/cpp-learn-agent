@@ -126,6 +126,89 @@ describe('H3 persistence', () => {
     reopened.close()
   })
 
+  it('persists resumable OpenAI sessions and waiting-input state across restarts', () => {
+    const { file, db } = setup()
+    const run: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto',
+      message: '修改目标文件', status: 'waiting-input', steps: [],
+      pendingClarification: { question: '目标文件是哪一个？', requestedAt: now },
+      createdAt: now, updatedAt: now
+    }
+    const session = {
+      runId: run.id,
+      protocol: 'cpppilot.openai-session.v1',
+      state: {
+        request: { requestId: run.requestId, source: run.source, mode: run.mode, message: run.message },
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'context' }] }],
+        remainingTimeMs: 90_000
+      },
+      updatedAt: now
+    }
+
+    db.createAgentRun(run)
+    db.saveAgentModelSession(session)
+    db.close()
+
+    const reopened = new AppDatabase(file)
+    expect(reopened.getAgentRun(run.id)).toMatchObject({
+      status: 'waiting-input',
+      pendingClarification: { question: '目标文件是哪一个？' }
+    })
+    expect(reopened.getAgentModelSession(run.id)).toEqual(session)
+    expect(reopened.listAgentModelSessions()).toEqual([session])
+    expect(reopened.recoverInterruptedAgentRuns('2026-07-17T00:00:00.000Z')).toEqual([])
+    expect(reopened.getAgentRun(run.id)?.status).toBe('waiting-input')
+
+    reopened.deleteAgentModelSession(run.id)
+    expect(reopened.getAgentModelSession(run.id)).toBeUndefined()
+    reopened.close()
+  })
+
+  it('isolates a malformed model session instead of failing the whole session list', () => {
+    const { db } = setup()
+    const run: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto',
+      message: '等待输入', status: 'waiting-input', steps: [],
+      pendingClarification: { question: '哪个文件？', requestedAt: now },
+      createdAt: now, updatedAt: now
+    }
+    db.createAgentRun(run)
+    db.db.prepare('INSERT INTO agent_model_sessions(run_id,protocol,state_json,updated_at) VALUES(?,?,?,?)')
+      .run(run.id, 'cpppilot.openai-session.v1', '{', now)
+
+    expect(db.getAgentModelSession(run.id)).toMatchObject({ runId: run.id, state: null })
+    expect(db.listAgentModelSessions()).toEqual([
+      expect.objectContaining({ runId: run.id, state: null })
+    ])
+    db.close()
+  })
+
+  it('rolls back the run and model session together when a checkpoint cannot be serialized', () => {
+    const { db } = setup()
+    const run: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto',
+      message: '原子 checkpoint', status: 'waiting-input', steps: [],
+      pendingClarification: { question: '哪个文件？', requestedAt: now },
+      createdAt: now, updatedAt: now
+    }
+    const originalSession = {
+      runId: run.id, protocol: 'cpppilot.openai-session.v1', state: { version: 'old' }, updatedAt: now
+    }
+    db.createAgentRun(run)
+    db.saveAgentModelSession(originalSession)
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+
+    expect(() => db.saveAgentCheckpoint(
+      { ...run, status: 'waiting-approval', pendingClarification: undefined, updatedAt: '2026-07-18T00:00:00.000Z' },
+      { ...originalSession, state: circular, updatedAt: '2026-07-18T00:00:00.000Z' }
+    )).toThrow()
+
+    expect(db.getAgentRun(run.id)).toMatchObject({ status: 'waiting-input' })
+    expect(db.getAgentModelSession(run.id)).toEqual(originalSession)
+    db.close()
+  })
+
   it('persists automatic run links back to the originating conversation message', () => {
     const { file, db } = setup()
     const run: AgentRun = {
@@ -240,5 +323,57 @@ describe('H3 persistence', () => {
     db.removeModelProfile(profile.id)
     expect(db.listModelProfiles()).toEqual([])
     db.close()
+  })
+
+  it('keeps only the most recently enabled model profile active', () => {
+    const { db } = setup()
+    const first: ModelProfile = {
+      id: crypto.randomUUID(), name: 'First', baseUrl: 'https://first.example/v1', model: 'model-a',
+      enabled: true, timeoutMs: 30_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
+    }
+    const second: ModelProfile = {
+      id: crypto.randomUUID(), name: 'Second', baseUrl: 'https://second.example/v1', model: 'model-b',
+      enabled: true, timeoutMs: 30_000, apiKeyConfigured: true,
+      createdAt: new Date(Date.parse(now) + 1_000).toISOString(),
+      updatedAt: new Date(Date.parse(now) + 1_000).toISOString()
+    }
+
+    db.saveModelProfile(first)
+    db.saveModelProfile(second)
+
+    expect(db.getModelProfile(second.id)?.enabled).toBe(true)
+    expect(db.getModelProfile(first.id)?.enabled).toBe(false)
+    expect(db.listModelProfiles().filter(profile => profile.enabled)).toHaveLength(1)
+    db.close()
+  })
+
+  it('normalizes multiple enabled profiles when upgrading an existing database', () => {
+    const { file, db } = setup()
+    const first: ModelProfile = {
+      id: crypto.randomUUID(), name: 'Old', baseUrl: 'https://old.example/v1', model: 'old-model',
+      enabled: true, timeoutMs: 30_000, apiKeyConfigured: true,
+      createdAt: '2026-07-18T00:00:00.000Z', updatedAt: '2026-07-18T00:00:00.000Z'
+    }
+    const latest: ModelProfile = {
+      id: crypto.randomUUID(), name: 'Latest', baseUrl: 'https://latest.example/v1', model: 'latest-model',
+      enabled: true, timeoutMs: 30_000, apiKeyConfigured: true,
+      createdAt: '2026-07-19T00:00:00.000Z', updatedAt: '2026-07-19T00:00:00.000Z'
+    }
+    db.saveModelProfile(first)
+    db.saveModelProfile(latest)
+    db.db.exec('DROP INDEX IF EXISTS idx_model_profiles_single_enabled')
+    db.db.prepare('UPDATE model_profiles SET enabled = 1').run()
+    db.db.prepare('DELETE FROM schema_migrations WHERE version = 13').run()
+    db.close()
+
+    const reopened = new AppDatabase(file)
+    expect(reopened.recoveryMode).toBe(false)
+    expect(reopened.listModelProfiles().filter(profile => profile.enabled).map(profile => profile.id)).toEqual([latest.id])
+    const index = reopened.db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_model_profiles_single_enabled'"
+    ).get() as { sql: string } | undefined
+    expect(index?.sql).toContain('WHERE enabled = 1')
+    expect(() => reopened.db.prepare('UPDATE model_profiles SET enabled = 1 WHERE id = ?').run(first.id)).toThrow()
+    reopened.close()
   })
 })

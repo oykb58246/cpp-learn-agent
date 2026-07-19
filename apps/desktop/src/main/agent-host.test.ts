@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentRun, AgentStartRequest, ContextPacket, ToolResult } from '@cpp-pet/contracts'
-import { AgentRuntime, InMemoryRuntimeStore, type RuntimePlan } from '@cpp-pet/agent-runtime'
+import { AgentRuntime, InMemoryRuntimeStore, type AgentRuntimeController, type RuntimePlan } from '@cpp-pet/agent-runtime'
 import { AgentHost } from './agent-host'
 
 const success: ToolResult = {
@@ -8,6 +8,24 @@ const success: ToolResult = {
 }
 
 describe('AgentHost', () => {
+  it('forwards clarification to a runtime controller', async () => {
+    const run = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'main' as const, mode: 'auto' as const,
+      message: 'question', status: 'waiting-input' as const, steps: [],
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    }
+    const controller: AgentRuntimeController = {
+      onChanged: () => () => undefined,
+      async start() { return run }, async continue(input) { return { ...run, response: input.message } },
+      get: () => undefined, list: () => [run], async decide() { return run }, async cancel() { return run }, async shutdown() {}
+    }
+    const host = new AgentHost(controller)
+
+    const continued = await host.continue({ runId: run.id, message: 'main.cpp' })
+
+    expect(continued.response).toBe('main.cpp')
+  })
+
   it('starts runs and publishes typed run changes', async () => {
     const store = new InMemoryRuntimeStore()
     const plan: RuntimePlan = {

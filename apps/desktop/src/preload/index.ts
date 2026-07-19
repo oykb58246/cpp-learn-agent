@@ -83,15 +83,7 @@ const api: CppPetApi = {
     create: input => invoke(ipc.conversationsCreate, input),
     archive: input => invoke(ipc.conversationsArchive, input),
     messages: input => invoke(ipc.conversationsMessages, input),
-    send: input => invoke(ipc.conversationsSend, input),
     submitAgent: input => invoke(ipc.conversationsAgentSubmit, input),
-    stop: input => invoke(ipc.conversationsStop, input),
-    retry: input => invoke(ipc.conversationsRetry, input),
-    onDelta: listener => {
-      const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
-      ipcRenderer.on(ipc.conversationsDelta, wrapped)
-      return () => ipcRenderer.removeListener(ipc.conversationsDelta, wrapped)
-    },
     onChanged: listener => {
       const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
       ipcRenderer.on(ipc.conversationsChanged, wrapped)
@@ -100,6 +92,7 @@ const api: CppPetApi = {
   },
   agent: {
     start: input => invoke(ipc.agentStart, input),
+    continue: input => invoke(ipc.agentContinue, input),
     get: input => invoke(ipc.agentGet, input),
     list: input => invoke(ipc.agentList, input),
     cancel: input => invoke(ipc.agentCancel, input),

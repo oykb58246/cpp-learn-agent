@@ -49,7 +49,12 @@ export const localToolDefinitions: LocalToolDefinition[] = [
   tool('debug.start', '启动断点调试', 'L2', 60_000, z.object({ projectId: uuid, relativePath, standard, breakpoints: z.array(z.object({ relativePath, line: z.number().int().positive() })).max(100) })),
   tool('debug.command', '控制调试会话', 'L1', 30_000, z.object({ sessionId: uuid, command: z.enum(['continue', 'next', 'step-in', 'step-out', 'stop']) })),
   tool('problem.parse', '解析题目结构', 'L0', 10_000, z.object({ statement: z.string().min(1).max(100_000) })),
-  tool('project.create', '创建学习项目', 'L2', 30_000, z.object({ mode: z.enum(['problem', 'description']), name: z.string().min(1).max(80), description: z.string().max(100_000) })),
+  tool('project.create', '创建学习项目', 'L2', 30_000, z.object({
+    workspaceId: uuid,
+    mode: z.enum(['problem', 'description']),
+    name: z.string().min(1).max(80),
+    description: z.string().max(100_000)
+  })),
   tool('tests.generate_cases', '生成候选测试用例', 'L0', 10_000, z.object({ statement: z.string().min(1).max(100_000), count: z.number().int().min(1).max(20).default(5) })),
   tool('tests.run_cases', '运行题目测试用例', 'L2', 120_000, z.object({
     runId: uuid,

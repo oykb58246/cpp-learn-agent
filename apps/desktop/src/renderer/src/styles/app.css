@@ -926,7 +926,7 @@ body.workspace-resizing-y, body.workspace-resizing-y * { cursor: row-resize !imp
 .run-timeline time { padding-top: 8px; color: var(--text-muted); font: 10px var(--font-code); white-space: nowrap; }
 
 .runs-composer { flex: none; }
-.agent-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; flex: none; padding: 10px 0 0; }
+.agent-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 8px; flex: none; padding: 10px 0 0; }
 .agent-composer textarea { width: 100%; min-height: 52px; max-height: 120px; padding: 8px 9px; resize: vertical; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel); color: var(--text-primary); line-height: 1.45; }
 .agent-composer textarea:focus, .model-field-grid input:focus { border-color: var(--accent); outline: 0; }
 .agent-composer > button { min-width: 34px; height: 32px; }
@@ -1093,7 +1093,7 @@ body.workspace-resizing-y, body.workspace-resizing-y * { cursor: row-resize !imp
 .workspace-agent-inspector .conversation-heading { min-height: 24px; }
 .workspace-agent-inspector .conversation-commands { width: 100%; }
 .workspace-agent-inspector .conversation-commands select { width: auto; min-width: 0; flex: 1; }
-.workspace-agent-inspector .agent-composer { grid-template-columns: minmax(0, 1fr) auto; }
+.workspace-agent-inspector .agent-composer { grid-template-columns: minmax(0, 1fr) auto auto; }
 .workspace-agent-inspector .agent-composer > .agent-suggestion { grid-column: 1 / -1; width: 100%; }
 
 .model-profile-actions { align-items: center; }
@@ -1126,7 +1126,7 @@ body.workspace-resizing-y, body.workspace-resizing-y * { cursor: row-resize !imp
 @media (max-width: 1060px) {
   .h3-view { padding: 20px 22px 24px; }
   .runs-layout { grid-template-columns: minmax(190px, 230px) minmax(0, 1fr); }
-  .agent-composer { grid-template-columns: minmax(0, 1fr) auto; }
+  .agent-composer { grid-template-columns: minmax(0, 1fr) auto auto; }
   .model-field-grid { grid-template-columns: 1fr; }
   .model-field-grid > label.wide { grid-column: auto; }
   .model-actions { flex-wrap: wrap; }

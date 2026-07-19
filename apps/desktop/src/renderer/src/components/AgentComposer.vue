@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { Send, Square } from 'lucide-vue-next'
 import type { AgentStartRequest } from '@cpp-pet/contracts'
-import { inferAgentMode } from '../utils/agent-intent'
+import { createAgentRequest } from '../utils/agent-request'
 
 const props = withDefaults(defineProps<{
   source?: AgentStartRequest['source']
@@ -11,8 +11,9 @@ const props = withDefaults(defineProps<{
   selection?: NonNullable<AgentStartRequest['selection']> | undefined
   diagnostics?: NonNullable<AgentStartRequest['diagnostics']> | undefined
   busy?: boolean
+  cancellable?: boolean
   suggestion?: { label: string; message: string } | undefined
-}>(), { source: 'main', busy: false })
+}>(), { source: 'main', busy: false, cancellable: false })
 const emit = defineEmits<{
   submit: [request: AgentStartRequest]
   cancel: []
@@ -27,17 +28,14 @@ function selectSuggestion() {
 }
 
 function submit() {
-  const value = message.value.trim()
-  if (!value || props.busy) return
-  emit('submit', {
+  if (!message.value.trim() || props.busy) return
+  emit('submit', createAgentRequest(message.value, {
     source: props.source,
-    mode: inferAgentMode({ message: value, selection: props.selection, diagnostics: props.diagnostics }),
-    message: value,
     ...(props.projectId ? { projectId: props.projectId } : {}),
     ...(props.activeFile ? { activeFile: props.activeFile } : {}),
-    ...(props.selection ? { selection: { ...props.selection } } : {}),
-    ...(props.diagnostics?.length ? { diagnostics: props.diagnostics.map(item => ({ ...item, relatedConceptIds: [...item.relatedConceptIds] })) } : {})
-  })
+    ...(props.selection ? { selection: props.selection } : {}),
+    ...(props.diagnostics ? { diagnostics: props.diagnostics } : {})
+  }))
   message.value = ''
 }
 </script>
@@ -46,7 +44,7 @@ function submit() {
   <form class="agent-composer" @submit.prevent="submit">
     <button v-if="suggestion" type="button" class="agent-suggestion" :disabled="busy" @click="selectSuggestion">{{ suggestion.label }}</button>
     <textarea v-model="message" rows="2" maxlength="20000" placeholder="向 CppPilot 提交学习任务" @keydown.ctrl.enter="submit" />
-    <button v-if="busy" type="button" class="icon-command stop" title="停止 Agent" @click="emit('cancel')"><Square :size="16" /></button>
-    <button v-else type="submit" class="primary-command" :disabled="!message.trim()"><Send :size="15" />发送</button>
+    <button v-if="busy || cancellable" type="button" class="icon-command stop" title="停止 Agent" @click="emit('cancel')"><Square :size="16" /></button>
+    <button v-if="!busy" type="submit" class="primary-command" :disabled="!message.trim()"><Send :size="15" />发送</button>
   </form>
 </template>

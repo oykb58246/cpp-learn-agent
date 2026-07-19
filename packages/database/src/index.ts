@@ -90,6 +90,12 @@ CREATE INDEX IF NOT EXISTS idx_toolchain_profiles_updated ON toolchain_profiles(
 const migrationHash = (migration: Migration) => createHash('sha256').update(`${migration.version}:${migration.name}:${migration.sql}`).digest('hex')
 
 export interface SnapshotRecord extends SnapshotManifest { manifestPath: string; blobHashes: Record<string, string> }
+export interface AgentModelSessionRecord {
+  runId: string
+  protocol: string
+  state: unknown
+  updatedAt: string
+}
 
 export class AppDatabase {
   readonly db: SqliteDatabase
@@ -359,10 +365,10 @@ export class AppDatabase {
     return this.transaction(() => {
       this.db.prepare(`INSERT INTO agent_runs(
         id,request_id,source,mode,message,project_id,active_file,conversation_id,assistant_message_id,status,intent,plan_summary,response,
-        validation_summary,error_code,error_message,steps_json,pending_approval_json,created_at,updated_at,completed_at
+        validation_summary,error_code,error_message,steps_json,pending_approval_json,pending_clarification_json,created_at,updated_at,completed_at
       ) VALUES(
         @id,@requestId,@source,@mode,@message,@projectId,@activeFile,@conversationId,@assistantMessageId,@status,@intent,@planSummary,@response,
-        @validationSummary,@errorCode,@errorMessage,@stepsJson,@pendingApprovalJson,@createdAt,@updatedAt,@completedAt
+        @validationSummary,@errorCode,@errorMessage,@stepsJson,@pendingApprovalJson,@pendingClarificationJson,@createdAt,@updatedAt,@completedAt
       )`).run(agentRunParams(run))
       this.replaceAgentSteps(run)
       return run
@@ -377,10 +383,21 @@ export class AppDatabase {
         conversation_id=@conversationId,assistant_message_id=@assistantMessageId,status=@status,
         intent=@intent,plan_summary=@planSummary,response=@response,validation_summary=@validationSummary,
         error_code=@errorCode,error_message=@errorMessage,steps_json=@stepsJson,
-        pending_approval_json=@pendingApprovalJson,updated_at=@updatedAt,completed_at=@completedAt
+        pending_approval_json=@pendingApprovalJson,pending_clarification_json=@pendingClarificationJson,
+        updated_at=@updatedAt,completed_at=@completedAt
         WHERE id=@id`).run(agentRunParams(run))
       if (result.changes === 0) throw new Error('Agent run not found')
       this.replaceAgentSteps(run)
+      return run
+    })
+  }
+
+  saveAgentCheckpoint(run: AgentRun, session?: AgentModelSessionRecord): AgentRun {
+    this.ensureWritable()
+    return this.transaction(() => {
+      this.updateAgentRun(run)
+      if (session) this.saveAgentModelSession(session)
+      else this.deleteAgentModelSession(run.id)
       return run
     })
   }
@@ -407,7 +424,13 @@ export class AppDatabase {
   recoverInterruptedAgentRuns(recoveredAt = new Date().toISOString()): AgentRun[] {
     this.ensureWritable()
     return this.db.transaction(() => {
-      const rows = this.db.prepare("SELECT * FROM agent_runs WHERE status NOT IN ('completed','failed','cancelled') ORDER BY updated_at").all() as any[]
+      const rows = this.db.prepare(`SELECT * FROM agent_runs
+        WHERE status NOT IN ('completed','failed','cancelled')
+          AND NOT (
+            status IN ('waiting-model-approval','waiting-approval','waiting-input')
+            AND EXISTS (SELECT 1 FROM agent_model_sessions session WHERE session.run_id = agent_runs.id)
+          )
+        ORDER BY updated_at`).all() as any[]
       const recovered: AgentRun[] = []
       const update = this.db.prepare(`UPDATE agent_runs SET status=@status,response=@response,error_code=@errorCode,
         error_message=@errorMessage,steps_json=@stepsJson,pending_approval_json=NULL,updated_at=@updatedAt,completed_at=@completedAt WHERE id=@id`)
@@ -445,6 +468,30 @@ export class AppDatabase {
       }
       return recovered
     })()
+  }
+
+  saveAgentModelSession(session: AgentModelSessionRecord): AgentModelSessionRecord {
+    this.ensureWritable()
+    this.db.prepare(`INSERT INTO agent_model_sessions(run_id,protocol,state_json,updated_at)
+      VALUES(@runId,@protocol,@stateJson,@updatedAt)
+      ON CONFLICT(run_id) DO UPDATE SET protocol=excluded.protocol,state_json=excluded.state_json,updated_at=excluded.updated_at`)
+      .run({ ...session, stateJson: JSON.stringify(session.state) })
+    return session
+  }
+
+  getAgentModelSession(runId: string): AgentModelSessionRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM agent_model_sessions WHERE run_id = ?').get(runId) as any
+    return row ? mapAgentModelSession(row) : undefined
+  }
+
+  listAgentModelSessions(): AgentModelSessionRecord[] {
+    return (this.db.prepare('SELECT * FROM agent_model_sessions ORDER BY updated_at, run_id').all() as any[])
+      .map(mapAgentModelSession)
+  }
+
+  deleteAgentModelSession(runId: string): void {
+    this.ensureWritable()
+    this.db.prepare('DELETE FROM agent_model_sessions WHERE run_id = ?').run(runId)
   }
 
   appendTimeline(event: TimelineEvent): TimelineEvent {
@@ -671,17 +718,21 @@ export class AppDatabase {
   }
 
   saveModelProfile(profile: ModelProfile): ModelProfile {
-    this.ensureWritable()
-    this.db.prepare(`INSERT INTO model_profiles(id,name,base_url,model,enabled,timeout_ms,api_key_configured,created_at,updated_at)
-      VALUES(@id,@name,@baseUrl,@model,@enabled,@timeoutMs,@apiKeyConfigured,@createdAt,@updatedAt)
-      ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,model=excluded.model,
-      enabled=excluded.enabled,timeout_ms=excluded.timeout_ms,api_key_configured=excluded.api_key_configured,
-      updated_at=excluded.updated_at`).run({
-      ...profile,
-      enabled: profile.enabled ? 1 : 0,
-      apiKeyConfigured: profile.apiKeyConfigured ? 1 : 0
+    return this.transaction(() => {
+      if (profile.enabled) {
+        this.db.prepare('UPDATE model_profiles SET enabled = 0 WHERE id <> ?').run(profile.id)
+      }
+      this.db.prepare(`INSERT INTO model_profiles(id,name,base_url,model,enabled,timeout_ms,api_key_configured,created_at,updated_at)
+        VALUES(@id,@name,@baseUrl,@model,@enabled,@timeoutMs,@apiKeyConfigured,@createdAt,@updatedAt)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,model=excluded.model,
+        enabled=excluded.enabled,timeout_ms=excluded.timeout_ms,api_key_configured=excluded.api_key_configured,
+        updated_at=excluded.updated_at`).run({
+        ...profile,
+        enabled: profile.enabled ? 1 : 0,
+        apiKeyConfigured: profile.apiKeyConfigured ? 1 : 0
+      })
+      return profile
     })
-    return profile
   }
 
   listModelProfiles(): ModelProfile[] {
@@ -914,6 +965,7 @@ const agentRunParams = (run: AgentRun) => ({
   errorMessage: run.errorMessage ?? null,
   stepsJson: JSON.stringify(run.steps),
   pendingApprovalJson: run.pendingApproval ? JSON.stringify(run.pendingApproval) : null,
+  pendingClarificationJson: run.pendingClarification ? JSON.stringify(run.pendingClarification) : null,
   completedAt: run.completedAt ?? null
 })
 
@@ -936,6 +988,7 @@ const mapAgentRun = (r: any): AgentRun => ({
   ...(r.error_message ? { errorMessage: r.error_message } : {}),
   steps: JSON.parse(r.steps_json),
   ...(r.pending_approval_json ? { pendingApproval: JSON.parse(r.pending_approval_json) } : {}),
+  ...(r.pending_clarification_json ? { pendingClarification: JSON.parse(r.pending_clarification_json) } : {}),
   createdAt: r.created_at,
   updatedAt: r.updated_at,
   ...(r.completed_at ? { completedAt: r.completed_at } : {})
@@ -986,6 +1039,18 @@ const mapToolCall = (r: any): ToolCall => ({
   ...(r.duration_ms !== null ? { durationMs: r.duration_ms } : {}),
   ...(r.error_code ? { errorCode: r.error_code } : {})
 })
+
+const mapAgentModelSession = (r: any): AgentModelSessionRecord => ({
+  runId: r.run_id,
+  protocol: r.protocol,
+  state: parseJsonOrNull(r.state_json),
+  updatedAt: r.updated_at
+})
+
+function parseJsonOrNull(value: string): unknown {
+  try { return JSON.parse(value) }
+  catch { return null }
+}
 
 const mapKnowledgeNode = (r: any): KnowledgeNode => ({
   id: r.id,

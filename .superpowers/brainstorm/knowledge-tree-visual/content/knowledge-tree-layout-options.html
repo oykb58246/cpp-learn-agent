@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>知识树布局方案</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f6f8fb; color: #182230; font: 14px/1.45 Inter, "Microsoft YaHei", system-ui, sans-serif; }
+    main { max-width: 1400px; margin: 0 auto; padding: 36px 28px 56px; }
+    h1 { margin: 0; font-size: 28px; letter-spacing: 0; }
+    .intro { margin: 10px 0 28px; color: #627084; }
+    .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    .choice { background: #fff; border: 2px solid #dbe3ee; border-radius: 8px; padding: 18px; cursor: pointer; box-shadow: 0 2px 8px #1e293b0b; transition: .15s ease; }
+    .choice:hover, .choice.selected { border-color: #2563eb; box-shadow: 0 6px 18px #2563eb1a; }
+    .title-row { display:flex; align-items:center; gap:10px; margin-bottom: 12px; }
+    .badge { width: 28px; height: 28px; display:grid; place-items:center; background:#e8f0ff; color:#1d4ed8; border-radius:50%; font-weight:700; }
+    h2 { margin:0; font-size:17px; }
+    .desc { margin: 0 0 14px 38px; color:#627084; font-size:13px; }
+    .mock { border:1px solid #e2e8f0; border-radius:7px; overflow:hidden; background:#f8fafc; min-height: 455px; padding:12px; }
+    .toolbar { height:35px; display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+    .toolbar strong { font-size:13px; }
+    .legend { display:flex; gap:8px; font-size:10px; color:#617084; }
+    .legend i { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:3px; }
+    .lanes { display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; height:382px; }
+    .lane { position:relative; padding:9px 7px; background:#eef4ff; border:1px solid #d9e7fb; border-radius:5px; }
+    .lane:nth-child(2) { background:#f5f4ff; border-color:#e4e1fb; }
+    .lane:nth-child(3) { background:#eefbf5; border-color:#d9f0e4; }
+    .lane-label { font-size:11px; font-weight:700; color:#345; margin-bottom:8px; }
+    .stage { position:relative; margin: 0 0 8px; }
+    .stage + .stage:before { content:""; position:absolute; left:50%; top:-8px; height:8px; border-left:1.5px solid #8da0b8; }
+    .node { position:relative; padding:7px 7px 7px 9px; background:#fff; border:1px solid #cbd8e8; border-left:3px solid #94a3b8; border-radius:4px; font-size:10px; box-shadow:0 1px 2px #1e293b0b; }
+    .node.active { border-left-color:#2563eb; } .node.done { border-left-color:#16a34a; } .node.locked { opacity:.66; }
+    .node b { display:block; margin-bottom:3px; font-size:10px; } .mini { display:flex; justify-content:space-between; color:#728197; }
+    .branch { display:flex; gap:5px; }
+    .branch .node { width:50%; }
+    .cross { position:absolute; height:1px; border-top:1.5px dashed #7c8da7; width:76%; left:12%; top:145px; transform:rotate(12deg); transform-origin:left; }
+    .cross:after { content:""; position:absolute; right:-1px; top:-4px; width:6px; height:6px; border-right:1px solid #7c8da7; border-top:1px solid #7c8da7; transform:rotate(45deg); }
+    .graph { position:relative; height:382px; background-image: radial-gradient(#d7e0ec 1px, transparent 1px); background-size:12px 12px; }
+    .graph svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+    .g-node { position:absolute; width:112px; padding:8px; border:1px solid #c9d6e5; border-left:3px solid #94a3b8; border-radius:4px; background:white; font-size:10px; box-shadow:0 1px 3px #1e293b18; }
+    .g-node b { display:block; margin-bottom:3px; } .g-node.blue { border-left-color:#2563eb; }.g-node.green{border-left-color:#16a34a}.g-node.purple{border-left-color:#7c3aed}
+    .g1{left:5%;top:18px}.g2{left:38%;top:18px}.g3{left:70%;top:18px}.g4{left:20%;top:140px}.g5{left:54%;top:140px}.g6{left:37%;top:265px}
+    .state { display:flex; gap:3px; margin-top:5px; }.state span { padding:1px 4px; background:#edf2f7; border-radius:3px; color:#64748b; }.state span.on { background:#dbeafe; color:#1d4ed8; }
+    .notes { margin: 14px 0 0; padding-left: 18px; color:#536277; font-size:12px; } .notes li { margin:4px 0; }
+    @media (max-width:900px){ .compare{grid-template-columns:1fr;} }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>知识树关系表达</h1>
+    <p class="intro">请选择更符合预期的关系布局。两种方案都会在每个节点内直接提供状态操作，并在不满足前置条件时保留现有的阻断提示。</p>
+    <div class="compare">
+      <section class="choice" data-choice="lanes" onclick="toggleSelect(this)">
+        <div class="title-row"><span class="badge">A</span><h2>学习阶段泳道 <span style="color:#1d4ed8;font-size:12px">推荐</span></h2></div>
+        <p class="desc">分类是横向阶段；同列的节点并列，纵向与箭头表达先后依赖。</p>
+        <div class="mock">
+          <div class="toolbar"><strong>知识树</strong><div class="legend"><span><i style="background:#94a3b8"></i>未学习</span><span><i style="background:#2563eb"></i>学习中</span><span><i style="background:#16a34a"></i>已掌握</span></div></div>
+          <div class="lanes">
+            <div class="lane"><div class="lane-label">01 基础语法</div><div class="stage"><div class="node done"><b>变量与类型</b><div class="mini"><span>已掌握</span><span>...</span></div></div></div><div class="stage"><div class="node active"><b>表达式与控制流</b><div class="mini"><span>学习中</span><span>...</span></div></div></div><div class="stage branch"><div class="node locked"><b>循环</b><div class="mini"><span>未学习</span><span>...</span></div></div><div class="node locked"><b>分支</b><div class="mini"><span>未学习</span><span>...</span></div></div></div></div>
+            <div class="lane"><div class="lane-label">02 函数</div><div class="stage"><div class="node locked"><b>函数定义</b><div class="mini"><span>前置: 控制流</span><span>...</span></div></div></div><div class="stage"><div class="node locked"><b>参数与返回值</b><div class="mini"><span>未学习</span><span>...</span></div></div></div><div class="stage"><div class="node locked"><b>递归</b><div class="mini"><span>未学习</span><span>...</span></div></div></div></div>
+            <div class="lane"><div class="lane-label">03 数据结构</div><div class="stage"><div class="node locked"><b>数组</b><div class="mini"><span>前置: 函数定义</span><span>...</span></div></div></div><div class="stage branch"><div class="node locked"><b>指针</b><div class="mini"><span>未学习</span><span>...</span></div></div><div class="node locked"><b>字符串</b><div class="mini"><span>未学习</span><span>...</span></div></div></div><div class="stage"><div class="node locked"><b>结构体</b><div class="mini"><span>未学习</span><span>...</span></div></div></div></div>
+          </div><div class="cross"></div>
+        </div>
+        <ul class="notes"><li>适合按课程阶段浏览，认知负担低。</li><li>跨分类依赖以虚线箭头和“前置”标签补充。</li></ul>
+      </section>
+      <section class="choice" data-choice="graph" onclick="toggleSelect(this)">
+        <div class="title-row"><span class="badge">B</span><h2>自由依赖图</h2></div>
+        <p class="desc">所有知识点是一张图；箭头直接连接每一条依赖关系。</p>
+        <div class="mock"><div class="toolbar"><strong>知识树</strong><div class="legend"><span><i style="background:#94a3b8"></i>未学习</span><span><i style="background:#2563eb"></i>学习中</span><span><i style="background:#16a34a"></i>已掌握</span></div></div>
+          <div class="graph"><svg viewBox="0 0 600 382" aria-hidden="true"><defs><marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#7c8da7" /></marker></defs><path d="M112 54 C170 54,170 54,228 54" fill="none" stroke="#7c8da7" stroke-width="1.5" marker-end="url(#arr)"/><path d="M340 54 C395 54,390 160,280 170" fill="none" stroke="#7c8da7" stroke-width="1.5" marker-end="url(#arr)"/><path d="M452 54 C450 130,420 145,380 160" fill="none" stroke="#7c8da7" stroke-width="1.5" marker-end="url(#arr)"/><path d="M276 195 C330 230,330 265,305 287" fill="none" stroke="#7c8da7" stroke-width="1.5" marker-end="url(#arr)"/><path d="M408 195 C390 240,352 265,330 287" fill="none" stroke="#7c8da7" stroke-width="1.5" marker-end="url(#arr)"/></svg><div class="g-node g1 green"><b>变量与类型</b><small>已掌握</small></div><div class="g-node g2 blue"><b>控制流</b><small>学习中</small></div><div class="g-node g3"><b>循环</b><small>未学习</small></div><div class="g-node g4"><b>函数定义</b><small>未学习</small></div><div class="g-node g5 purple"><b>数组</b><small>未学习</small></div><div class="g-node g6"><b>指针</b><div class="state"><span>未学习</span><span class="on">学习中</span><span>已掌握</span></div></div></div>
+        </div>
+        <ul class="notes"><li>能完整展示任意跨分类依赖。</li><li>节点增加后需要缩放、拖动画布及自动布局，信息密度更高。</li></ul>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

@@ -3,7 +3,7 @@ import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createElectronEnvironment } from './electron-env'
+import { createElectronEnvironment, startStreamingModelFixture } from './electron-env'
 
 const repo = resolve(import.meta.dirname, '../..')
 let temp = ''
@@ -44,6 +44,7 @@ async function setWindowSize(electronApp: ElectronApplication, page: Page, width
 
 test('completes the verified H3 diagnose and learning workflow', async () => {
   test.setTimeout(180_000)
+  const modelFixture = await startStreamingModelFixture()
   const electronApp = await electron.launch({
     executablePath: electronPath as unknown as string,
     args: ['--in-process-gpu', '--no-sandbox', join(repo, 'apps/desktop')],
@@ -52,7 +53,7 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
   try {
     const page = await electronApp.firstWindow()
     await page.waitForLoadState('domcontentloaded')
-    const setup = await page.evaluate(async () => {
+    const setup = await page.evaluate(async baseUrl => {
       await window.cppPet.settings.update({ onboardingStatus: 'completed' })
       const detected = await window.cppPet.toolchains.detect()
       if (!detected.ok || !detected.data.candidates[0]) return { error: 'NO_TOOLCHAIN' }
@@ -76,8 +77,11 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
         const knowledge = await window.cppPet.learning.updateKnowledge({ conceptId, status: 'learning' })
         if (!knowledge.ok) return { error: knowledge.error.code }
       }
-      return { projectId: project.id }
-    })
+      const model = await window.cppPet.model.save({
+        name: 'H3 Responses model', baseUrl, model: 'gpt-5', enabled: true, timeoutMs: 10_000, apiKey: 'fixture-key'
+      })
+      return model.ok ? { projectId: project.id } : { error: model.error.code }
+    }, modelFixture.baseUrl)
     expect(setup).toHaveProperty('projectId')
     const projectId = (setup as { projectId: string }).projectId
     await setWindowSize(electronApp, page, 1440, 900)
@@ -90,13 +94,13 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
     await expect(page.getByLabel('Agent 模式')).toHaveCount(0)
     await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('修复当前编译错误并解释根因')
     await page.getByRole('button', { name: '发送', exact: true }).click()
-    await expect(page.locator('.approval-card')).toContainText('应用最小修复', { timeout: 30_000 })
+    await expect(page.locator('.approval-card')).toContainText('发送上下文到 OpenAI 模型', { timeout: 30_000 })
+    await page.getByRole('button', { name: '批准', exact: true }).click()
+    await expect(page.locator('.approval-card')).toContainText('应用文件修改', { timeout: 30_000 })
     await expect(page.locator('.conversation-transcript')).toHaveCount(0)
     await expect(page.locator('.conversation-approval-view')).toBeVisible()
     await expect(page.locator('.approval-diff')).toContainText('--- a/main.cpp')
-    await expect(page.locator('.approval-diff')).toContainText('+  std::cout << "missing semicolon";')
-    await page.getByRole('button', { name: '批准', exact: true }).click()
-    await expect(page.locator('.approval-card')).toContainText('记录错误修复证据', { timeout: 30_000 })
+    await expect(page.locator('.approval-diff')).toContainText('+    std::cout << "missing semicolon";')
     await page.getByRole('button', { name: '批准', exact: true }).click()
     await expect(page.locator('.workspace-agent-panel')).toContainText('completed', { timeout: 30_000 })
     await captureWindow(electronApp, page, 'h3-workspace-agent-1440x900.png')
@@ -135,7 +139,7 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
 
     await page.getByRole('link', { name: '设置' }).click()
     await expect(page.getByRole('heading', { name: '模型服务' })).toBeVisible()
-    await expect(page.locator('.model-mode-line')).toContainText('离线规划模式')
+    await expect(page.locator('.model-mode-line')).toContainText('OpenAI Responses 模型可用')
     await setWindowSize(electronApp, page, 1024, 720)
     await page.getByTitle('跳转到模型服务').click()
     await expect.poll(() => page.evaluate(() => {
@@ -154,5 +158,6 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
     await captureWindow(electronApp, page, 'h3-settings-1024x720.png')
   } finally {
     await electronApp.close()
+    await modelFixture.close()
   }
 })

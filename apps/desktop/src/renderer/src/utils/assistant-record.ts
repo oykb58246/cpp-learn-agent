@@ -22,20 +22,26 @@ const titleByMode: Record<AgentRun['mode'], string> = {
 const statusByRun: Record<AgentRun['status'], string> = {
   queued: '等待处理',
   contextualizing: '正在了解问题',
+  'waiting-model-approval': '等待确认发送上下文',
+  'model-requesting': '正在请求模型',
+  'validating-model-output': '正在校验模型响应',
   planning: '正在分析',
   'policy-check': '正在准备讲解',
   'waiting-approval': '等待你的确认',
   executing: '正在处理',
   validating: '正在验证结果',
   responding: '正在整理说明',
+  'waiting-input': '等待补充信息',
   completed: '已完成',
   failed: '未完成',
   cancelled: '已取消'
 }
 
 export function summarizeAssistantRecord(run: AgentRun): AssistantRecordSummary {
-  const nextAction = run.status === 'waiting-approval'
+  const nextAction = run.status === 'waiting-approval' || run.status === 'waiting-model-approval'
     ? '请查看需要确认的操作后继续。'
+    : run.status === 'waiting-input'
+      ? run.pendingClarification?.question ?? '请补充任务所需的信息。'
     : run.status === 'failed'
       ? '可补充代码、报错信息或期望结果后再次提问。'
       : run.status === 'completed'

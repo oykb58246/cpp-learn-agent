@@ -9,7 +9,6 @@ import type {
   BackgroundProfile,
   BackgroundProfileInput,
   ConversationChangedEvent,
-  ConversationMessageDelta,
   ConversationSendInput,
   DiagnosticInboxChangedEvent,
   ErrorBookEntry,
@@ -37,7 +36,6 @@ export const useAgentStore = defineStore('agent', {
     conversations: [] as AgentConversation[],
     currentConversationId: null as string | null,
     messages: [] as AgentMessage[],
-    messageSequences: {} as Record<string, number>,
     conversationLoading: false,
     agentLoadGeneration: 0,
     loading: false,
@@ -79,9 +77,6 @@ export const useAgentStore = defineStore('agent', {
       if (window.cppPet.diagnostics?.onChanged) {
         this.conversationUnsubscribes.push(window.cppPet.diagnostics.onChanged(event => this.handleInboxChanged(event)))
       }
-      if (window.cppPet.conversations?.onDelta) {
-        this.conversationUnsubscribes.push(window.cppPet.conversations.onDelta(event => this.handleConversationDelta(event)))
-      }
       if (window.cppPet.conversations?.onChanged) {
         this.conversationUnsubscribes.push(window.cppPet.conversations.onChanged(event => this.handleConversationChanged(event)))
       }
@@ -98,7 +93,6 @@ export const useAgentStore = defineStore('agent', {
       this.conversations = []
       this.currentConversationId = null
       this.messages = []
-      this.messageSequences = {}
       this.conversationLoading = true
       this.error = null
       const [inbox, conversations] = await Promise.all([
@@ -126,7 +120,6 @@ export const useAgentStore = defineStore('agent', {
       this.upsertConversation(result.data)
       this.currentConversationId = result.data.id
       this.messages = []
-      this.messageSequences = {}
       return result.data
     },
     async selectConversation(conversationId: string, generation?: number) {
@@ -140,19 +133,6 @@ export const useAgentStore = defineStore('agent', {
       if (!result.ok) { this.error = result.error; return null }
       this.currentConversationId = conversationId
       this.messages = result.data
-      this.messageSequences = {}
-      return result.data
-    },
-    async sendMessage(input: Omit<ConversationSendInput, 'projectId' | 'conversationId'>) {
-      const projectId = this.agentProjectId
-      if (!projectId) return null
-      if (!this.currentConversationId && !await this.createConversation()) return null
-      const conversationId = this.currentConversationId
-      if (!conversationId) return null
-      const result = await window.cppPet.conversations.send({ ...input, projectId, conversationId })
-      if (!result.ok) { this.error = result.error; return null }
-      this.upsertMessage(result.data.user)
-      this.upsertMessage(result.data.assistant)
       return result.data
     },
     async submitAgent(input: Omit<ConversationSendInput, 'projectId' | 'conversationId'>) {
@@ -182,25 +162,6 @@ export const useAgentStore = defineStore('agent', {
       else if (messages) this.error ??= messages.error
       return result.data
     },
-    async stopMessage() {
-      const projectId = this.agentProjectId
-      const conversationId = this.currentConversationId
-      if (!projectId || !conversationId) return null
-      const result = await window.cppPet.conversations.stop({ projectId, conversationId })
-      if (!result.ok) { this.error = result.error; return null }
-      if (result.data) this.upsertMessage(result.data)
-      return result.data
-    },
-    async retryMessage(messageId: string) {
-      const projectId = this.agentProjectId
-      const conversationId = this.currentConversationId
-      if (!projectId || !conversationId) return null
-      const result = await window.cppPet.conversations.retry({ projectId, conversationId, messageId })
-      if (!result.ok) { this.error = result.error; return null }
-      this.upsertMessage(result.data.user)
-      this.upsertMessage(result.data.assistant)
-      return result.data
-    },
     async acknowledgeInbox() {
       const projectId = this.agentProjectId
       if (!projectId) return null
@@ -211,16 +172,6 @@ export const useAgentStore = defineStore('agent', {
     },
     handleInboxChanged(event: DiagnosticInboxChangedEvent) {
       if (event.projectId === this.agentProjectId) this.inbox = event
-    },
-    handleConversationDelta(event: ConversationMessageDelta) {
-      if (event.projectId !== this.agentProjectId || event.conversationId !== this.currentConversationId) return
-      const last = this.messageSequences[event.messageId]
-      if (last !== undefined && event.sequence !== last + 1) return
-      const index = this.messages.findIndex(item => item.id === event.messageId)
-      if (index < 0) return
-      this.messageSequences[event.messageId] = event.sequence
-      const current = this.messages[index]!
-      this.messages[index] = { ...current, content: current.content + event.delta, status: 'streaming' }
     },
     handleConversationChanged(event: ConversationChangedEvent) {
       if (event.projectId !== this.agentProjectId) return
@@ -246,6 +197,16 @@ export const useAgentStore = defineStore('agent', {
       this.running = true
       this.error = null
       const result = await window.cppPet.agent.start(input)
+      this.running = false
+      if (!result.ok) { this.error = result.error; return null }
+      this.upsertRun(result.data)
+      this.currentRun = result.data
+      return result.data
+    },
+    async continue(runId: string, message: string) {
+      this.running = true
+      this.error = null
+      const result = await window.cppPet.agent.continue({ runId, message })
       this.running = false
       if (!result.ok) { this.error = result.error; return null }
       this.upsertRun(result.data)
@@ -297,6 +258,11 @@ export const useAgentStore = defineStore('agent', {
     async saveModel(input: ModelProfileInput) {
       const result = await window.cppPet.model.save(input)
       if (!result.ok) { this.error = result.error; return null }
+      if (result.data.enabled) {
+        this.models = this.models.map(item => item.id === result.data.id || !item.enabled
+          ? item
+          : { ...item, enabled: false })
+      }
       const index = this.models.findIndex(item => item.id === result.data.id)
       if (index >= 0) this.models[index] = result.data
       else this.models.unshift(result.data)
