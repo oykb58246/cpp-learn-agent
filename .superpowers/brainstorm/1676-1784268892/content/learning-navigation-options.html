@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body { margin: 0; padding: 30px; background: #0d141f; color: #edf4ff; font: 15px/1.45 "Segoe UI", sans-serif; }
+    h1 { margin: 0 0 6px; font-size: 27px; } p { color: #9cafc8; margin: 0 0 22px; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+    .option { border: 1px solid #30445f; border-radius: 8px; overflow: hidden; background: #121d2b; cursor: pointer; }
+    .option:hover { border-color: #48a0ff; } .option.selected { border: 2px solid #48a0ff; }
+    .head { padding: 16px; border-bottom: 1px solid #30445f; } .head b { color: #56a8ff; font-size: 12px; } .head h2 { margin: 4px 0; font-size: 18px; } .head span { color: #9cafc8; font-size: 13px; }
+    .mock { margin: 14px; min-height: 355px; padding: 13px; background: #0d141f; border: 1px solid #26394f; font-size: 12px; }
+    .bar { color: #72b7ff; font-weight: 700; margin-bottom: 10px; } .title { font-size: 18px; font-weight: 700; margin: 8px 0; }
+    .action { display: inline-block; padding: 7px 10px; background: #358de9; color: #07121f; border-radius: 4px; font-weight: 700; margin: 8px 0 14px; }
+    .panel { border-top: 1px solid #26394f; padding: 10px 0; } .panel strong { display: block; } .muted { color: #8ca1bc; } .step { display: flex; gap: 8px; padding: 7px 0; border-top: 1px solid #1f3044; } .dot { color: #55b988; } .lock { color: #71839b; }
+    .tabs { display:flex; gap: 6px; margin: 9px 0; } .tab { padding: 5px 7px; border: 1px solid #354a66; color:#9cafc8; } .tab.active { color:#fff; border-color:#4aa0ff; }
+    .notes { margin: 16px; color: #9cafc8; font-size: 13px; } .notes li { margin: 6px 0; }
+  </style>
+</head>
+<body>
+  <h1>新手首次打开：哪一种主线最清楚？</h1>
+  <p>三种方案都保留“项目、知识树、练习、Agent”能力；区别在于用户第一眼被引导去做什么。</p>
+  <div class="grid">
+    <article class="option" data-choice="itinerary" onclick="toggleSelect(this)">
+      <div class="head"><b>推荐</b><h2>学习路线优先</h2><span>先告诉新手现在学什么、下一步做什么</span></div>
+      <div class="mock"><div class="bar">CppPilot / 我的学习</div><div class="title">从“程序结构”开始</div><div class="muted">第 1 阶段 / C++ 基础 · 已完成 0 / 6</div><div class="action">开始第一课：程序结构</div><div class="panel"><strong>本节会学什么</strong><span class="muted">main 函数、语句和第一段可运行代码</span></div><div class="panel"><strong>完成后做什么</strong><span class="muted">在工作区运行 Hello World，获得学习证据</span></div><div class="panel"><strong>你的项目</strong><span class="muted">力扣hot100 · 可继续练习</span></div></div>
+      <ul class="notes"><li>首页是一条明确的学习主线</li><li>知识树变成阶段路线图</li><li>Agent 记录改名为“学习助手记录”</li></ul>
+    </article>
+    <article class="option" data-choice="project" onclick="toggleSelect(this)">
+      <div class="head"><b>适合已有练习</b><h2>项目任务优先</h2><span>先进入代码，再由任务解释学习目标</span></div>
+      <div class="mock"><div class="bar">CppPilot / 力扣hot100</div><div class="title">继续完成你的项目</div><div class="action">打开并继续编码</div><div class="panel"><strong>当前建议</strong><span class="muted">先完成：循环与边界检查</span></div><div class="panel"><strong>需要补的知识</strong><span class="muted">程序结构 → 条件分支 → 循环</span></div><div class="panel"><strong>遇到问题？</strong><span class="muted">打开学习助手，查看代码解释和下一步</span></div></div>
+      <ul class="notes"><li>项目是主入口，适合已有目标的用户</li><li>学习路径作为代码任务的支撑</li><li>新手仍需理解“该从哪个项目开始”</li></ul>
+    </article>
+    <article class="option" data-choice="coach" onclick="toggleSelect(this)">
+      <div class="head"><b>强引导</b><h2>学习助手优先</h2><span>先用对话式任务确定当前能力与目标</span></div>
+      <div class="mock"><div class="bar">CppPilot 学习助手</div><div class="title">今天想从哪里开始？</div><div class="tabs"><span class="tab active">从零开始</span><span class="tab">继续项目</span></div><div class="panel"><strong>推荐任务</strong><span class="muted">用 10 分钟完成第一个 C++ 程序</span></div><div class="action">开始引导</div><div class="panel"><strong>助手会做什么</strong><span class="muted">解释概念、生成练习、检查运行结果；不会替你直接完成学习</span></div></div>
+      <ul class="notes"><li>最强的首屏解释，但对话入口更重</li><li>适合完全没有学习目标的新手</li><li>项目和知识结构会后置</li></ul>
+    </article>
+  </div>
+</body>
+</html>
