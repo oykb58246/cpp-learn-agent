@@ -718,17 +718,21 @@ export class AppDatabase {
   }
 
   saveModelProfile(profile: ModelProfile): ModelProfile {
-    this.ensureWritable()
-    this.db.prepare(`INSERT INTO model_profiles(id,name,base_url,model,enabled,timeout_ms,api_key_configured,created_at,updated_at)
-      VALUES(@id,@name,@baseUrl,@model,@enabled,@timeoutMs,@apiKeyConfigured,@createdAt,@updatedAt)
-      ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,model=excluded.model,
-      enabled=excluded.enabled,timeout_ms=excluded.timeout_ms,api_key_configured=excluded.api_key_configured,
-      updated_at=excluded.updated_at`).run({
-      ...profile,
-      enabled: profile.enabled ? 1 : 0,
-      apiKeyConfigured: profile.apiKeyConfigured ? 1 : 0
+    return this.transaction(() => {
+      if (profile.enabled) {
+        this.db.prepare('UPDATE model_profiles SET enabled = 0 WHERE id <> ?').run(profile.id)
+      }
+      this.db.prepare(`INSERT INTO model_profiles(id,name,base_url,model,enabled,timeout_ms,api_key_configured,created_at,updated_at)
+        VALUES(@id,@name,@baseUrl,@model,@enabled,@timeoutMs,@apiKeyConfigured,@createdAt,@updatedAt)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,model=excluded.model,
+        enabled=excluded.enabled,timeout_ms=excluded.timeout_ms,api_key_configured=excluded.api_key_configured,
+        updated_at=excluded.updated_at`).run({
+        ...profile,
+        enabled: profile.enabled ? 1 : 0,
+        apiKeyConfigured: profile.apiKeyConfigured ? 1 : 0
+      })
+      return profile
     })
-    return profile
   }
 
   listModelProfiles(): ModelProfile[] {

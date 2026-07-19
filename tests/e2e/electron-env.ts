@@ -43,7 +43,15 @@ export async function startStreamingModelFixture(): Promise<StreamingModelFixtur
 
     const output = nextOutput({ input, prompt, taskId, context, observations })
     response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-    response.end(JSON.stringify({ id: `resp_${requests.length}`, status: 'completed', output }))
+    response.end(JSON.stringify({
+      id: `resp_${requests.length}`,
+      object: 'response',
+      created_at: Math.floor(Date.now() / 1_000),
+      status: 'completed',
+      error: null,
+      incomplete_details: null,
+      output
+    }))
   })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)

@@ -43,7 +43,7 @@ const responseEnvelopeSchema = z.object({
   id: z.string().min(1),
   status: z.string().min(1),
   output: z.array(z.unknown()),
-  incomplete_details: z.object({ reason: z.string().optional() }).passthrough().optional()
+  incomplete_details: z.object({ reason: z.string().optional() }).passthrough().nullable().optional()
 }).passthrough()
 
 function removeJsonSchemaMetadata(value: unknown): unknown {
@@ -58,6 +58,18 @@ function removeJsonSchemaMetadata(value: unknown): unknown {
 }
 
 const finalResponseJsonSchema = removeJsonSchemaMetadata(z.toJSONSchema(cppPilotFinalResponseSchema))
+
+function invalidFields(error: z.ZodError): string {
+  const fields = [...new Set(error.issues
+    .map(issue => issue.path[0])
+    .filter((field): field is string | number => typeof field === 'string' || typeof field === 'number')
+    .map(String))]
+  return fields.length ? ` (invalid or missing fields: ${fields.slice(0, 10).join(', ')})` : ''
+}
+
+function safeIncompleteReason(reason: string | undefined): string {
+  return reason === 'max_output_tokens' || reason === 'content_filter' ? `: ${reason}` : ''
+}
 
 export class OpenAiResponsesClient {
   private readonly fetcher: typeof fetch
@@ -114,14 +126,20 @@ export class OpenAiResponsesClient {
 
     const envelope = responseEnvelopeSchema.safeParse(raw)
     if (!envelope.success) {
-      throw new OpenAiResponsesError('MODEL_PROTOCOL_INVALID', 'OpenAI response envelope was invalid', envelope.error)
+      throw new OpenAiResponsesError(
+        'MODEL_PROTOCOL_INVALID',
+        `OpenAI response envelope was invalid${invalidFields(envelope.error)}`,
+        envelope.error
+      )
     }
     if (envelope.data.status === 'incomplete') {
-      const reason = envelope.data.incomplete_details?.reason
-      throw new OpenAiResponsesError('MODEL_INCOMPLETE', `OpenAI response was incomplete${reason ? `: ${reason}` : ''}`)
+      throw new OpenAiResponsesError(
+        'MODEL_INCOMPLETE',
+        `OpenAI response was incomplete${safeIncompleteReason(envelope.data.incomplete_details?.reason)}`
+      )
     }
     if (envelope.data.status !== 'completed') {
-      throw new OpenAiResponsesError('MODEL_PROTOCOL_INVALID', `Unexpected OpenAI response status: ${envelope.data.status}`)
+      throw new OpenAiResponsesError('MODEL_PROTOCOL_INVALID', 'Unexpected OpenAI response status')
     }
 
     const output = z.array(openAiResponseOutputItemSchema).safeParse(envelope.data.output)

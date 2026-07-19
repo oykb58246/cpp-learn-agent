@@ -174,6 +174,20 @@ CREATE TABLE IF NOT EXISTS agent_model_sessions (
 CREATE INDEX idx_agent_model_sessions_updated ON agent_model_sessions(updated_at DESC);
 `
 
+const singleEnabledModelProfileSql = `
+UPDATE model_profiles
+SET enabled = 0
+WHERE enabled = 1
+  AND id <> (
+    SELECT id FROM model_profiles
+    WHERE enabled = 1
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 1
+  );
+CREATE UNIQUE INDEX idx_model_profiles_single_enabled
+  ON model_profiles(enabled) WHERE enabled = 1;
+`
+
 export const h3Migrations: Migration[] = [
   { version: 4, name: 'h3-agent-runs', sql: agentSql },
   { version: 5, name: 'h3-learning-state', sql: learningSql },
@@ -183,5 +197,6 @@ export const h3Migrations: Migration[] = [
   { version: 9, name: 'agent-conversations-and-diagnostics', sql: conversationsAndDiagnosticsSql },
   { version: 10, name: 'stable-conversation-message-order', sql: stableConversationMessageOrderSql },
   { version: 11, name: 'linked-agent-conversations', sql: linkedAgentConversationSql },
-  { version: 12, name: 'openai-agent-sessions', sql: openAiAgentSessionsSql }
+  { version: 12, name: 'openai-agent-sessions', sql: openAiAgentSessionsSql },
+  { version: 13, name: 'single-enabled-model-profile', sql: singleEnabledModelProfileSql }
 ]

@@ -258,6 +258,11 @@ export const useAgentStore = defineStore('agent', {
     async saveModel(input: ModelProfileInput) {
       const result = await window.cppPet.model.save(input)
       if (!result.ok) { this.error = result.error; return null }
+      if (result.data.enabled) {
+        this.models = this.models.map(item => item.id === result.data.id || !item.enabled
+          ? item
+          : { ...item, enabled: false })
+      }
       const index = this.models.findIndex(item => item.id === result.data.id)
       if (index >= 0) this.models[index] = result.data
       else this.models.unshift(result.data)

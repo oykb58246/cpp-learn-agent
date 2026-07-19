@@ -35,6 +35,65 @@ function expectStrictObjectSchemas(value: unknown, path = 'schema'): void {
 }
 
 describe('OpenAI Responses client', () => {
+  it('accepts the nullable fields in an official completed Responses envelope', async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      id: 'resp_official',
+      object: 'response',
+      status: 'completed',
+      error: null,
+      incomplete_details: null,
+      output: []
+    })) as typeof fetch
+    const client = new OpenAiResponsesClient({ profile, apiKey: 'secret', tools, fetcher })
+
+    await expect(client.respond([], new AbortController().signal)).resolves.toEqual({
+      id: 'resp_official', status: 'completed', output: []
+    })
+  })
+
+  it('reports invalid envelope fields without echoing provider response content', async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      id: 'chatcmpl_1', object: 'chat.completion',
+      choices: [{ message: { role: 'assistant', content: 'sensitive-provider-content' } }]
+    })) as typeof fetch
+    const client = new OpenAiResponsesClient({ profile, apiKey: 'secret', tools, fetcher })
+
+    await expect(client.respond([], new AbortController().signal)).rejects.toMatchObject({
+      code: 'MODEL_PROTOCOL_INVALID',
+      message: expect.stringContaining('status, output')
+    })
+    await expect(client.respond([], new AbortController().signal)).rejects.not.toMatchObject({
+      message: expect.stringContaining('sensitive-provider-content')
+    })
+  })
+
+  it('does not echo provider-controlled status or incomplete reason fields', async () => {
+    const statusClient = new OpenAiResponsesClient({
+      profile,
+      apiKey: 'secret',
+      tools,
+      fetcher: vi.fn(async () => Response.json({
+        id: 'resp_status', status: 'sensitive-provider-content', output: []
+      })) as typeof fetch
+    })
+    const reasonClient = new OpenAiResponsesClient({
+      profile,
+      apiKey: 'secret',
+      tools,
+      fetcher: vi.fn(async () => Response.json({
+        id: 'resp_reason', status: 'incomplete',
+        incomplete_details: { reason: 'sensitive-provider-content' }, output: []
+      })) as typeof fetch
+    })
+
+    await expect(statusClient.respond([], new AbortController().signal)).rejects.not.toMatchObject({
+      message: expect.stringContaining('sensitive-provider-content')
+    })
+    await expect(reasonClient.respond([], new AbortController().signal)).rejects.not.toMatchObject({
+      message: expect.stringContaining('sensitive-provider-content')
+    })
+  })
+
   it('sends native Responses tools, instructions, context, and strict final format', async () => {
     let url = ''
     let authorization = ''

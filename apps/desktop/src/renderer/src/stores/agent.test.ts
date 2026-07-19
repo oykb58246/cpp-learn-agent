@@ -125,6 +125,26 @@ describe('agent store', () => {
     expect(store.models[0]?.apiKeyConfigured).toBe(false)
   })
 
+  it('keeps one enabled model in memory after switching profiles', async () => {
+    const first = {
+      id: crypto.randomUUID(), name: 'First', baseUrl: 'https://first.example/v1', model: 'model-a',
+      enabled: true, timeoutMs: 30_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
+    }
+    const second = {
+      id: crypto.randomUUID(), name: 'Second', baseUrl: 'https://second.example/v1', model: 'model-b',
+      enabled: false, timeoutMs: 30_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
+    }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      cppPet: { model: { save: async () => ({ ok: true, data: { ...second, enabled: true } }) } }
+    } })
+    const store = useAgentStore()
+    store.models = [first, second]
+
+    await store.saveModel({ ...second, enabled: true })
+
+    expect(store.models.filter(profile => profile.enabled).map(profile => profile.id)).toEqual([second.id])
+  })
+
   it('stores the self-reported background used by assistant explanations', async () => {
     const profile: BackgroundProfile = {
       userId: 'local-user', onboardingCompleted: true, startingPoint: 'some-experience',
