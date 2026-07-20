@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { AppDatabase } from '@cpp-pet/database'
 import { WorkspaceService } from '@cpp-pet/workspace-core'
 import { ToolchainService } from '@cpp-pet/cpp-local-tools'
@@ -202,8 +203,8 @@ describe('desktop H3 integration', () => {
   })
 
   it('connects to the local MCP server through a spawned stdio process', async () => {
-    const worker = new URL('./fixtures/stdio-mcp-server.mjs', import.meta.url)
-    const toolClient = await McpRuntimeToolClient.connectStdio({ command: process.execPath, args: [worker.pathname.slice(1)] })
+    const worker = fileURLToPath(new URL('./fixtures/stdio-mcp-server.mjs', import.meta.url))
+    const toolClient = await McpRuntimeToolClient.connectStdio({ command: process.execPath, args: [worker] })
     cleanups.push(() => toolClient.close())
 
     const result = await toolClient.call('workspace.list_files', { projectId: crypto.randomUUID() }, new AbortController().signal)
@@ -212,11 +213,11 @@ describe('desktop H3 integration', () => {
   })
 
   it('closes a silent stdio worker when the MCP handshake times out', async () => {
-    const worker = new URL('./fixtures/silent-mcp-server.mjs', import.meta.url)
+    const worker = fileURLToPath(new URL('./fixtures/silent-mcp-server.mjs', import.meta.url))
     const startedAt = Date.now()
 
     await expect(McpRuntimeToolClient.connectStdio(
-      { command: process.execPath, args: [worker.pathname.slice(1)] },
+      { command: process.execPath, args: [worker] },
       200
     )).rejects.toThrow()
     expect(Date.now() - startedAt).toBeLessThan(2_000)

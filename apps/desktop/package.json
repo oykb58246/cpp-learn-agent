@@ -37,6 +37,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@types/node": "^22.19.13",
     "@vitejs/plugin-vue": "^6.0.4",
+    "@vue/server-renderer": "3.5.39",
     "electron": "^43.1.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
