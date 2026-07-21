@@ -4,7 +4,15 @@ import { ipc } from '@cpp-pet/contracts/ipc'
 
 const invoke = <T>(channel: string, input?: unknown) => ipcRenderer.invoke(channel, input) as Promise<T>
 const api: CppPetApi = {
-  app: { getBootstrap: () => invoke(ipc.appBootstrap), getVersion: () => invoke(ipc.appVersion) },
+  app: {
+    getBootstrap: () => invoke(ipc.appBootstrap),
+    getVersion: () => invoke(ipc.appVersion),
+    onNavigate: listener => {
+      const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
+      ipcRenderer.on(ipc.appNavigate, wrapped)
+      return () => ipcRenderer.removeListener(ipc.appNavigate, wrapped)
+    }
+  },
   settings: { get: () => invoke(ipc.settingsGet), update: input => invoke(ipc.settingsUpdate, input) },
   workspace: {
     selectRoot: () => invoke(ipc.workspaceSelect), list: () => invoke(ipc.workspaceList), open: input => invoke(ipc.workspaceOpen, input),
@@ -113,7 +121,11 @@ const api: CppPetApi = {
     saveBackground: input => invoke(ipc.learningBackgroundSave, input),
     errors: input => invoke(ipc.learningErrors, input),
     reviews: input => invoke(ipc.learningReviews, input),
-    summary: input => invoke(ipc.learningSummary, input)
+    summary: input => invoke(ipc.learningSummary, input),
+    practiceCatalog: () => invoke(ipc.learningPracticeCatalog),
+    submitPractice: input => invoke(ipc.learningPracticeSubmit, input),
+    completePracticeProject: input => invoke(ipc.learningPracticeCompleteProject, input),
+    importOjScreenshot: input => invoke(ipc.learningPracticeImportOjScreenshot, input)
   },
   model: {
     list: () => invoke(ipc.modelList),
@@ -122,7 +134,53 @@ const api: CppPetApi = {
     clearKey: input => invoke(ipc.modelClearKey, input),
     test: input => invoke(ipc.modelTest, input)
   },
+  screenshot: {
+    capture: input => invoke(ipc.screenshotCapture, input),
+    getPending: () => invoke(ipc.screenshotGetPending),
+    submit: input => invoke(ipc.screenshotSubmit, input),
+    cancel: () => invoke(ipc.screenshotCancel),
+    onSubmitted: listener => {
+      const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
+      ipcRenderer.on(ipc.screenshotSubmitted, wrapped)
+      return () => ipcRenderer.removeListener(ipc.screenshotSubmitted, wrapped)
+    }
+  },
   pet: {
+    getState: () => invoke(ipc.petGetState),
+    updateSettings: input => invoke(ipc.petUpdateSettings, input),
+    show: () => invoke(ipc.petShow),
+    hide: () => invoke(ipc.petHide),
+    toggle: () => invoke(ipc.petToggle),
+    move: input => invoke(ipc.petMove, input),
+    drag: input => invoke(ipc.petDrag, input),
+    setIgnoreMouseEvents: input => invoke(ipc.petSetIgnoreMouseEvents, input),
+    openMain: () => invoke(ipc.petOpenMain),
+    showContextMenu: () => invoke(ipc.petShowContextMenu),
+    selectCustomAsset: input => invoke(ipc.petSelectCustomAsset, input),
+    resetCustomAsset: () => invoke(ipc.petResetCustomAsset),
+    renameCustomAsset: input => invoke(ipc.petRenameCustomAsset, input),
+    deleteCustomAsset: input => invoke(ipc.petDeleteCustomAsset, input),
+    activateCustomAsset: input => invoke(ipc.petActivateCustomAsset, input),
+    hideForOneHour: () => invoke(ipc.petHideForOneHour),
+    cancelHidden: () => invoke(ipc.petCancelHidden),
+    toggleFocusMode: input => invoke(ipc.petToggleFocusMode, input),
+    toggleLaunchAtLogin: input => invoke(ipc.petToggleLaunchAtLogin, input),
+    chat: input => invoke(ipc.petChat, input),
+    onQuickChat: listener => {
+      const wrapped = () => listener()
+      ipcRenderer.on(ipc.petQuickChat, wrapped)
+      return () => ipcRenderer.removeListener(ipc.petQuickChat, wrapped)
+    },
+    onStateChanged: listener => {
+      const wrapped = (_: unknown, state: Parameters<typeof listener>[0]) => listener(state)
+      ipcRenderer.on(ipc.petWindowChanged, wrapped)
+      return () => ipcRenderer.removeListener(ipc.petWindowChanged, wrapped)
+    },
+    onChanged: listener => {
+      const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
+      ipcRenderer.on(ipc.petChanged, wrapped)
+      return () => ipcRenderer.removeListener(ipc.petChanged, wrapped)
+    },
     onEvent: listener => {
       const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
       ipcRenderer.on(ipc.petChanged, wrapped)

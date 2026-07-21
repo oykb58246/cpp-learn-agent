@@ -32,8 +32,16 @@ export const achievementDefinitions: AchievementDefinition[] = [
   definition('loop-master', '循环掌握', 'concept-verified', 1, 20, 'control.loops'),
   definition('review-first', '首次复习', 'review-completed', 1, 10),
   definition('review-ten', '温故知新', 'review-completed', 10, 40),
+  definition('first-code-edit', '第一次有效编辑', 'code-edited', 1, 10),
+  definition('code-edit-ten', '持续编写代码', 'code-edited', 10, 30),
+  definition('practice-first-pass', 'OJ 初次通过', 'practice-passed', 1, 20),
+  definition('practice-five-pass', '解题上手', 'practice-passed', 5, 50),
+  definition('knowledge-first-mastered', '知识点通关', 'knowledge-mastered', 1, 15),
+  definition('knowledge-ten-mastered', '通关十个知识点', 'knowledge-mastered', 10, 60),
   definition('project-first', '项目起步', 'project-completed', 1, 30),
-  definition('project-five', '项目实践者', 'project-completed', 5, 80)
+  definition('project-five', '项目实践者', 'project-completed', 5, 80),
+  definition('project-task-first', '项目任务完成', 'project-task-completed', 1, 25),
+  definition('project-task-five', '项目任务实践者', 'project-task-completed', 5, 70)
 ]
 
 export const reviewIntervalsDays = [1, 3, 7, 14, 30] as const

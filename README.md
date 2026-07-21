@@ -1,135 +1,124 @@
-# CppPilot：带桌面宠物的 C++ 学习 Agent
+<div align="center">
 
-面向 C++ 初学者的 Windows 桌面学习 Agent。项目通过代码工作区、教学型 Agent 和桌面宠物，将环境配置、知识学习、代码编写、错误诊断、逻辑纠错与项目实践连接成一条可执行、可验证、可追踪的学习流程。
+# CppPilot
 
-> **当前状态：H3 已完成交接基线。** H1 工程基础、H2 C++ 开发能力以及 H3 Agent、MCP、知识与成长闭环均已交付，后续进入 H4 桌面宠物、系统截图、最终视觉、安装器和兼容性收口。
+**带透明桌宠的 C++ 学习 Agent，把写代码、查报错、练 OJ、复习知识点和成长反馈连成一条本地闭环。**
 
-## 项目简介
+![Electron](https://img.shields.io/badge/Electron-43-47848F?logo=electron&logoColor=white)
+![Vue](https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-node:sqlite-003B57?logo=sqlite&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-NSIS-0078D4?logo=windows&logoColor=white)
 
-C++ 初学者面对的困难通常不止是语法本身：编译器和 IDE 配置复杂、项目结构陌生、报错信息难以理解、逻辑错误缺少验证手段，通用 AI 还可能直接给出超出学习进度的答案。
+软件工程课程大作业 · 当前版本：`0.1.0` · 最终交付口径：Windows NSIS 一键安装包
 
-CppPilot 希望提供一个真正参与学习过程的 Agent：它理解当前项目、代码选区、编译信息、题目要求和知识掌握状态，生成可见的任务计划，调用本地工具进行编译、运行、测试、分析和调试，再根据工具证据给出符合用户当前知识范围的讲解。
+</div>
 
-项目主要面向正在学习 C++ 的大学生，覆盖环境准备、语法入门、数据处理、解题训练、多文件项目和独立提升等阶段。
+---
 
-## 设计原则
+## 📖 项目简介
 
-- **证据优先**：能够由编译器、测试、静态分析、语言服务或调试器确认的问题，不只依赖模型推测。
-- **教学优先**：默认帮助用户理解问题并继续完成任务，而不是未经解释地直接代写完整答案。
-- **知识有界**：Agent 的代码、示例和术语受知识树约束，需要新知识时先解释再引导学习。
-- **用户可控**：文件修改、程序执行、截图和远程数据发送均遵循明确的权限与确认规则。
-- **本地优先**：代码、项目、学习进度和成就默认保存在本地，只发送完成任务所需的最小上下文。
-- **过程可见**：通过 Agent Run Timeline 展示上下文、计划、工具调用、审批、结果与验证结论。
+CppPilot 面向 C++ 初学者，解决的是“会打开编辑器但不知道环境、报错、练习和复习怎么连起来”的问题。应用提供本地工作区、Monaco 编辑器、C++ 编译运行/调试、教学型 Agent、知识树、OJ 练习和桌面宠物入口。
 
-## 规划能力
+它不是单独的聊天框。Agent 会绑定当前项目、文件、选区、诊断、截图和学习进度，经过审批后调用本地工具执行编译、运行、测试、分析和调试，再把结果写回对话、错题、XP、成就和桌宠通关进度。
 
-| 功能域 | 完整产品目标 |
+当前实现已经覆盖 H1-H4 主体工程：工程骨架、C++ 工具链、Agent/MCP/学习闭环、透明桌宠、多模态截图、OJ 判题、NSIS 打包配置和最终交付文档。真实 UI 截图仍需要在 Windows 桌面人工确认，README 不宣称已完成截图验收。
+
+## 🔁 使用流程
+
+1. 选择或导入学习工作区，信任后创建 C++ 单文件或多文件项目。
+2. 在内置 Monaco 编辑器里编写代码，保存、编译、运行、测试或调试。
+3. 遇到报错、选区疑问或截图题面时，从工作区 Agent、桌宠或截图预览进入助教对话。
+4. Agent 根据知识边界、审批策略和工具证据给出解释、修复建议或下一步练习。
+5. 通过构建、测试、复习、OJ、项目任务和成就奖励积累 XP，桌宠下方显示 4 关通关进度。
+
+## ✨ 核心能力
+
+### 🧑‍💻 C++ 工作区与工具链
+
+- 支持工作区授权、项目创建/导入、文件树、搜索、多标签编辑、自动快照和冲突处理。
+- 支持 GCC、Clang、MSVC、CMake、CTest、clang-tidy、clangd、GDB/MI 和 VS Code 联动；缺失工具会降级为明确提示。
+- 用户代码通过受限子进程运行，带超时、取消、输出上限和 Windows 进程树回收。
+
+### 🤖 教学型 Agent
+
+- Agent Runtime 覆盖意图识别、最小上下文、计划、知识边界、L0-L3 审批、工具执行、验证、取消、重试和可审计 Timeline。
+- OpenAI-compatible Responses API 使用 BYOK 配置；没有模型密钥时仍保留确定性离线规划器和本地工具链能力。
+- 工作区右侧 Agent 与助教记录共用同一套 run/message 数据；模型审批、请求中、执行中、失败、取消、完成等状态会同步更新，不再长期卡在“正在组织回答”。
+
+### 🐱 透明桌宠
+
+- 透明常驻桌宠窗口基准尺寸为 `180 x 220`，支持缩放、边缘吸附、多显示器位置恢复和基于鼠标绝对屏幕坐标的稳定拖拽。
+- 内置 CppPilot Logo、Salary Cat `cat.GIF`，并支持用户上传 PNG/JPG/JPEG/WEBP/GIF 自定义素材。
+- 自定义素材会复制到应用 `userData/pet-assets/`，通过受控 `cpppilot-pet-asset://` 协议加载；切回 Logo 只取消当前启用状态，不删除素材库列表。
+- 成长形象不再切换 4 个形态，而是在桌宠下方显示短标签赛博风通关进度条，例如 `Lv.3 · 2/4 · 60%`。
+
+### 📸 多模态截图
+
+- 截图预览确认后进入同一 Agent 对话链路，有项目上下文时绑定 `conversationId` 与 `assistantMessageId`。
+- 截图识别只使用模型 `input_image` 输入，不做本地 OCR，也不把图片 data URL 当普通文本塞进 prompt。
+- OJ 题面截图导入会要求模型返回题面、知识点、样例和 5 个可信判题用例；信息不足时拒绝添加。
+
+### 🧪 OJ 练习场
+
+- 内置 27 道 C++ 初学 OJ 练习和 5 个小型项目任务，按输入输出、类型、分支、循环、数组、字符串、函数、递归、结构体、排序、二分、STL 容器等知识点组织。
+- 练习页提供题单、题面、样例、代码编辑、提交、判题结果、总分、5 个用例状态和失败用例输入/期望/实际输出差异。
+- 用户导入的 OJ 截图必须形成完整题目和 5 个判题用例；模型无法补足可信边界用例时不会落库。
+
+### 🧠 学习成长
+
+- 当前知识树包含 46 个 C++ 节点，带前置关系和知识边界控制。
+- SQLite 记录学习事件、错题、复习、XP、成就、练习提交和项目任务；成就 `xpReward` 首次解锁时会幂等加入总 XP。
+- 桌宠进度条由真实 `LearnerSummary` 驱动，等级和 4 关成长阶段来自 XP，而不是静态展示。
+
+## 🧠 XP 规则
+
+| 来源 | 当前规则 |
 | --- | --- |
-| 环境与工具链 | 自动发现并验证 VS Code、GCC、Clang、MSVC、CMake 和调试器，由用户确认后绑定工具链配置 |
-| 工作区与项目 | 支持手动、题目、自然语言和导入四种建项目方式，所有文件操作限制在用户授权的工作区内 |
-| C++ 编辑体验 | 提供 Monaco 编辑器、clangd/LSP 语义能力、编译运行、测试、调试、Diff、快照恢复和 VS Code 联动 |
-| 教学型 Agent | 根据环境助手、概念讲解、错误诊断、解题教练、项目助手和复习教练等模式规划并执行任务 |
-| 错误诊断 | 分别处理编译、链接、运行时和逻辑错误，通过最小失败用例、变量观察与回归测试形成证据链 |
-| 知识与成长 | 使用带前置关系的 C++ 知识树约束讲解范围，记录学习进度、错题、复习、等级、成就和桌宠成长 |
-| 桌面宠物 | 提供常驻桌面的交互入口，支持快捷询问、状态反馈、截图提问、托盘和跨应用学习场景 |
-| Agent 记录 | 保存可审计的任务时间线，包括计划摘要、上下文来源、工具调用、审批、结果和验证状态 |
+| 环境绑定 | 工具链绑定成功记 `environment-ready`，基础 XP +10，并可解锁环境成就 |
+| 编译/测试 | 编译成功 `build-succeeded` +10；样例/回归测试通过 `test-passed` +10 |
+| 代码编辑 | 保存 C/C++ 文件时按有效非空白内容变化和变更行数计 `code-edited`，单次 2-12 XP；非代码文件、无变化和纯微小空白变化不计，内容指纹防重复刷经验 |
+| 错误修复 | 错误被验证解决记 `error-resolved` +15，并进入成就与错题/复习链路 |
+| 复习与知识 | 复习通过 `review-completed` +10；概念验证 `concept-verified` +15；OJ/项目带来的知识点通关记 `knowledge-mastered` +10/点 |
+| OJ 解题 | 提交不足 100 分最多给少量过程 XP；5 个用例全过记 `practice-passed`，基础 20 XP + 难度系数 |
+| 项目任务 | 完成小型项目任务记 `project-task-completed`，基础 25 XP + 难度系数，并推动相关知识点通关 |
+| 成就奖励 | 首次达成成就时按定义的 `xpReward` 加到总 XP；重复事件不会重复领奖励 |
 
-## Agent 工作流
+## 🧪 OJ 判题规则
 
-```mermaid
-flowchart LR
-    A[用户请求] --> B[意图识别]
-    B --> C[构建最小上下文]
-    C --> D[生成任务计划]
-    D --> E[知识边界与权限检查]
-    E --> F[MCP 工具调用]
-    F --> G[编译 / 测试 / 分析 / 调试]
-    G --> H{验证通过?}
-    H -- 否 --> D
-    H -- 是 --> I[教学型回答]
-    I --> J[学习记录与 Run Timeline]
-```
+- 每道 OJ 题固定 5 个判题用例，每个 20 分，总分 100。
+- 用例可以包含题目样例，也可以包含隐藏边界用例；内置题全部显式配置 5 个用例。
+- 提交时创建临时 C++ 源文件，复用本地工具链按 C++17 编译，再逐个运行用例并归一化输出比较。
+- 编译失败直接 0 分并展示诊断；运行超时、崩溃、非零退出、输出不一致都会在对应用例上显示失败原因。
+- 截图导入题必须由模型通过 `input_image` 生成或补齐 5 个可信用例；缺少题意、输入输出格式或 expected output 不可靠时拒绝添加。
 
-Agent 不是单独的聊天框，而是由意图路由、上下文构建、规划、知识边界、权限策略、模型接入、MCP 工具、执行循环、验证、记忆和审计共同组成的任务系统。
-
-## 系统架构
+## 🛠️ 技术架构
 
 ```mermaid
 flowchart TB
-    UI[主应用 / 编辑器 / 桌宠] --> PRELOAD[Preload + contextBridge]
-    PRELOAD --> HOST[Electron Host + Typed IPC]
-    HOST --> AGENT[Agent Runtime]
-    AGENT --> MCP[MCP Client Manager]
-    MCP --> LOCAL[cpp-local-tools Server]
-    LOCAL --> TOOLS[文件 / 编译 / 测试 / clangd / 调试 / VS Code]
-    HOST --> DATA[(SQLite)]
-    AGENT --> DATA
-    AGENT --> TRACE[Run Timeline]
+    UI[Vue Renderer / Monaco / 桌宠] --> PRELOAD[Preload contextBridge]
+    PRELOAD --> MAIN[Electron Main + Typed IPC]
+    MAIN --> DB[(node:sqlite / SQLite WAL)]
+    MAIN --> AGENT[Agent Runtime]
+    AGENT --> MCP[MCP Host / Worker]
+    MCP --> TOOLS[本地 C++ 工具 / 文件 / 编译 / 调试]
+    MAIN --> PET[透明桌宠窗口 / 托盘 / 快捷键]
+    MAIN --> MODEL[OpenAI-compatible Responses API]
 ```
-
-- Renderer 只负责界面和交互，不直接使用 Node.js 高权限 API。
-- Preload 通过 `contextBridge` 暴露经过类型约束的最小 API。
-- Electron 主进程负责窗口、文件选择、IPC 校验和桌面能力。
-- Agent Runtime 负责任务规划、工具编排、验证、记忆和审计。
-- 第一方 MCP Server 统一提供工作区文件、构建、测试、分析和调试能力。
-- 用户 C++ 程序将在独立受限进程中运行，避免阻塞或直接影响界面进程。
-
-## 当前进展
-
-当前仓库已完成 H1、H2 和 H3 交接基线，现已包含：
-
-- Electron、Vue 3、TypeScript 与 pnpm workspace 工程骨架。
-- 基于 `contextBridge`、Zod 和共享类型的 IPC 契约。
-- 工作区授权、项目创建与导入、文件树、搜索和 Monaco 多标签编辑。
-- 自动保存、文件哈希、外部变更监听、Monaco Diff 冲突处理、修改前快照与恢复。
-- SQLite WAL、Schema Migration、迁移备份和只读恢复模式。
-- Vitest 契约/单元测试与 Playwright Electron E2E 测试框架。
-- GCC、Clang、MSVC、CMake、调试器和 VS Code 的本机候选探测。
-- 首次启动环境初始化向导，分步完成自动检测、工具链验证绑定、工作区授权和结果确认。
-- 缺失工具提供固定官方入口；WinGet 可用时，经用户确认后可打开可见安装终端，跟踪安装结果并自动重新检测环境。应用不接受任意软件包或命令，也不会静默修改系统 PATH。
-- GCC 与 MSVC Hello World 编译运行烟雾验证。
-- 工具链绑定、SQLite 持久化、健康检查和设置页环境面板。
-- 受限子进程的超时、取消、输出上限、标准输入和 Windows 进程树回收。
-- 当前 C++ 文件的真实编译、运行和停止，支持 C++17、C++20 与 C++23 选择。
-- GCC、Clang、MSVC 编译/链接诊断标准化，以及输出面板、问题面板和行内标记。
-- CMake 配置与多文件构建、CTest、`compile_commands.json` 生成和中文路径兼容构建。
-- clang-tidy 静态分析接口、诊断面板与缺失工具降级。
-- VS Code 新窗口打开项目和当前文件行列定位。
-- 标准 clangd/LSP 客户端、Monaco 补全、悬停、定义跳转、实时诊断与缺失工具降级。
-- GDB/MI 单文件调试、编辑器断点、继续/单步/跳出、暂停行、局部变量、调用栈和调试输出。
-- 中文项目路径的调试源码暂存与源位置回映射。
-- 文件侧边栏、快照侧边栏和底部输出面板支持拖拽调整、键盘微调、双击复位与尺寸持久化。
-- 成功、语法错误、链接错误、死循环、崩溃、逻辑错误和 CMake 工程固定 C++ 样例库。
-- 纯 TypeScript Agent Runtime，包含意图、最小上下文、计划、知识边界、L0-L3 策略、审批、执行、验证、取消、重试、时限和可审计 Timeline。
-- 真实 MCP stdio Host/Worker、24 个本地工具、7 个资源、8 个教学 Prompt，以及 Progress、Cancellation、超时和进程内降级通道。
-- OpenAI-compatible BYOK 模型网关、Electron `safeStorage` 密钥隔离和无密钥可运行的确定性离线规划器。
-- 环境、项目创建、选区解释、编译错误、逻辑错误、截图上下文和复习成长七条 Agent 工作流。
-- 38 个有向无环 C++ 知识节点、错误本、1/3/7/14/30 天复习调度、XP、4 个成长阶段、17 枚勋章和 PetEvent。
-- 工作区 Agent 入口、审批 Patch Diff、Agent 记录、知识树、练习、报告和模型设置页面。
-- `node:sqlite` WAL 数据库、H3 v4-v7 迁移、事务回滚、运行恢复、学习事件和奖励幂等。
-
-透明桌宠窗口、托盘、全局快捷键、屏幕区域选择、OCR、最终视觉和安装器属于 H4。当前验证机器未安装 CMake、CTest、clangd 和 clang-tidy，因此这些工具在本机验证可恢复的缺失提示；安装对应工具后可进入现有真实执行分支。
-
-## 技术栈
 
 | 层次 | 技术 |
 | --- | --- |
-| 桌面端 | Electron、electron-vite、electron-builder |
-| 前端 | Vue 3、TypeScript、Vite、Pinia |
-| UI | Element Plus、Lucide、Design Tokens |
-| 编辑器 | Monaco Editor；标准 clangd / LSP 客户端与 Provider |
-| C++ 工具 | GCC / Clang / MSVC 编译运行；CMake、CTest、clang-tidy、VS Code；GDB/MI 单文件调试 |
-| Agent | MCP TypeScript SDK、OpenAI-compatible Gateway、确定性离线 Planner |
-| 数据 | Node/Electron 内置 `node:sqlite`、SQLite WAL |
-| 校验 | Zod、Vitest、Playwright |
+| 桌面端 | Electron、electron-vite、electron-builder、NSIS |
+| 前端 | Vue 3、TypeScript、Vite、Pinia、Element Plus、Lucide |
+| 编辑器 | Monaco Editor、clangd/LSP Provider、Diff 与快照恢复 |
+| Agent | TypeScript Agent Runtime、MCP SDK、OpenAI-compatible Responses、确定性离线 Planner |
+| C++ 执行 | GCC/Clang/MSVC、CMake/CTest、clang-tidy、GDB/MI、受限子进程 |
+| 数据 | `node:sqlite`、SQLite WAL、Zod schema、迁移和只读恢复模式 |
+| 验证 | Vitest、Playwright Electron、`git diff --check` |
 
-## 环境要求
+## 🚀 本地运行与打包
 
-- Windows 10 或 Windows 11
-- Node.js 22 或更高版本
-- pnpm 10.24.0（建议通过 Corepack 管理）
-
-## 本地运行
+环境要求：Windows 10/11、Node.js 22+、pnpm 10.24.0。
 
 ```powershell
 corepack enable
@@ -137,75 +126,62 @@ pnpm install
 pnpm dev
 ```
 
-项目使用 VS Code 开发，不要求安装 Visual Studio IDE 或 Visual Studio C++ Build Tools。只有在学习者主动选择 MSVC 作为 C++ 工具链时，才需要单独安装对应的 MSVC Build Tools；应用数据库和 Electron 启动均不依赖它。
-
-应用首次使用会自动进入环境初始化向导。选择“稍后配置”时会提示找回路径，首页也会保留可关闭的环境提醒；可在“设置 → C++ 工具链 → 环境向导”再次打开。已经使用过旧版本的本地数据不会被强制重新引导。
-
-## 常用命令
+常用命令：
 
 | 命令 | 说明 |
 | --- | --- |
-| `pnpm dev` | 启动 Electron 开发环境 |
-| `pnpm build` | 构建全部 workspace 包和桌面应用 |
-| `pnpm typecheck` | 执行 TypeScript 与 Vue 类型检查 |
-| `pnpm test` | 执行单元测试和契约测试 |
-| `pnpm test:e2e` | 构建应用并执行 Electron E2E 测试 |
-| `pnpm verify` | 依次执行类型检查、测试、构建和 E2E 校验 |
-| `pnpm package:dir` | 生成未打包的桌面应用目录 |
+| `pnpm typecheck` | 全 workspace TypeScript/Vue 类型检查 |
+| `pnpm test` | 全 workspace 单元测试和契约测试 |
+| `pnpm build` | 构建所有包和桌面应用 |
+| `pnpm package:nsis` | 构建 Windows NSIS 一键安装包 |
+| `git diff --check` | 检查 diff 空白问题 |
 
-## 项目结构
+NSIS 配置见 `apps/desktop/electron-builder.yml`，只生成 Windows x64 一键安装包。打包成功后安装器位于 `release/CppPilot Setup 0.1.0.exe`，当前产品名为 `CppPilot`。
+
+## ✅ 验证状态
+
+最终交付五项验证已在本 worktree 通过。
+
+| 命令 | 状态 |
+| --- | --- |
+| `pnpm typecheck` | 通过 |
+| `pnpm test` | 通过 |
+| `pnpm build` | 通过 |
+| `pnpm package:nsis` | 通过 |
+| `git diff --check` | 通过 |
+
+本轮还单独跑过桌宠/自定义素材、Agent 同步、OJ 导入与判题、contracts、database、agent-runtime 和 desktop typecheck 等目标验证。
+
+## 📁 项目结构
 
 ```text
 cpp-learn-agent/
-|-- apps/
-|   `-- desktop/          # Electron 主进程、Preload 与 Vue Renderer
-|-- packages/
-|   |-- contracts/        # 共享类型、Schema 与 IPC 契约
-|   |-- agent-runtime/    # Agent 状态机、策略、模型、知识与工作流
-|   |-- cpp-local-tools/  # 工具链探测、受限进程与烟雾验证
-|   |-- database/         # SQLite、迁移与数据访问
-|   |-- ui-kit/           # 设计变量与共享 UI 基础
-|   `-- workspace-core/   # 工作区、文件、项目、搜索与快照
-|-- docs/
-|   |-- handoff-a/        # H1 历史交接
-|   |-- handoff-b/        # H2 历史交接
-|   `-- handoff-c/        # H3 当前交接基线
-|-- tests/
-|   `-- e2e/              # Electron Playwright 端到端测试
+|-- apps/desktop/              # Electron Main、Preload、Vue Renderer、NSIS 配置
+|-- packages/contracts/        # 共享类型、Zod Schema、IPC 契约
+|-- packages/agent-runtime/    # Agent 状态机、知识树、成就、练习题库
+|-- packages/cpp-local-tools/  # C++ 工具链探测、编译运行、调试、进程隔离
+|-- packages/database/         # SQLite 迁移、DAO、学习与练习持久化
+|-- packages/workspace-core/   # 工作区、文件、项目、快照、安全路径
+|-- docs/archive/              # 旧 README 和历史资料归档
+|-- docs/final/                # 最终交付清单与汇报材料
+|-- .codex/skills/             # 项目内可复用 README skill
+|-- tests/                     # Electron E2E 与 C++ fixture
 |-- package.json
 `-- pnpm-workspace.yaml
 ```
 
-## 开发路线
+## 📄 文档与说明
 
-| 里程碑 | 阶段目标 | 主要内容 |
-| --- | --- | --- |
-| H1 基础交接 | 第 4 周 | 工程骨架、工作区、文件管理、数据库、快照和基础契约 |
-| H2 开发能力 | 第 8 周 | 工具链绑定、Monaco、clangd、编译运行、测试、调试和 VS Code 联动 |
-| H3 Agent 业务 | 第 12 周 | Agent Runtime、MCP、知识边界、学习成长与 Run Timeline |
-| H4 最终交付 | 第 16 周 | 桌面宠物、完整界面、安装包、兼容性测试、文档与答辩材料 |
+- 旧版 README 已归档到 `docs/archive/README-previous.md`。
+- README 写作规范 skill 位于 `.codex/skills/cpppilot-readme-writer/`。
+- 四阶段/四对话工作清单位于 `docs/final/team-work-summary.md`。
+- 桌面总结材料位于 `D:\Desktop\CppPilot-项目总结材料.md`。
+- 项目策划案、H1/H2/H3 历史交接文档仍保留在根目录和 `docs/handoff-*` 中。
 
-## 项目文档
+## 📌 人工截图确认清单
 
-- [应用开发策划案](./CppPilot：带桌面宠物的%20C++%20学习%20Agent%20应用开发策划案.md)：完整产品定义、功能规划、Agent/MCP 设计、架构、安全、分工、里程碑与验收标准。
-- [成员 A 工程落地工作计划](./成员A-工程落地工作计划.md)：H1 基础工程的实现范围、接口约定和交接要求。
-- [H1 架构说明](./docs/handoff-a/architecture.md)：进程边界、包依赖和成员 B 接入点。
-- [H1 运行手册](./docs/handoff-a/runbook.md)：原生 SQLite ABI、开发、测试、打包和故障排查。
-- [H1 接收清单](./docs/handoff-a/h1-acceptance.md)：成员 B 在独立环境执行的验收步骤。
-- [成员 B 工作计划](./docs/handoff-b/work-plan.md)：H2 分批实现范围与当前进度。
-- [成员 B H2 交接说明](./docs/handoff-b/handoff.md)：交接基线、阅读顺序、已交付能力和成员 C 接入点。
-- [成员 B 第 2 批测试报告](./docs/handoff-b/batch-2-test-report.md)：Monaco、编译运行、诊断和 Electron E2E 验证结果。
-- [成员 B 第 3 批工程工具测试报告](./docs/handoff-b/batch-3-engineering-test-report.md)：CMake、CTest、clang-tidy、VS Code 与中文路径构建验证结果。
-- [H2 接收清单](./docs/handoff-b/h2-acceptance.md)：成员 C 独立验收 H2 开发能力的步骤。
-- [H2 运行手册](./docs/handoff-b/runbook.md)：工具链、clangd、断点调试和原生 ABI 操作。
-- [H2 契约说明](./docs/handoff-b/contracts.md)：编译、语言服务、调试与外部编辑器 IPC。
-- [H2 已知问题](./docs/handoff-b/known-issues.md)：本机工具缺失和当前后端范围。
-- [H3 架构说明](./docs/handoff-c/architecture.md)：Agent Runtime、MCP、数据库、进程边界和 H4 接入点。
-- [H3 契约说明](./docs/handoff-c/contracts.md)：Run、审批、学习、IPC 和 PetEvent 稳定接口。
-- [H3 MCP 能力目录](./docs/handoff-c/mcp-catalog.md)：Tools、Resources、Prompts、风险和超时。
-- [H3 运行手册](./docs/handoff-c/runbook.md)：VS Code 开发、启动、验证、演示和故障排查。
-- [H3 测试报告](./docs/handoff-c/test-report.md)：单元、集成、Electron E2E、构建环境和限制。
-- [H3 接收清单](./docs/handoff-c/h3-acceptance.md)：规格逐项证据和成员 D/H4 接入检查。
-- [H3 已知问题](./docs/handoff-c/known-issues.md)：当前工具环境、bundle 体积和 H4 范围。
+以下画面需要在真实 Windows 桌面人工确认，本仓库不会把它们写成已自动截图验收：桌宠尺寸与拖拽、赛博进度条、自定义 GIF 切换、工作区 Agent 错误态、OJ 提交判题、设置页素材列表、NSIS 安装体验。
 
-本项目为软件工程课程大作业，计划由 4 人在 16 周内协作完成。
+<div align="center">
+  <strong>CppPilot</strong> - 让 C++ 初学从“能运行”走到“能理解、能验证、能复盘”。
+</div>

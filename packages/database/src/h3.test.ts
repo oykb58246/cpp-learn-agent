@@ -305,8 +305,12 @@ describe('H3 persistence', () => {
     db.seedAchievementDefinitions([definition])
     expect(db.awardAchievement({ userId: 'local-user', achievementId: definition.id, sourceEventId: event.sourceEventId, unlockedAt: now })).toBe(true)
     expect(db.awardAchievement({ userId: 'local-user', achievementId: definition.id, sourceEventId: event.sourceEventId, unlockedAt: now })).toBe(false)
-    expect(db.getLearnerSummary('local-user')).toMatchObject({ xp: 20, level: 1, growthStage: 1 })
+    expect(db.getLearnerSummary('local-user')).toMatchObject({ xp: 30, level: 1, growthStage: 1 })
     expect(db.getLearnerSummary('local-user').achievements.map(item => item.achievementId)).toContain('first-fix')
+    expect(db.getLearnerSummary('local-user').xpBreakdown).toEqual(expect.arrayContaining([
+      { type: 'error-resolved', xp: 20 },
+      { type: 'achievement:first-fix', xp: 10 }
+    ]))
     db.close()
   })
 

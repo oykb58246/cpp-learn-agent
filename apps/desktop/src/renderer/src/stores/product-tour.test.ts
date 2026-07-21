@@ -15,7 +15,8 @@ const baseSettings = (): AppSettings => ({
   onboardingReminderDismissed: false,
   productTourStatus: 'pending',
   productTourStep: 0,
-  productTourWelcomeSeen: false
+  productTourWelcomeSeen: false,
+  pet: { visible: true, assetMode: 'cpppilot-logo', scale: 1, ignoreMouseEvents: false, bubbleEnabled: true, focusModeEnabled: false, launchAtLogin: false, customAssets: [] }
 })
 
 function prepareApp(settingsUpdate?: (patch: Partial<AppSettings>, current: AppSettings) => Promise<any>) {

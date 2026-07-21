@@ -19,6 +19,7 @@ import type {
   ModelProfileInput,
   ReviewItem
 } from '@cpp-pet/contracts'
+import { isAgentRunBusy } from '../utils/agent-run-state'
 
 export const useAgentStore = defineStore('agent', {
   state: () => ({
@@ -69,6 +70,7 @@ export const useAgentStore = defineStore('agent', {
       if (reviews.ok) this.reviews = reviews.data; else this.error ??= reviews.error
       if (summary.ok) this.summary = summary.data; else this.error ??= summary.error
       if (models.ok) this.models = models.data; else this.error ??= models.error
+      this.syncCurrentConversationRun()
       this.loading = false
     },
     subscribe() {
@@ -133,6 +135,7 @@ export const useAgentStore = defineStore('agent', {
       if (!result.ok) { this.error = result.error; return null }
       this.currentConversationId = conversationId
       this.messages = result.data
+      this.syncCurrentConversationRun()
       return result.data
     },
     async submitAgent(input: Omit<ConversationSendInput, 'projectId' | 'conversationId'>) {
@@ -181,7 +184,11 @@ export const useAgentStore = defineStore('agent', {
         } else this.upsertConversation(event.conversation)
         return
       }
-      if (event.message.conversationId === this.currentConversationId) this.upsertMessage(event.message)
+      if (event.message.conversationId === this.currentConversationId) {
+        this.upsertMessage(event.message)
+        this.settleRunFromAssistantMessage(event.message)
+        this.syncCurrentConversationRun()
+      }
     },
     upsertConversation(conversation: AgentConversation) {
       const index = this.conversations.findIndex(item => item.id === conversation.id)
@@ -192,6 +199,36 @@ export const useAgentStore = defineStore('agent', {
       const index = this.messages.findIndex(item => item.id === message.id)
       if (index >= 0) this.messages[index] = message
       else this.messages.push(message)
+    },
+    settleRunFromAssistantMessage(message: AgentMessage) {
+      if (message.role !== 'assistant') return
+      const status = message.status === 'completed'
+        ? 'completed'
+        : message.status === 'failed'
+          ? 'failed'
+          : message.status === 'stopped' || message.status === 'interrupted'
+            ? 'cancelled'
+            : null
+      if (!status) return
+      const matches = (run: AgentRun | AgentRunDetail) => Boolean(
+        run.assistantMessageId === message.id
+        && run.conversationId === message.conversationId
+        && (!this.agentProjectId || run.projectId === this.agentProjectId)
+      )
+      const candidate = this.currentRun && matches(this.currentRun)
+        ? this.currentRun
+        : this.runs.find(item => matches(item))
+      if (!candidate) return
+      const updated: AgentRun = {
+        ...candidate,
+        status,
+        updatedAt: message.updatedAt,
+        ...(message.errorCode ? { errorCode: message.errorCode } : {}),
+        ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
+        ...(message.completedAt ? { completedAt: message.completedAt } : {})
+      }
+      this.upsertRun(updated)
+      if (this.currentRun?.id === updated.id) this.currentRun = { ...this.currentRun, ...updated }
     },
     async start(input: AgentStartRequest) {
       this.running = true
@@ -302,13 +339,56 @@ export const useAgentStore = defineStore('agent', {
       if (reviews.ok) this.reviews = reviews.data
       if (summary.ok) this.summary = summary.data
     },
+    syncCurrentConversationRun() {
+      if (!this.currentConversationId) return
+      const pendingAssistantMessageIds = new Set(this.messages
+        .filter(item => item.role === 'assistant' && ['pending', 'streaming'].includes(item.status))
+        .map(item => item.id))
+      const run = this.runs.find(item =>
+        item.conversationId === this.currentConversationId
+        && (!this.agentProjectId || item.projectId === this.agentProjectId)
+        && (
+          Boolean(item.pendingApproval)
+          || isAgentRunBusy(item.status)
+          || item.status === 'waiting-input'
+          || Boolean(item.assistantMessageId && pendingAssistantMessageIds.has(item.assistantMessageId))
+        )
+      )
+      if (run) this.currentRun = run
+    },
     async handleRunChanged(run: AgentRun) {
       this.upsertRun(run)
-      if (this.currentRun?.id !== run.id) return
+      const isCurrentRun = this.currentRun?.id === run.id
+      const belongsToCurrentConversation = Boolean(
+        this.currentConversationId
+        && run.conversationId === this.currentConversationId
+        && (!this.agentProjectId || run.projectId === this.agentProjectId)
+      )
+      const tracksCurrentAssistantMessage = Boolean(
+        run.assistantMessageId
+        && this.messages.some(item => item.id === run.assistantMessageId)
+      )
+      const terminalConversationUpdate = ['failed', 'cancelled', 'completed'].includes(run.status)
+      const shouldTrackConversationRun = belongsToCurrentConversation && (
+        tracksCurrentAssistantMessage
+        || terminalConversationUpdate
+        || Boolean(run.pendingApproval)
+        || isAgentRunBusy(run.status)
+        || run.status === 'waiting-input'
+        || !this.currentRun
+      )
+      if (!isCurrentRun && !shouldTrackConversationRun) return
+      if (shouldTrackConversationRun && this.currentRun?.id !== run.id) this.currentRun = run
       const detail = await window.cppPet.agent.get({ runId: run.id })
       if (!detail.ok) { this.error = detail.error; return }
-      if (this.currentRun?.id === run.id) this.currentRun = detail.data
+      if (this.currentRun?.id === run.id || shouldTrackConversationRun) this.currentRun = detail.data
       this.upsertRun(detail.data)
+      if (belongsToCurrentConversation && typeof window.cppPet.conversations?.messages === 'function' && run.conversationId) {
+        const messages = await window.cppPet.conversations.messages({ projectId: run.projectId!, conversationId: run.conversationId })
+        if (messages.ok && this.currentConversationId === run.conversationId && (!this.agentProjectId || this.agentProjectId === run.projectId)) {
+          this.messages = messages.data
+        } else if (!messages.ok) this.error ??= messages.error
+      }
     },
     upsertRun(run: AgentRun) {
       const index = this.runs.findIndex(item => item.id === run.id)

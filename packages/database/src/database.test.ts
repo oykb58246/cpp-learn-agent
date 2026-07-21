@@ -10,10 +10,79 @@ describe('AppDatabase', () => {
   it('starts onboarding for new users and persists a skipped reminder', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppet-db-')); dirs.push(dir); const file = join(dir, 'app.sqlite')
     let db = new AppDatabase(file)
-    expect(db.getSettings()).toMatchObject({ onboardingCompleted: false, onboardingStatus: 'pending', onboardingReminderDismissed: false, cursorStyle: 'mascot' })
+    expect(db.getSettings()).toMatchObject({
+      onboardingCompleted: false, onboardingStatus: 'pending', onboardingReminderDismissed: false, cursorStyle: 'mascot',
+      pet: { visible: true, assetMode: 'cpppilot-logo', scale: 1, ignoreMouseEvents: false, bubbleEnabled: true, focusModeEnabled: false, launchAtLogin: false, customAssets: [] }
+    })
     db.updateSettings({ onboardingCompleted: true, onboardingStatus: 'skipped', onboardingReminderDismissed: false }); db.close()
     db = new AppDatabase(file)
     expect(db.getSettings()).toMatchObject({ onboardingCompleted: true, onboardingStatus: 'skipped', onboardingReminderDismissed: false })
+    db.close()
+  })
+  it('persists user-imported practice exercises across restarts', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppet-db-')); dirs.push(dir); const file = join(dir, 'app.sqlite')
+    const now = new Date().toISOString()
+    const exercise = {
+      id: crypto.randomUUID(), title: 'A+B Problem', knowledgePoint: '输入输出', conceptIds: ['basics.io'], difficulty: 1,
+      statement: '输入两个整数 a 和 b，输出它们的和。', constraints: ['-1000 <= a,b <= 1000'],
+      samples: [{ input: '1 2', output: '3' }], judgeCases: [
+        { id: 'case-1', input: '1 2', expectedOutput: '3', score: 20 as const, visibility: 'sample' as const },
+        { id: 'case-2', input: '0 0', expectedOutput: '0', score: 20 as const, visibility: 'hidden' as const },
+        { id: 'case-3', input: '-5 7', expectedOutput: '2', score: 20 as const, visibility: 'hidden' as const },
+        { id: 'case-4', input: '1000 -1000', expectedOutput: '0', score: 20 as const, visibility: 'hidden' as const },
+        { id: 'case-5', input: '-999 -1', expectedOutput: '-1000', score: 20 as const, visibility: 'hidden' as const }
+      ], starterCode: '#include <iostream>\nint main(){}', source: 'user' as const,
+      createdAt: now, updatedAt: now
+    }
+    let db = new AppDatabase(file)
+    db.savePracticeExercise(exercise)
+    expect(db.listPracticeExercises()[0]).toMatchObject({ title: 'A+B Problem', knowledgePoint: '输入输出', source: 'user' })
+    db.close()
+
+    db = new AppDatabase(file)
+    expect(db.listPracticeExercises()).toHaveLength(1)
+    expect(db.listPracticeExercises()[0]?.samples).toEqual([{ input: '1 2', output: '3' }])
+    db.close()
+  })
+  it('persists judge cases and OJ submissions across restarts', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cpppet-db-')); dirs.push(dir); const file = join(dir, 'app.sqlite')
+    const now = new Date().toISOString()
+    const judgeCases = Array.from({ length: 5 }, (_, index) => ({
+      id: `case-${index + 1}`,
+      input: `${index} ${index + 1}`,
+      expectedOutput: `${index * 2 + 1}`,
+      score: 20 as const,
+      visibility: index === 0 ? 'sample' as const : 'hidden' as const,
+      reason: index === 4 ? '边界：较大的普通输入' : '基础覆盖'
+    }))
+    const exercise = {
+      id: crypto.randomUUID(), title: 'A+B Five Cases', knowledgePoint: '输入输出', conceptIds: ['basics.io'], difficulty: 1,
+      statement: '输入两个整数 a 和 b，输出它们的和。', constraints: ['-1000 <= a,b <= 1000'],
+      samples: [{ input: '1 2', output: '3' }], judgeCases, source: 'user' as const,
+      createdAt: now, updatedAt: now
+    }
+    const submission = {
+      submissionId: crypto.randomUUID(), exerciseId: exercise.id, userId: 'local-user', status: 'accepted' as const,
+      score: 100, totalScore: 100 as const, passed: true, submittedAt: now,
+      compile: {
+        success: true,
+        diagnostics: [],
+        process: { command: 'g++', args: [], exitCode: 0, stdout: '', stderr: '', durationMs: 12, timedOut: false, cancelled: false, outputTruncated: false }
+      },
+      cases: judgeCases.map(item => ({
+        caseId: item.id, visibility: item.visibility, input: item.input, expectedOutput: item.expectedOutput,
+        actualOutput: item.expectedOutput, stderr: '', passed: true, score: 20, durationMs: 3, exitCode: 0, timedOut: false
+      }))
+    }
+
+    let db = new AppDatabase(file)
+    db.savePracticeExercise(exercise)
+    db.savePracticeSubmission(submission)
+    db.close()
+
+    db = new AppDatabase(file)
+    expect(db.listPracticeExercises()[0]?.judgeCases).toEqual(judgeCases)
+    expect(db.listPracticeSubmissions('local-user', exercise.id)).toEqual([submission])
     db.close()
   })
   it('starts a new user with a pending product tour', () => {

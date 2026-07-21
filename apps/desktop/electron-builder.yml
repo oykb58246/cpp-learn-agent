@@ -2,8 +2,27 @@ appId: com.cpppilot.agent
 productName: CppPilot
 directories:
   output: ../../release
+  buildResources: build
 files:
-  - out/**
+  - out/**/*
+  - package.json
+extraResources:
+  - from: resources/cat.GIF
+    to: cat.GIF
+  - from: build/icon.png
+    to: tray-icon.png
+  - from: build/icon.ico
+    to: app-icon.ico
 win:
-  target: dir
+  target:
+    - target: nsis
+      arch:
+        - x64
   icon: build/icon.ico
+  signExecutable: false
+nsis:
+  oneClick: true
+  perMachine: false
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  packElevateHelper: false

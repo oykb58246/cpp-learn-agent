@@ -35,6 +35,8 @@ import {
 } from '@cpp-pet/cpp-local-tools'
 import { GdbMiSession } from '@cpp-pet/cpp-local-tools/debugger'
 import {
+  AchievementEngine,
+  achievementDefinitions,
   buildExplanationContext,
   builtInKnowledge,
   nextReviewDate,
@@ -878,6 +880,19 @@ export class DesktopMcpAdapter implements LocalMcpAdapter {
     }
     const passedCount = results.filter(item => item.passed).length
     const passed = results.length > 0 && passedCount === results.length
+    if (passed) {
+      const sourceEventId = `test:${String(args.runId ?? build.buildId)}`
+      this.applyGrowth({
+        id: stableUuid(`learning-event:local-user:${sourceEventId}`),
+        sourceEventId,
+        userId: 'local-user',
+        type: 'test-passed',
+        conceptIds: [],
+        xp: 10,
+        evidence: { kind: 'test', referenceId: build.buildId, summary: `${results.length} 个样例测试全部通过。` },
+        occurredAt: new Date().toISOString()
+      })
+    }
     return { passed, total: results.length, passedCount, failedCount: results.length - passedCount, results, buildId: build.buildId }
   }
 
@@ -922,6 +937,16 @@ export class DesktopMcpAdapter implements LocalMcpAdapter {
           dueAt: nextReviewDate(new Date(now), 0).toISOString(),
           status: 'pending'
         })
+        this.applyGrowth({
+          id: stableUuid(`learning-event:${userId}:review-failed:${evidenceId}`),
+          sourceEventId: `review-failed:${evidenceId}`,
+          userId,
+          type: 'review-failed',
+          conceptIds: [conceptId],
+          xp: 0,
+          evidence: { kind: 'review', referenceId: review.id, summary: `复习 ${conceptId} 未通过，已重新安排。` },
+          occurredAt: now
+        })
       } else {
         const isFinalInterval = review.intervalIndex >= reviewIntervalsDays.length - 1
         this.options.db.saveReviewItem(isFinalInterval
@@ -932,6 +957,26 @@ export class DesktopMcpAdapter implements LocalMcpAdapter {
               dueAt: nextReviewDate(new Date(now), review.intervalIndex + 1).toISOString(),
               status: 'pending'
             })
+        this.applyGrowth({
+          id: stableUuid(`learning-event:${userId}:concept:${evidenceId}`),
+          sourceEventId: `concept:${evidenceId}`,
+          userId,
+          type: 'concept-verified',
+          conceptIds: [conceptId],
+          xp: 15,
+          evidence: { kind: 'review', referenceId: review.id, summary: `${conceptId} 已通过复习验证。` },
+          occurredAt: now
+        })
+        this.applyGrowth({
+          id: stableUuid(`learning-event:${userId}:review-completed:${evidenceId}`),
+          sourceEventId: `review-completed:${evidenceId}`,
+          userId,
+          type: 'review-completed',
+          conceptIds: [conceptId],
+          xp: 10,
+          evidence: { kind: 'review', referenceId: review.id, summary: `完成 ${conceptId} 的一次复习。` },
+          occurredAt: now
+        })
       }
     }
     return { state, summary: this.options.db.getLearnerSummary(state.userId) }
@@ -963,13 +1008,36 @@ export class DesktopMcpAdapter implements LocalMcpAdapter {
       lastSeenAt: now.toISOString(),
       ...(status === 'resolved' ? { resolvedAt: now.toISOString() } : {})
     })
+    if (status === 'resolved') {
+      this.applyGrowth({
+        id: stableUuid(`learning-event:${userId}:error-resolved:${evidenceId}`),
+        sourceEventId: `error-resolved:${evidenceId}`,
+        userId,
+        type: 'error-resolved',
+        conceptIds,
+        xp: 15,
+        evidence: { kind: 'debug', referenceId: entry.id, summary: entry.title },
+        occurredAt: now.toISOString()
+      })
+    }
     return { entry, summary: this.options.db.getLearnerSummary(entry.userId) }
   }
 
   private applyGrowth(event: Parameters<AppDatabase['applyLearningEvent']>[0]): boolean {
-    // Historical learning tables remain readable, but assistant work no longer writes scores, badges, or review progress.
-    void event
-    return false
+    const priorEvents = this.options.db.listLearningEvents(event.userId, 1_000)
+    const inserted = this.options.db.applyLearningEvent(event)
+    if (!inserted) return false
+    const engine = new AchievementEngine(achievementDefinitions)
+    const unlocked = this.options.db.listLearnerAchievements(event.userId)
+    for (const definition of engine.evaluate(event, priorEvents, unlocked)) {
+      this.options.db.awardAchievement({
+        userId: event.userId,
+        achievementId: definition.id,
+        sourceEventId: event.sourceEventId,
+        unlockedAt: event.occurredAt
+      })
+    }
+    return true
   }
 }
 

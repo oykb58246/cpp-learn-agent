@@ -1,0 +1,4 @@
+interface:
+  display_name: "CppPilot README Writer"
+  short_description: "面向 CppPilot 的事实型中文 README 规范"
+  default_prompt: "Use $cpppilot-readme-writer to rewrite the CppPilot project README from inspected code and validation facts."
