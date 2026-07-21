@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { petSettingsSchema, practiceExerciseSchema, practiceSubmissionResultSchema } from '@cpp-pet/contracts'
 import type {
   AgentRun,
   AgentRunDetail,
@@ -21,6 +22,8 @@ import type {
   LearnerSummary,
   LearningEvent,
   ModelProfile,
+  PracticeExercise,
+  PracticeSubmissionResult,
   Project,
   ReviewItem,
   SnapshotManifest,
@@ -163,7 +166,8 @@ export class AppDatabase {
       onboardingReminderDismissed: false,
       productTourStatus: 'pending',
       productTourStep: 0,
-      productTourWelcomeSeen: false
+      productTourWelcomeSeen: false,
+      pet: petSettingsSchema.parse({})
     }
     const saved = JSON.parse(row.value_json) as Partial<AppSettings> & { customCursor?: boolean }
     const onboardingCompleted = typeof saved.onboardingCompleted === 'boolean' ? saved.onboardingCompleted : true
@@ -180,6 +184,7 @@ export class AppDatabase {
       : 0
     const productTourWelcomeSeen = saved.productTourWelcomeSeen === true
     const cursorStyle = resolveCursorStyle(saved)
+    const pet = petSettingsSchema.safeParse(saved.pet).success ? petSettingsSchema.parse(saved.pet) : petSettingsSchema.parse({})
     return {
       theme: 'system',
       sidebarWidth: 260,
@@ -192,7 +197,8 @@ export class AppDatabase {
       onboardingStatus,
       productTourStatus,
       productTourStep,
-      productTourWelcomeSeen
+      productTourWelcomeSeen,
+      pet
     }
   }
   updateSettings(patch: Partial<AppSettings>): AppSettings {
@@ -650,6 +656,56 @@ export class AppDatabase {
     return (rows as any[]).map(mapReviewItem)
   }
 
+
+  savePracticeExercise(exercise: PracticeExercise): PracticeExercise {
+    this.ensureWritable()
+    const parsed = practiceExerciseSchema.parse(exercise)
+    this.db.prepare(`INSERT INTO practice_exercises(
+      id,title,knowledge_point,concept_ids_json,difficulty,statement,constraints_json,samples_json,judge_cases_json,starter_code,source,created_at,updated_at
+    ) VALUES(
+      @id,@title,@knowledgePoint,@conceptIdsJson,@difficulty,@statement,@constraintsJson,@samplesJson,@judgeCasesJson,@starterCode,@source,@createdAt,@updatedAt
+    ) ON CONFLICT(id) DO UPDATE SET title=excluded.title,knowledge_point=excluded.knowledge_point,
+      concept_ids_json=excluded.concept_ids_json,difficulty=excluded.difficulty,statement=excluded.statement,
+      constraints_json=excluded.constraints_json,samples_json=excluded.samples_json,judge_cases_json=excluded.judge_cases_json,starter_code=excluded.starter_code,
+      source=excluded.source,updated_at=excluded.updated_at`).run({
+      ...parsed,
+      conceptIdsJson: JSON.stringify(parsed.conceptIds),
+      constraintsJson: JSON.stringify(parsed.constraints),
+      samplesJson: JSON.stringify(parsed.samples),
+      judgeCasesJson: JSON.stringify(parsed.judgeCases),
+      starterCode: parsed.starterCode ?? null
+    })
+    return parsed
+  }
+
+  listPracticeExercises(): PracticeExercise[] {
+    return (this.db.prepare('SELECT * FROM practice_exercises ORDER BY updated_at DESC, title').all() as any[]).map(mapPracticeExercise)
+  }
+
+  savePracticeSubmission(submission: PracticeSubmissionResult): PracticeSubmissionResult {
+    this.ensureWritable()
+    const parsed = practiceSubmissionResultSchema.parse(submission)
+    this.db.prepare(`INSERT INTO practice_submissions(
+      submission_id,exercise_id,user_id,status,score,total_score,passed,submitted_at,compile_json,cases_json
+    ) VALUES(
+      @submissionId,@exerciseId,@userId,@status,@score,@totalScore,@passed,@submittedAt,@compileJson,@casesJson
+    ) ON CONFLICT(submission_id) DO UPDATE SET status=excluded.status,score=excluded.score,
+      total_score=excluded.total_score,passed=excluded.passed,compile_json=excluded.compile_json,cases_json=excluded.cases_json`).run({
+      ...parsed,
+      passed: parsed.passed ? 1 : 0,
+      compileJson: JSON.stringify(parsed.compile),
+      casesJson: JSON.stringify(parsed.cases)
+    })
+    return parsed
+  }
+
+  listPracticeSubmissions(userId: string, exerciseId?: string): PracticeSubmissionResult[] {
+    const rows = exerciseId
+      ? this.db.prepare('SELECT * FROM practice_submissions WHERE user_id = ? AND exercise_id = ? ORDER BY submitted_at DESC').all(userId, exerciseId)
+      : this.db.prepare('SELECT * FROM practice_submissions WHERE user_id = ? ORDER BY submitted_at DESC').all(userId)
+    return (rows as any[]).map(mapPracticeSubmission)
+  }
+
   applyLearningEvent(event: LearningEvent): boolean {
     this.ensureWritable()
     return this.db.transaction(() => {
@@ -689,11 +745,20 @@ export class AppDatabase {
 
   awardAchievement(achievement: LearnerAchievement): boolean {
     this.ensureWritable()
-    const result = this.db.prepare(`INSERT OR IGNORE INTO learner_achievements(user_id,achievement_id,source_event_id,unlocked_at)
-      VALUES(@userId,@achievementId,@sourceEventId,@unlockedAt)`).run(achievement)
-    return result.changes > 0
+    return this.db.transaction(() => {
+      const result = this.db.prepare(`INSERT OR IGNORE INTO learner_achievements(user_id,achievement_id,source_event_id,unlocked_at)
+        VALUES(@userId,@achievementId,@sourceEventId,@unlockedAt)`).run(achievement)
+      if (result.changes === 0) return false
+      const definition = this.db.prepare('SELECT xp_reward FROM achievement_definitions WHERE id = ?').get(achievement.achievementId) as { xp_reward: number } | undefined
+      const xpReward = Math.max(0, Math.trunc(definition?.xp_reward ?? 0))
+      if (xpReward > 0) {
+        this.db.prepare(`INSERT INTO learner_progress(user_id,xp,updated_at) VALUES(?,?,?)
+          ON CONFLICT(user_id) DO UPDATE SET xp=xp+excluded.xp,updated_at=excluded.updated_at`)
+          .run(achievement.userId, xpReward, achievement.unlockedAt)
+      }
+      return true
+    })()
   }
-
   getLearnerSummary(userId: string): LearnerSummary {
     const progress = this.db.prepare('SELECT xp FROM learner_progress WHERE user_id = ?').get(userId) as { xp: number } | undefined
     const xp = progress?.xp ?? 0
@@ -703,6 +768,11 @@ export class AppDatabase {
     const dueReviews = (this.db.prepare("SELECT COUNT(*) count FROM review_items WHERE user_id = ? AND status = 'pending' AND due_at <= ?").get(userId, new Date().toISOString()) as { count: number }).count
     const achievements = (this.db.prepare('SELECT * FROM learner_achievements WHERE user_id = ? ORDER BY unlocked_at DESC').all(userId) as any[]).map(mapLearnerAchievement)
     const recentEvents = (this.db.prepare('SELECT * FROM learning_events WHERE user_id = ? ORDER BY occurred_at DESC LIMIT 20').all(userId) as any[]).map(mapLearningEvent)
+    const eventBreakdown = this.db.prepare('SELECT type, SUM(xp) AS xp FROM learning_events WHERE user_id = ? GROUP BY type ORDER BY type').all(userId) as Array<{ type: string; xp: number }>
+    const achievementBreakdown = this.db.prepare(`SELECT 'achievement:' || a.achievement_id AS type, d.xp_reward AS xp
+      FROM learner_achievements a JOIN achievement_definitions d ON d.id = a.achievement_id
+      WHERE a.user_id = ? AND d.xp_reward > 0 ORDER BY a.unlocked_at DESC`).all(userId) as Array<{ type: string; xp: number }>
+    const xpBreakdown = [...eventBreakdown, ...achievementBreakdown].filter(item => item.xp > 0)
     return {
       userId,
       xp,
@@ -712,6 +782,8 @@ export class AppDatabase {
       learningConcepts,
       openErrors,
       dueReviews,
+      masteredConcepts: verifiedConcepts,
+      xpBreakdown,
       achievements,
       recentEvents
     }
@@ -844,12 +916,13 @@ export class AppDatabase {
       'SELECT COALESCE(MAX(sequence_number), 0) + 1 AS next FROM agent_messages WHERE conversation_id=?'
     ).get(message.conversationId) as { next: number }).next
     this.db.prepare(`INSERT INTO agent_messages(
-      id,conversation_id,role,kind,content,status,diagnostic_snapshot_json,error_code,error_message,created_at,updated_at,completed_at,sequence_number
-    ) VALUES(@id,@conversationId,@role,@kind,@content,@status,@diagnosticSnapshotJson,@errorCode,@errorMessage,@createdAt,@updatedAt,@completedAt,@sequenceNumber)
-    ON CONFLICT(id) DO UPDATE SET content=excluded.content,status=excluded.status,error_code=excluded.error_code,
+      id,conversation_id,role,kind,content,status,diagnostic_snapshot_json,screenshot_json,error_code,error_message,created_at,updated_at,completed_at,sequence_number
+    ) VALUES(@id,@conversationId,@role,@kind,@content,@status,@diagnosticSnapshotJson,@screenshotJson,@errorCode,@errorMessage,@createdAt,@updatedAt,@completedAt,@sequenceNumber)
+    ON CONFLICT(id) DO UPDATE SET content=excluded.content,status=excluded.status,screenshot_json=excluded.screenshot_json,error_code=excluded.error_code,
       error_message=excluded.error_message,updated_at=excluded.updated_at,completed_at=excluded.completed_at`).run({
       ...message,
       diagnosticSnapshotJson: message.diagnosticSnapshot ? JSON.stringify(message.diagnosticSnapshot) : null,
+      screenshotJson: message.screenshot ? JSON.stringify(message.screenshot) : null,
       errorCode: message.errorCode ?? null,
       errorMessage: message.errorMessage ?? null,
       completedAt: message.completedAt ?? null,
@@ -928,6 +1001,7 @@ const mapAgentConversation = (r: any): AgentConversation => ({
 const mapAgentMessage = (r: any): AgentMessage => ({
   id: r.id, conversationId: r.conversation_id, role: r.role, kind: r.kind, content: r.content, status: r.status,
   ...(r.diagnostic_snapshot_json ? { diagnosticSnapshot: JSON.parse(r.diagnostic_snapshot_json) } : {}),
+  ...(r.screenshot_json ? { screenshot: JSON.parse(r.screenshot_json) } : {}),
   ...(r.error_code ? { errorCode: r.error_code } : {}), ...(r.error_message ? { errorMessage: r.error_message } : {}),
   createdAt: r.created_at, updatedAt: r.updated_at, ...(r.completed_at ? { completedAt: r.completed_at } : {})
 })
@@ -1111,6 +1185,33 @@ const mapReviewItem = (r: any): ReviewItem => ({
   ...(r.completed_at ? { completedAt: r.completed_at } : {})
 })
 
+const mapPracticeExercise = (r: any): PracticeExercise => practiceExerciseSchema.parse({
+  id: r.id,
+  title: r.title,
+  knowledgePoint: r.knowledge_point,
+  conceptIds: JSON.parse(r.concept_ids_json),
+  difficulty: r.difficulty,
+  statement: r.statement,
+  constraints: JSON.parse(r.constraints_json),
+  samples: JSON.parse(r.samples_json),
+  ...(r.judge_cases_json ? { judgeCases: JSON.parse(r.judge_cases_json) } : {}),
+  ...(r.starter_code ? { starterCode: r.starter_code } : {}),
+  source: r.source,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at
+})
+const mapPracticeSubmission = (r: any): PracticeSubmissionResult => practiceSubmissionResultSchema.parse({
+  submissionId: r.submission_id,
+  exerciseId: r.exercise_id,
+  userId: r.user_id,
+  status: r.status,
+  score: r.score,
+  totalScore: r.total_score,
+  passed: Boolean(r.passed),
+  submittedAt: r.submitted_at,
+  compile: JSON.parse(r.compile_json),
+  cases: JSON.parse(r.cases_json)
+})
 const mapLearningEvent = (r: any): LearningEvent => ({
   id: r.id,
   sourceEventId: r.source_event_id,
@@ -1143,7 +1244,7 @@ const mapModelProfile = (r: any): ModelProfile => ({
 
 function resolveCursorStyle(saved: Partial<AppSettings> & { customCursor?: boolean }): CursorStyle {
   if (saved.cursorStyle === 'system' || saved.cursorStyle === 'classic' || saved.cursorStyle === 'mascot') return saved.cursorStyle
-  // 兼容旧版 boolean 开关：关闭 -> 系统光标，开启/缺失 -> 新版桌宠光标
+  // 兼容旧版 boolean 开关：关闭 -> 系统光标，开启/缺失 -> 新版猫猫指针
   if (saved.customCursor === false) return 'system'
   return 'mascot'
 }

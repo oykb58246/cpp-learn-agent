@@ -3,6 +3,7 @@ import HomeView from '../views/HomeView.vue'
 import WorkspaceView from '../views/WorkspaceView.vue'
 import RunsView from '../views/RunsView.vue'
 import KnowledgeView from '../views/KnowledgeView.vue'
+import PracticeView from '../views/PracticeView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import OnboardingView from '../views/OnboardingView.vue'
 
@@ -14,7 +15,7 @@ export const router = createRouter({
     { path: '/home', component: HomeView },
     { path: '/workspace/:projectId?', component: WorkspaceView },
     { path: '/knowledge', component: KnowledgeView },
-    { path: '/practice', redirect: '/runs' },
+    { path: '/practice', component: PracticeView },
     { path: '/reports', redirect: '/runs' },
     { path: '/runs', component: RunsView },
     { path: '/settings', component: SettingsView }

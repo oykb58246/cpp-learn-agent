@@ -379,8 +379,362 @@ export const agentPlanSchema = z.object({
 })
 export type AgentPlan = z.infer<typeof agentPlanSchema>
 
+export const petAssetModeSchema = z.enum(['cpppilot-logo', 'salary-cat', 'custom'])
+export type PetAssetMode = z.infer<typeof petAssetModeSchema>
+export const petCustomAssetMimeSchema = z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+export type PetCustomAssetMime = z.infer<typeof petCustomAssetMimeSchema>
+export const petCustomAssetSchema = z.object({
+  id: z.string().min(1).max(120),
+  name: z.string().min(1).max(120),
+  path: z.string().min(1).max(2_048),
+  mime: petCustomAssetMimeSchema,
+  updatedAt: z.string().datetime()
+}).strict()
+export type PetCustomAsset = z.infer<typeof petCustomAssetSchema>
+export const petGrowthStageSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)])
+export type PetGrowthStage = z.infer<typeof petGrowthStageSchema>
+export const petProgressSchema = z.object({
+  stage: petGrowthStageSchema,
+  totalStages: z.literal(4).default(4),
+  percent: z.number().int().min(0).max(100),
+  label: z.string().min(1).max(80)
+}).strict()
+export type PetProgress = z.infer<typeof petProgressSchema>
+
+const petSettingsObjectSchema = z.object({
+  visible: z.boolean().default(true),
+  assetMode: petAssetModeSchema.default('cpppilot-logo'),
+  scale: z.number().min(0.5).max(2).default(1),
+  ignoreMouseEvents: z.boolean().default(false),
+  bubbleEnabled: z.boolean().default(true),
+  focusModeEnabled: z.boolean().default(false),
+  launchAtLogin: z.boolean().default(false),
+  hiddenUntil: z.string().datetime().optional(),
+  customAssets: z.array(petCustomAssetSchema).max(50).default([]),
+  activeCustomAssetId: z.string().min(1).max(120).optional(),
+  x: z.number().optional(),
+  y: z.number().optional()
+}).strict()
+export const petSettingsSchema = z.preprocess(normalizePetSettingsInput, petSettingsObjectSchema)
+export type PetSettings = z.infer<typeof petSettingsSchema>
+export const petSettingsPatchSchema = z.preprocess(normalizePetSettingsInput, petSettingsObjectSchema.partial().strict())
+export type PetSettingsPatch = z.infer<typeof petSettingsPatchSchema>
+
+function normalizePetSettingsInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input
+  const raw = input as Record<string, unknown>
+  const assetMode = raw.assetMode === 'cpppilot-mascot' || raw.assetMode === 'cpppilot-cursor'
+    ? 'cpppilot-logo'
+    : raw.assetMode
+  const legacyPath = typeof raw.customAssetPath === 'string' ? raw.customAssetPath : ''
+  const legacyName = typeof raw.customAssetName === 'string' && raw.customAssetName.trim()
+    ? raw.customAssetName.trim()
+    : legacyPath.split(/[\\/]/).pop() || '自定义素材'
+  const legacyMime = petCustomAssetMimeSchema.safeParse(raw.customAssetMime).success
+    ? raw.customAssetMime as PetCustomAssetMime
+    : undefined
+  const legacyUpdatedAt = typeof raw.customAssetUpdatedAt === 'string'
+    ? raw.customAssetUpdatedAt
+    : new Date(0).toISOString()
+  const existingAssets = Array.isArray(raw.customAssets) ? raw.customAssets : []
+  const customAssets = existingAssets.length || !legacyPath || !legacyMime
+    ? existingAssets
+    : [{
+        id: `legacy-${legacyPath.replace(/[^a-zA-Z0-9]+/g, '-').slice(-72) || 'asset'}`,
+        name: legacyName,
+        path: legacyPath,
+        mime: legacyMime,
+        updatedAt: legacyUpdatedAt
+      }]
+  const firstCustomAsset = customAssets[0]
+  const activeCustomAssetId = typeof raw.activeCustomAssetId === 'string'
+    ? raw.activeCustomAssetId
+    : assetMode === 'custom' && firstCustomAsset && typeof (firstCustomAsset as { id?: unknown }).id === 'string'
+      ? (firstCustomAsset as { id: string }).id
+      : undefined
+  const normalized: Record<string, unknown> = {
+    ...raw,
+    assetMode,
+    customAssets,
+    ...(activeCustomAssetId ? { activeCustomAssetId } : {})
+  }
+  delete normalized.customAssetPath
+  delete normalized.customAssetName
+  delete normalized.customAssetMime
+  delete normalized.customAssetUpdatedAt
+  return normalized
+}
+
+const petWindowBoundsSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  width: z.number().positive(),
+  height: z.number().positive()
+}).strict()
+
+export const petDragWindowRequestSchema = z.object({
+  initialBounds: petWindowBoundsSchema,
+  pointerStartScreenX: z.number(),
+  pointerStartScreenY: z.number(),
+  pointerCurrentScreenX: z.number(),
+  pointerCurrentScreenY: z.number()
+}).strict()
+export type PetDragWindowRequest = z.infer<typeof petDragWindowRequestSchema>
+
+export const petCustomAssetMutationSchema = z.object({
+  assetId: z.string().min(1).max(120)
+}).strict()
+export type PetCustomAssetMutation = z.infer<typeof petCustomAssetMutationSchema>
+export const petCustomAssetCreateInputSchema = z.object({
+  name: z.string().min(1).max(120).refine(value => value.trim().length > 0, '素材名称不能为空。')
+}).strict()
+export type PetCustomAssetCreateInput = z.infer<typeof petCustomAssetCreateInputSchema>
+export const petCustomAssetRenameSchema = petCustomAssetMutationSchema.extend({
+  name: z.string().min(1).max(120).refine(value => value.trim().length > 0, '素材名称不能为空。')
+}).strict()
+export type PetCustomAssetRename = z.infer<typeof petCustomAssetRenameSchema>
+
+export const petWindowStateSchema = z.object({
+  settings: petSettingsSchema,
+  windowVisible: z.boolean(),
+  ignoreMouseEvents: z.boolean(),
+  growthStage: petGrowthStageSchema.default(1),
+  progress: petProgressSchema,
+  customAssetUrl: z.string().max(2_048).optional()
+}).strict()
+export type PetWindowState = z.infer<typeof petWindowStateSchema>
+
+export const petChatRequestSchema = z.object({
+  message: z.string().min(1).max(20_000).refine(value => value.trim().length > 0, '消息不能为空。')
+}).strict()
+export type PetChatRequest = z.infer<typeof petChatRequestSchema>
+export const petChatResultSchema = z.object({
+  runId: z.string().uuid(),
+  projectId: z.string().uuid().optional(),
+  conversationId: z.string().uuid().optional(),
+  assistantMessageId: z.string().uuid().optional()
+}).strict()
+export type PetChatResult = z.infer<typeof petChatResultSchema>
+
+export const screenshotCaptureRequestSchema = z.object({
+  message: z.string().min(1).max(20_000).refine(value => value.trim().length > 0, '截图问题不能为空。'),
+  projectId: z.string().uuid().optional(),
+  activeFile: z.string().max(1_024).optional(),
+  conversationId: z.string().uuid().optional()
+}).strict()
+export type ScreenshotCaptureRequest = z.infer<typeof screenshotCaptureRequestSchema>
+
+export const screenshotPendingCaptureSchema = z.object({
+  previewDataUrl: z.string().startsWith('data:image/').max(5_000_000),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  capturedAt: z.string()
+}).strict()
+export type ScreenshotPendingCapture = z.infer<typeof screenshotPendingCaptureSchema>
+
+export const screenshotCaptureSubmissionSchema = z.object({
+  message: z.string().min(1).max(20_000).refine(value => value.trim().length > 0, '截图问题不能为空。'),
+  previewDataUrl: z.string().startsWith('data:image/').max(5_000_000),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  projectId: z.string().uuid().optional(),
+  activeFile: z.string().max(1_024).optional(),
+  conversationId: z.string().uuid().optional()
+}).strict()
+export type ScreenshotCaptureSubmission = z.infer<typeof screenshotCaptureSubmissionSchema>
+
+export const screenshotSubmittedEventSchema = z.object({
+  runId: z.string().uuid(),
+  projectId: z.string().uuid().optional(),
+  conversationId: z.string().uuid().optional()
+}).strict()
+export type ScreenshotSubmittedEvent = z.infer<typeof screenshotSubmittedEventSchema>
+
+export const appNavigationEventSchema = z.object({
+  path: z.string().min(1).max(200),
+  query: z.record(z.string(), z.string()).optional()
+}).strict()
+export type AppNavigationEvent = z.infer<typeof appNavigationEventSchema>
+
 export const petEventSchema = z.object({
   eventId: z.string().uuid(), state: z.enum(['idle', 'listen', 'thinking', 'tool-running', 'approval', 'success', 'warning', 'level-up']),
   message: z.string().optional(), runId: z.string().uuid().optional(), durationMs: z.number().nonnegative().optional()
 })
 export type PetEvent = z.infer<typeof petEventSchema>
+
+export const practiceJudgeCaseVisibilitySchema = z.enum(['sample', 'hidden'])
+export type PracticeJudgeCaseVisibility = z.infer<typeof practiceJudgeCaseVisibilitySchema>
+export const practiceJudgeCaseSchema = z.object({
+  id: z.string().min(1).max(120),
+  input: z.string().max(20_000),
+  expectedOutput: z.string().max(20_000),
+  score: z.literal(20),
+  visibility: practiceJudgeCaseVisibilitySchema,
+  reason: z.string().min(1).max(2_000).optional()
+}).strict()
+export type PracticeJudgeCase = z.infer<typeof practiceJudgeCaseSchema>
+export const practiceExerciseSourceSchema = z.enum(['built-in', 'user'])
+export type PracticeExerciseSource = z.infer<typeof practiceExerciseSourceSchema>
+export const practiceSampleSchema = z.object({
+  input: z.string().max(20_000),
+  output: z.string().max(20_000)
+}).strict()
+export type PracticeSample = z.infer<typeof practiceSampleSchema>
+const practiceExerciseObjectSchema = z.object({
+  id: z.string().min(1).max(120),
+  title: z.string().min(1).max(200),
+  knowledgePoint: z.string().min(1).max(100),
+  conceptIds: z.array(z.string().min(1).max(100)).min(1).max(20),
+  difficulty: z.number().int().min(1).max(5),
+  statement: z.string().min(1).max(100_000),
+  constraints: z.array(z.string().min(1).max(2_000)).max(30),
+  samples: z.array(practiceSampleSchema).min(1).max(20),
+  judgeCases: z.array(practiceJudgeCaseSchema).length(5),
+  starterCode: z.string().max(100_000).optional(),
+  source: practiceExerciseSourceSchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+}).strict()
+
+function normalizePracticeExerciseInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input
+  const raw = input as Record<string, unknown>
+  if (Array.isArray(raw.judgeCases) && raw.judgeCases.length === 5) return raw
+  const samples = Array.isArray(raw.samples)
+    ? raw.samples.filter(isPracticeSampleLike).slice(0, 5)
+    : []
+  if (!samples.length) return raw
+  return { ...raw, judgeCases: fallbackPracticeJudgeCases(samples) }
+}
+
+function fallbackPracticeJudgeCases(samples: PracticeSample[]): Array<z.infer<typeof practiceJudgeCaseSchema>> {
+  const judgeCases: Array<z.infer<typeof practiceJudgeCaseSchema>> = []
+  const sourceSamples = samples.length ? samples : [{ input: '', output: '' } as PracticeSample]
+  for (const [index, sample] of sourceSamples.slice(0, 5).entries()) {
+    judgeCases.push({
+      id: 'legacy-case-' + (index + 1),
+      input: sample.input,
+      expectedOutput: sample.output,
+      score: 20 as const,
+      visibility: index === 0 ? 'sample' as const : 'hidden' as const
+    })
+  }
+  while (judgeCases.length < 5) {
+    const sample = sourceSamples[judgeCases.length % sourceSamples.length] ?? sourceSamples[0]!
+    judgeCases.push({
+      id: 'legacy-case-' + (judgeCases.length + 1),
+      input: sample.input,
+      expectedOutput: sample.output,
+      score: 20 as const,
+      visibility: 'hidden' as const
+    })
+  }
+  return judgeCases
+}
+
+function isPracticeSampleLike(value: unknown): value is PracticeSample {
+  return Boolean(value)
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && typeof (value as { input?: unknown }).input === 'string'
+    && typeof (value as { output?: unknown }).output === 'string'
+}
+
+export const practiceExerciseSchema = z.preprocess(normalizePracticeExerciseInput, practiceExerciseObjectSchema)
+export type PracticeExercise = z.infer<typeof practiceExerciseSchema>
+
+export const practiceSubmissionRequestSchema = z.object({
+  exerciseId: z.string().min(1).max(120),
+  code: z.string().min(1).max(100_000),
+  standard: cppStandardSchema.default('c++17'),
+  userId: z.string().min(1).max(100).default('local-user')
+}).strict()
+export type PracticeSubmissionRequest = z.input<typeof practiceSubmissionRequestSchema>
+
+export const practiceJudgeCaseResultSchema = z.object({
+  caseId: z.string().min(1).max(120),
+  visibility: practiceJudgeCaseVisibilitySchema,
+  input: z.string().max(20_000),
+  expectedOutput: z.string().max(20_000),
+  actualOutput: z.string().max(20_000),
+  stderr: z.string().max(20_000),
+  passed: z.boolean(),
+  score: z.number().int().min(0).max(20),
+  durationMs: z.number().nonnegative(),
+  exitCode: z.number().int().nullable(),
+  timedOut: z.boolean(),
+  errorMessage: z.string().max(2_000).optional()
+}).strict()
+export type PracticeJudgeCaseResult = z.infer<typeof practiceJudgeCaseResultSchema>
+
+export const practiceSubmissionStatusSchema = z.enum(['accepted', 'wrong-answer', 'compile-error', 'runtime-error'])
+export type PracticeSubmissionStatus = z.infer<typeof practiceSubmissionStatusSchema>
+export const practiceSubmissionResultSchema = z.object({
+  submissionId: z.string().uuid(),
+  exerciseId: z.string().min(1).max(120),
+  userId: z.string().min(1).max(100),
+  status: practiceSubmissionStatusSchema,
+  score: z.number().int().min(0).max(100),
+  totalScore: z.literal(100),
+  passed: z.boolean(),
+  submittedAt: z.string().datetime(),
+  compile: z.object({
+    success: z.boolean(),
+    diagnostics: z.array(diagnosticSchema),
+    process: processResultSchema
+  }).strict(),
+  cases: z.array(practiceJudgeCaseResultSchema).max(5)
+}).strict()
+export type PracticeSubmissionResult = z.infer<typeof practiceSubmissionResultSchema>
+
+export const practiceProjectCompleteRequestSchema = z.object({
+  taskId: z.string().min(1).max(120),
+  userId: z.string().min(1).max(100).default('local-user')
+}).strict()
+export type PracticeProjectCompleteRequest = z.input<typeof practiceProjectCompleteRequestSchema>
+export const practiceProjectCompleteResultSchema = z.object({
+  taskId: z.string().min(1).max(120),
+  userId: z.string().min(1).max(100),
+  xp: z.number().int().nonnegative(),
+  completedAt: z.string().datetime()
+}).strict()
+export type PracticeProjectCompleteResult = z.infer<typeof practiceProjectCompleteResultSchema>
+
+export const practiceProjectTaskSchema = z.object({
+  id: z.string().min(1).max(120),
+  title: z.string().min(1).max(200),
+  knowledgePoint: z.string().min(1).max(100),
+  conceptIds: z.array(z.string().min(1).max(100)).min(1).max(20),
+  difficulty: z.number().int().min(1).max(5),
+  description: z.string().min(1).max(100_000),
+  goals: z.array(z.string().min(1).max(2_000)).min(1).max(20),
+  suggestedFiles: z.array(z.string().min(1).max(1_024)).min(1).max(30)
+}).strict()
+export type PracticeProjectTask = z.infer<typeof practiceProjectTaskSchema>
+
+export const practiceCatalogSchema = z.object({
+  exercises: z.array(practiceExerciseSchema),
+  projects: z.array(practiceProjectTaskSchema)
+}).strict()
+export type PracticeCatalog = z.infer<typeof practiceCatalogSchema>
+
+export const practiceOjScreenshotInputSchema = z.object({
+  previewDataUrl: z.string().startsWith('data:image/').max(5_000_000),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  width: z.number().int().positive(),
+  height: z.number().int().positive()
+}).strict()
+export type PracticeOjScreenshotInput = z.infer<typeof practiceOjScreenshotInputSchema>
+
+export const practiceOjImportResultSchema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('added'),
+    exercise: practiceExerciseSchema
+  }).strict(),
+  z.object({
+    status: z.literal('refused'),
+    reason: z.string().min(1).max(2_000)
+  }).strict()
+])
+export type PracticeOjImportResult = z.infer<typeof practiceOjImportResultSchema>

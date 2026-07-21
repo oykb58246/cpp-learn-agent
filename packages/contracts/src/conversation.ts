@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { diagnosticSchema, type Diagnostic } from './future'
-import { agentModeSchema, agentRunSchema } from './agent'
+import { agentModeSchema, agentRunSchema, screenshotRefSchema } from './agent'
 
 const timestampSchema = z.string().datetime()
 const relativePathSchema = z.string().min(1).max(1_024).refine(value => {
@@ -112,7 +112,7 @@ export const agentConversationSchema = z.object({
 export type AgentConversation = z.infer<typeof agentConversationSchema>
 
 export const agentMessageRoleSchema = z.enum(['user', 'assistant'])
-export const agentMessageKindSchema = z.enum(['text', 'diagnostic-explanation'])
+export const agentMessageKindSchema = z.enum(['text', 'diagnostic-explanation', 'screenshot-question'])
 export const agentMessageStatusSchema = z.enum(['pending', 'streaming', 'completed', 'stopped', 'failed', 'interrupted'])
 export type AgentMessageStatus = z.infer<typeof agentMessageStatusSchema>
 
@@ -124,6 +124,7 @@ export const agentMessageSchema = z.object({
   content: z.string().max(100_000),
   status: agentMessageStatusSchema,
   diagnosticSnapshot: diagnosticExplanationSnapshotSchema.optional(),
+  screenshot: screenshotRefSchema.optional(),
   errorCode: z.string().max(100).optional(),
   errorMessage: z.string().max(20_000).optional(),
   createdAt: timestampSchema,
@@ -135,6 +136,9 @@ export const agentMessageSchema = z.object({
   }
   if (message.role === 'assistant' && message.status === 'completed' && !message.content.trim()) {
     context.addIssue({ code: 'custom', path: ['content'], message: '已完成回答不能为空。' })
+  }
+  if (message.role === 'user' && message.kind === 'screenshot-question' && !message.screenshot) {
+    context.addIssue({ code: 'custom', path: ['screenshot'], message: '截图提问必须包含截图引用。' })
   }
 })
 export type AgentMessage = z.infer<typeof agentMessageSchema>
@@ -152,6 +156,7 @@ export const conversationSendInputSchema = z.object({
   activeFile: relativePathSchema.optional(),
   selection: editorSelectionSchema.optional(),
   diagnostic: diagnosticExplanationSnapshotSchema.optional(),
+  screenshot: screenshotRefSchema.optional(),
   diagnostics: z.array(diagnosticSchema).max(200).optional()
 })
 export type ConversationSendInput = z.input<typeof conversationSendInputSchema>

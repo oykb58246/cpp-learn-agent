@@ -23,6 +23,7 @@ describe('desktop H3 integration', () => {
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
     cleanups.push(() => db.close())
+    db.seedAchievementDefinitions(achievementDefinitions)
     const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
     const firstRoot = join(dir, 'first')
     const targetRoot = join(dir, 'target')
@@ -76,6 +77,7 @@ describe('desktop H3 integration', () => {
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
     cleanups.push(() => db.close())
+    db.seedAchievementDefinitions(achievementDefinitions)
     const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
     const workspaceRoot = join(dir, 'workspace')
     mkdirSync(workspaceRoot)
@@ -126,6 +128,7 @@ describe('desktop H3 integration', () => {
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
     cleanups.push(() => db.close())
+    db.seedAchievementDefinitions(achievementDefinitions)
     const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
     const workspaceRoot = join(dir, 'workspace')
     mkdirSync(workspaceRoot)
@@ -227,6 +230,7 @@ describe('desktop H3 integration', () => {
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
     cleanups.push(() => db.close())
+    db.seedAchievementDefinitions(achievementDefinitions)
     const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
     const workspaceRoot = join(dir, 'workspace')
     mkdirSync(workspaceRoot)
@@ -314,6 +318,7 @@ describe('desktop H3 integration', () => {
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
     cleanups.push(() => db.close())
+    db.seedAchievementDefinitions(achievementDefinitions)
     const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
     const workspaceRoot = join(dir, 'workspace')
     mkdirSync(workspaceRoot)
@@ -347,7 +352,7 @@ describe('desktop H3 integration', () => {
     expect(result.diagnostics).toHaveLength(1)
   })
 
-  it('does not create learning rewards when a toolchain is bound', async () => {
+  it('records XP and achievement when a toolchain is bound', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-environment-growth-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -366,15 +371,18 @@ describe('desktop H3 integration', () => {
     })
 
     expect(result.ok).toBe(true)
-    expect(db.listLearningEvents('local-user')).toEqual([])
-    expect(db.getLearnerSummary('local-user').achievements).toEqual([])
+    expect(db.listLearningEvents('local-user').map(event => event.type)).toContain('environment-ready')
+    const summary = db.getLearnerSummary('local-user')
+    expect(summary.xp).toBeGreaterThanOrEqual(10)
+    expect(summary.achievements.map(item => item.achievementId)).toContain('environment-ready')
   })
 
-  it('records an error without creating a review or growth entry', async () => {
+  it('records a resolved error growth entry without creating a review', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-learning-rollback-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
     cleanups.push(() => db.close())
+    db.seedAchievementDefinitions(achievementDefinitions)
     const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
     const adapter = new DesktopMcpAdapter({ db, workspaceService, toolchainService: new ToolchainService(), buildRoot: join(dir, 'builds') })
 
@@ -386,11 +394,13 @@ describe('desktop H3 integration', () => {
     expect(result.ok).toBe(true)
     expect(db.listErrorBookEntries('local-user')).toHaveLength(1)
     expect(db.listReviewItems('local-user')).toEqual([])
-    expect(db.listLearningEvents('local-user')).toEqual([])
-    expect(db.getLearnerSummary('local-user').xp).toBe(0)
+    expect(db.listLearningEvents('local-user').map(event => event.type)).toContain('error-resolved')
+    const summary = db.getLearnerSummary('local-user')
+    expect(summary.xp).toBeGreaterThanOrEqual(15)
+    expect(summary.achievements.map(item => item.achievementId)).toContain('first-fix')
   })
 
-  it('does not turn a project build into a learning reward', async () => {
+  it('records build and project completion growth rewards', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-project-growth-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -425,11 +435,13 @@ describe('desktop H3 integration', () => {
     }, context)
 
     expect(build.ok).toBe(true)
-    expect(db.listLearningEvents('local-user')).toEqual([])
-    expect(db.getLearnerSummary('local-user').achievements).toEqual([])
+    expect(db.listLearningEvents('local-user').map(event => event.type)).toEqual(expect.arrayContaining(['build-succeeded', 'project-completed']))
+    const summary = db.getLearnerSummary('local-user')
+    expect(summary.xp).toBeGreaterThanOrEqual(40)
+    expect(summary.achievements.map(item => item.achievementId)).toEqual(expect.arrayContaining(['first-build', 'project-first']))
   })
 
-  it('does not turn passed cases into a learning reward', async () => {
+  it('records passed cases as a test growth reward', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-test-growth-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -449,7 +461,7 @@ describe('desktop H3 integration', () => {
     }
     db.saveToolchainProfile(profile)
     db.setActiveToolchain(profile.id)
-    const processResult = { command: 'fake', args: [], exitCode: 0, stdout: '', stderr: '', durationMs: 1, timedOut: false, cancelled: false, outputTruncated: false }
+    const processResult = { command: 'fake', args: [], exitCode: 0, stdout: 'OK\n', stderr: '', durationMs: 1, timedOut: false, cancelled: false, outputTruncated: false }
     const toolchainService = {
       async buildSingleFile() { return { success: true, artifactPath: process.execPath, process: processResult, diagnostics: [] } }
     } as unknown as ToolchainService
@@ -461,11 +473,13 @@ describe('desktop H3 integration', () => {
     }, { signal: new AbortController().signal, onProgress: async () => undefined })
 
     expect(result.ok).toBe(true)
-    expect(db.listLearningEvents('local-user')).toEqual([])
-    expect(db.getLearnerSummary('local-user').achievements).toEqual([])
+    expect(db.listLearningEvents('local-user').map(event => event.type)).toEqual(expect.arrayContaining(['build-succeeded', 'test-passed']))
+    const summary = db.getLearnerSummary('local-user')
+    expect(summary.xp).toBeGreaterThanOrEqual(20)
+    expect(summary.achievements.map(item => item.achievementId)).toEqual(expect.arrayContaining(['first-build', 'first-test']))
   })
 
-  it('records one idempotent error without a review, XP reward, or achievement', async () => {
+  it('records one idempotent resolved error with XP and achievement', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-learning-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -488,11 +502,11 @@ describe('desktop H3 integration', () => {
     expect(replay.ok).toBe(true)
     expect(db.listErrorBookEntries('local-user')).toHaveLength(1)
     expect(db.listReviewItems('local-user')).toHaveLength(0)
-    expect(summary.xp).toBe(0)
-    expect(summary.achievements).toEqual([])
+    expect(summary.xp).toBeGreaterThanOrEqual(15)
+    expect(summary.achievements.map(item => item.achievementId)).toContain('first-fix')
   })
 
-  it('advances a passed review through the spaced repetition schedule', async () => {
+  it('advances a passed review through the spaced repetition schedule and records growth', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-review-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -517,11 +531,13 @@ describe('desktop H3 integration', () => {
     expect(result.ok).toBe(true)
     expect(review).toMatchObject({ id: reviewItemId, intervalIndex: 1, status: 'pending' })
     expect(new Date(review!.dueAt).getTime()).toBeGreaterThan(new Date(dueAt).getTime())
-    expect(db.listLearningEvents('local-user')).toEqual([])
-    expect(db.getLearnerSummary('local-user').achievements).toEqual([])
+    expect(db.listLearningEvents('local-user').map(event => event.type)).toEqual(expect.arrayContaining(['concept-verified', 'review-completed']))
+    const summary = db.getLearnerSummary('local-user')
+    expect(summary.xp).toBeGreaterThanOrEqual(25)
+    expect(summary.achievements.map(item => item.achievementId)).toEqual(expect.arrayContaining(['first-concept', 'review-first', 'loop-master']))
   })
 
-  it('resets a failed review without awarding XP', async () => {
+  it('resets a failed review and records a review-failed event without success achievements', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-review-failed-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
@@ -543,10 +559,9 @@ describe('desktop H3 integration', () => {
 
     expect(result.ok).toBe(true)
     expect(db.listReviewItems('local-user')[0]).toMatchObject({ intervalIndex: 0, status: 'pending' })
-    expect(db.listLearningEvents('local-user')).toEqual([])
-    expect(db.getLearnerSummary('local-user').xp).toBe(0)
+    expect(db.listLearningEvents('local-user').map(event => event.type)).toContain('review-failed')
+    expect(db.getLearnerSummary('local-user').achievements.map(item => item.achievementId)).not.toContain('review-first')
   })
-
   it('completes a review after the final spaced repetition interval', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cpppilot-agent-review-final-'))
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
@@ -576,6 +591,7 @@ describe('desktop H3 integration', () => {
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
     const db = new AppDatabase(join(dir, 'data', 'app.sqlite'))
     cleanups.push(() => db.close())
+    db.seedAchievementDefinitions(achievementDefinitions)
     const workspaceService = new WorkspaceService(db, join(dir, 'snapshots'))
     const workspaceRoot = join(dir, 'workspace')
     mkdirSync(workspaceRoot)

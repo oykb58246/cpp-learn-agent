@@ -7,11 +7,11 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "node ../../node_modules/electron-vite/bin/electron-vite.js dev",
-    "build": "node ../../node_modules/electron-vite/bin/electron-vite.js build",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run --passWithNoTests",
-    "package:dir": "pnpm build && electron-builder --dir"
+    "package:nsis": "pnpm build && electron-builder --win nsis"
   },
   "dependencies": {
     "@cpp-pet/agent-runtime": "workspace:*",
@@ -35,6 +35,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@types/node": "^22.19.13",
     "@vitejs/plugin-vue": "^6.0.4",
+    "@vue/server-renderer": "3.5.39",
     "electron": "^43.1.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",

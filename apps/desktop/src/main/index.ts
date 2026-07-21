@@ -1,7 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { basename, join } from 'node:path'
-import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { AppDatabase } from '@cpp-pet/database'
 import { createOpenAiToolRegistry, localToolDefinitions, runProcess, runtimeDiagnostics, ToolchainService, ToolExecutionError } from '@cpp-pet/cpp-local-tools'
@@ -34,7 +34,21 @@ import {
   languageStatusRequestSchema,
   knowledgeStatusSchema,
   modelProfileInputSchema,
+  petChatRequestSchema,
+  petCustomAssetCreateInputSchema,
+  petCustomAssetMutationSchema,
+  petCustomAssetRenameSchema,
+  petDragWindowRequestSchema,
+  petSettingsSchema,
+  practiceOjScreenshotInputSchema,
+  practiceSubmissionRequestSchema,
+  practiceSubmissionResultSchema,
+  practiceProjectCompleteRequestSchema,
+  practiceProjectCompleteResultSchema,
+  petSettingsPatchSchema,
   programRunRequestSchema,
+  screenshotCaptureRequestSchema,
+  screenshotCaptureSubmissionSchema,
   programStopRequestSchema,
   projectDraftInputSchema,
   staticAnalysisRequestSchema,
@@ -44,19 +58,43 @@ import {
   type AppError,
   type AppSettings,
   type CppStandard,
-  type EnvironmentInstallTask
+  type PetCustomAsset,
+  type EnvironmentInstallTask,
+  type PetChatResult,
+  type PetDragWindowRequest,
+  type PetGrowthStage,
+  type PetSettings,
+  type PetWindowState,
+  type PracticeOjImportResult,
+  type PracticeOjScreenshotInput,
+  type PracticeSubmissionRequest,
+  type PracticeSubmissionResult,
+  type PracticeProjectCompleteRequest,
+  type PracticeProjectCompleteResult,
+  type ScreenshotCaptureRequest,
+  type ScreenshotCaptureSubmission,
+  type ScreenshotPendingCapture
 } from '@cpp-pet/contracts'
-import { achievementDefinitions, builtInKnowledge, OpenAiAgentRuntime, OpenAiResponsesClient, transitionKnowledge } from '@cpp-pet/agent-runtime'
+import { AchievementEngine, achievementDefinitions, builtInKnowledge, builtInPracticeExercises, builtInPracticeProjects, OpenAiAgentRuntime, OpenAiResponsesClient, transitionKnowledge } from '@cpp-pet/agent-runtime'
 import { z } from 'zod'
 import { createWindowOptions } from './window-options'
+import { resolveTrayIconPath, resolveWindowIconPath } from './app-icons'
+import { createPetWindowOptions, dragPetWindowBounds, movePetWindowBounds, petProgressForLearnerSummary, petWindowBoundsForSettings, workAreaForPetSettings } from './pet-window'
+import { createPetContextMenuTemplate, createPetTrayMenuTemplate } from './tray'
+import { registerCppPilotShortcuts } from './shortcuts'
+import { createScreenshotAgentRequest, createScreenshotRef } from './screenshot-flow'
+import { buildOjScreenshotImportRequest, parseOjImportModelOutput } from './practice-import'
+import { judgePracticeSubmission } from './practice-judge'
 import { AgentHost } from './agent-host'
 import { ModelSecretStore } from './model-secret-store'
 import { createMcpWorkerParameters } from './mcp-worker-config'
 import { petEventForRun } from './pet-events'
+import { PET_ASSET_PROTOCOL, petActiveCustomAsset, petAssetFilePathFromUrl, petCustomAssetUrl, removeManagedPetAsset, validateCustomPetAssetImport } from './pet-assets'
 import { installationVerificationFailure, visiblePowerShellTerminalArguments } from './environment-install'
 import { DiagnosticIncidentService } from './diagnostic-incident-service'
 import { ConversationService } from './conversation-service'
 import { configureSingleInstance } from './single-instance'
+import { codeEditLearningEvent } from './learning-growth'
 import {
   DatabaseRuntimeStore,
   DesktopMcpAdapter,
@@ -66,6 +104,11 @@ import {
 } from './agent-integration'
 
 let mainWindow: BrowserWindow | null = null
+let petWindow: BrowserWindow | null = null
+let screenshotWindow: BrowserWindow | null = null
+let pendingScreenshot: ScreenshotPendingCapture | null = null
+let pendingScreenshotRequest: ScreenshotCaptureRequest | null = null
+let tray: Tray | null = null
 let database: AppDatabase | null = null
 let workspaceService: WorkspaceService | null = null
 let agentHost: AgentHost | null = null
@@ -77,6 +120,7 @@ let agentTransport: 'starting' | 'stdio' | 'in-memory-fallback' | 'failed' = 'st
 let agentStartupError: string | null = null
 let shutdownStarted = false
 let lastLearnerLevel = 1
+let petHiddenTimer: ReturnType<typeof setTimeout> | null = null
 const toolchainService = new ToolchainService()
 const activeRuns = new Map<string, AbortController>()
 const buildArtifacts = new Map<string, { path: string; projectId: string; projectRoot: string; artifactName: string; relativePath: string; standard: CppStandard }>()
@@ -138,9 +182,805 @@ const handle = <TInput, TOutput>(channel: string, schema: z.ZodType<TInput>, act
     try { return success(await action(schema.parse(raw))) } catch (error) { return failure(asError(error)) }
   })
 }
+const handlePet = <TInput, TOutput>(channel: string, schema: z.ZodType<TInput>, action: (input: TInput) => TOutput | Promise<TOutput>) => {
+  ipcMain.handle(channel, async (event, raw): Promise<ApiResult<TOutput>> => {
+    const fromMain = Boolean(mainWindow && event.sender === mainWindow.webContents)
+    const fromPet = Boolean(petWindow && event.sender === petWindow.webContents)
+    if (!fromMain && !fromPet) return failure({ code: 'IPC_SENDER_REJECTED', message: '请求来源无效。', retryable: false, userAction: '从 CppPilot 窗口重新操作。' })
+    try { return success(await action(schema.parse(raw))) } catch (error) { return failure(asError(error)) }
+  })
+}
+const handleUtility = <TInput, TOutput>(channel: string, schema: z.ZodType<TInput>, action: (input: TInput) => TOutput | Promise<TOutput>) => {
+  ipcMain.handle(channel, async (event, raw): Promise<ApiResult<TOutput>> => {
+    const fromMain = Boolean(mainWindow && event.sender === mainWindow.webContents)
+    const fromPet = Boolean(petWindow && event.sender === petWindow.webContents)
+    const fromScreenshot = Boolean(screenshotWindow && event.sender === screenshotWindow.webContents)
+    if (!fromMain && !fromPet && !fromScreenshot) return failure({ code: 'IPC_SENDER_REJECTED', message: '请求来源无效。', retryable: false, userAction: '从 CppPilot 窗口重新操作。' })
+    try { return success(await action(schema.parse(raw))) } catch (error) { return failure(asError(error)) }
+  })
+}
 
+protocol.registerSchemesAsPrivileged([
+  { scheme: PET_ASSET_PROTOCOL, privileges: { standard: true, secure: true, supportFetchAPI: false, corsEnabled: false } }
+])
+
+const FALLBACK_TRAY_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAH0lEQVR42mP8z8Dwn4EYCJqAqGZkZGBg+M8ABYwBAPjUBbz0RjYHAAAAAElFTkSuQmCC'
+
+function registerPetAssetProtocol(): void {
+  protocol.registerFileProtocol(PET_ASSET_PROTOCOL, (request, callback) => {
+    const filePath = petAssetFilePathFromUrl(request.url, petAssetsDirectory())
+    if (!filePath || !existsSync(filePath)) {
+      callback({ error: -6 })
+      return
+    }
+    callback({ path: filePath })
+  })
+}
+
+function createTrayIcon() {
+  const iconPath = resolveTrayIconPath({ dirname: __dirname, resourcesPath: process.resourcesPath, packaged: app.isPackaged, exists: existsSync })
+  if (iconPath) {
+    const icon = nativeImage.createFromPath(iconPath)
+    if (!icon.isEmpty()) return process.platform === 'win32' ? icon.resize({ width: 16, height: 16 }) : icon
+  }
+  return nativeImage.createFromDataURL(FALLBACK_TRAY_ICON)
+}
+
+function petAssetsDirectory(): string {
+  return join(app.getPath('userData'), 'pet-assets')
+}
+
+
+function systemLaunchAtLogin(): boolean {
+  try { return app.getLoginItemSettings().openAtLogin }
+  catch { return database?.getSettings().pet.launchAtLogin ?? false }
+}
+
+function setSystemLaunchAtLogin(enabled: boolean): void {
+  try { app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath }) }
+  catch (error) { console.warn('[CppPilot] Failed to update launch-at-login setting', error) }
+}
+
+function syncLaunchAtLoginFromSystem(): void {
+  if (!database) return
+  const current = database.getSettings().pet
+  const actual = systemLaunchAtLogin()
+  if (current.launchAtLogin !== actual) database.updateSettings({ pet: petSettingsSchema.parse({ ...current, launchAtLogin: actual }) })
+}
+
+function petHiddenUntilMs(settings: PetSettings): number | null {
+  if (!settings.hiddenUntil) return null
+  const value = Date.parse(settings.hiddenUntil)
+  return Number.isFinite(value) ? value : null
+}
+
+function petHiddenActive(settings: PetSettings): boolean {
+  const until = petHiddenUntilMs(settings)
+  return until !== null && until > Date.now()
+}
+
+function schedulePetHiddenTimer(): void {
+  if (petHiddenTimer) clearTimeout(petHiddenTimer)
+  petHiddenTimer = null
+  if (!database) return
+  const settings = database.getSettings().pet
+  const until = petHiddenUntilMs(settings)
+  if (!until) return
+  const delay = until - Date.now()
+  if (delay <= 0) {
+    const restored = savePetSettings({ hiddenUntil: undefined, visible: true })
+    applyPetSettings(restored)
+    emitPetWindowState()
+    return
+  }
+  petHiddenTimer = setTimeout(() => {
+    const restored = savePetSettings({ hiddenUntil: undefined, visible: true })
+    applyPetSettings(restored)
+    emitPetWindowState()
+  }, Math.min(delay, 2_147_483_647))
+}
+
+async function selectCustomPetAsset(input: { name: string }): Promise<PetWindowState> {
+  const result = await dialog.showOpenDialog({
+    title: '选择桌宠图片或 GIF',
+    properties: ['openFile'],
+    filters: [{ name: '图片或 GIF', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }]
+  })
+  if (result.canceled || !result.filePaths[0]) return currentPetState()
+  const source = result.filePaths[0]
+  const stats = statSync(source)
+  let candidate: ReturnType<typeof validateCustomPetAssetImport>
+  try {
+    candidate = validateCustomPetAssetImport({
+      filePath: source,
+      requestedName: input.name,
+      sizeBytes: stats.size,
+      isFile: stats.isFile()
+    })
+  } catch (error) {
+    throw new ToolExecutionError(
+      'PET_ASSET_IMPORT_INVALID',
+      error instanceof Error ? error.message : '桌宠素材不符合要求。',
+      '选择 PNG、JPG、WEBP 或 GIF 文件，并填写素材名称。',
+      true
+    )
+  }
+
+  const directory = petAssetsDirectory()
+  mkdirSync(directory, { recursive: true })
+  const target = join(directory, `pet-${randomUUID()}${candidate.ext}`)
+  copyFileSync(candidate.source, target)
+  const importedAt = new Date().toISOString()
+  const asset: PetCustomAsset = {
+    id: `pet-${randomUUID()}`,
+    name: candidate.name,
+    path: target,
+    mime: candidate.mime,
+    updatedAt: importedAt
+  }
+  const current = requiredServices().database.getSettings().pet
+  const settings = savePetSettings({
+    assetMode: 'custom',
+    customAssets: [...current.customAssets, asset],
+    activeCustomAssetId: asset.id
+  })
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+function resetCustomPetAsset(): PetWindowState {
+  const settings = savePetSettings({ assetMode: 'cpppilot-logo', activeCustomAssetId: undefined })
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+
+function requireCustomPetAsset(settings: PetSettings, assetId: string): PetCustomAsset {
+  const asset = settings.customAssets.find(item => item.id === assetId)
+  if (!asset) throw new ToolExecutionError('PET_ASSET_NOT_FOUND', '自定义桌宠素材不存在。', '刷新设置页后重试。', true)
+  return asset
+}
+
+function renameCustomPetAsset(input: { assetId: string; name: string }): PetWindowState {
+  const current = requiredServices().database.getSettings().pet
+  requireCustomPetAsset(current, input.assetId)
+  const name = input.name.trim()
+  const settings = savePetSettings({
+    customAssets: current.customAssets.map(item => item.id === input.assetId ? { ...item, name } : item)
+  })
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+
+function deleteCustomPetAsset(input: { assetId: string }): PetWindowState {
+  const current = requiredServices().database.getSettings().pet
+  const asset = requireCustomPetAsset(current, input.assetId)
+  const nextAssets = current.customAssets.filter(item => item.id !== input.assetId)
+  const deletingActive = petActiveCustomAsset(current)?.id === input.assetId
+  const nextActive = deletingActive ? nextAssets[0]?.id : current.activeCustomAssetId
+  const settings = savePetSettings({
+    customAssets: nextAssets,
+    assetMode: current.assetMode === 'custom' && !nextAssets.length ? 'cpppilot-logo' : current.assetMode,
+    activeCustomAssetId: nextActive
+  })
+  removeManagedPetAsset(asset.path, petAssetsDirectory())
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+
+function activateCustomPetAsset(input: { assetId: string }): PetWindowState {
+  const current = requiredServices().database.getSettings().pet
+  requireCustomPetAsset(current, input.assetId)
+  const settings = savePetSettings({ assetMode: 'custom', activeCustomAssetId: input.assetId })
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+function startScreenshotCapture(input: Partial<ScreenshotCaptureRequest> = {}): void {
+  void captureScreenshotFlow({ message: input.message ?? '解释这张截图', ...input }).catch(error => {
+    const appError = asError(error)
+    const event = { eventId: randomUUID(), state: 'warning' as const, message: appError.message }
+    mainWindow?.webContents.send(ipc.petChanged, event)
+    petWindow?.webContents.send(ipc.petChanged, event)
+  })
+}
+
+function sendAppNavigation(path: string, query?: Record<string, string>): void {
+  focusMainWindow()
+  mainWindow?.webContents.send(ipc.appNavigate, { path, ...(query ? { query } : {}) })
+}
+
+function openSettingsWindow(): void {
+  sendAppNavigation('/settings')
+}
+
+function refreshTrayMenu(): void {
+  if (!tray || !database) return
+  const state = currentPetState()
+  tray.setContextMenu(Menu.buildFromTemplate(createPetTrayMenuTemplate({
+    petVisible: state.windowVisible,
+    ignoreMouseEvents: state.ignoreMouseEvents,
+    focusModeEnabled: state.settings.focusModeEnabled,
+    launchAtLogin: state.settings.launchAtLogin,
+    ...(state.settings.hiddenUntil ? { hiddenUntil: state.settings.hiddenUntil } : {}),
+    onOpenMain: focusMainWindow,
+    onOpenSettings: openSettingsWindow,
+    onTogglePet: () => { void Promise.resolve(togglePetVisibility()).catch(error => console.error('[CppPilot] Toggle pet failed', error)) },
+    onCaptureScreenshot: () => startScreenshotCapture(),
+    onQuickChat: openPetQuickChat,
+    onHideForOneHour: () => { void Promise.resolve(hidePetForOneHour()).catch(error => console.error('[CppPilot] Hide pet failed', error)) },
+    onCancelHidden: () => { void Promise.resolve(cancelTimedPetHide()).catch(error => console.error('[CppPilot] Cancel pet hide failed', error)) },
+    onToggleFocusMode: enabled => { void Promise.resolve(setPetFocusMode(enabled)).catch(error => console.error('[CppPilot] Toggle focus mode failed', error)) },
+    onToggleLaunchAtLogin: enabled => { void Promise.resolve(setPetLaunchAtLogin(enabled)).catch(error => console.error('[CppPilot] Toggle launch-at-login failed', error)) },
+    onToggleMouseEvents: enabled => { void Promise.resolve(setPetMouseEvents(enabled)).catch(error => console.error('[CppPilot] Toggle pet mouse events failed', error)) },
+    onQuit: () => app.quit()
+  })))
+}
+
+function showPetContextMenu(): void {
+  const window = petWindow && !petWindow.isDestroyed() ? petWindow : undefined
+  const state = currentPetState()
+  Menu.buildFromTemplate(createPetContextMenuTemplate({
+    petVisible: state.windowVisible,
+    ignoreMouseEvents: state.ignoreMouseEvents,
+    focusModeEnabled: state.settings.focusModeEnabled,
+    launchAtLogin: state.settings.launchAtLogin,
+    ...(state.settings.hiddenUntil ? { hiddenUntil: state.settings.hiddenUntil } : {}),
+    onOpenMain: focusMainWindow,
+    onOpenSettings: openSettingsWindow,
+    onTogglePet: () => { void Promise.resolve(togglePetVisibility()).catch(error => console.error('[CppPilot] Toggle pet failed', error)) },
+    onCaptureScreenshot: () => startScreenshotCapture(),
+    onQuickChat: openPetQuickChat,
+    onHideForOneHour: () => { void Promise.resolve(hidePetForOneHour()).catch(error => console.error('[CppPilot] Hide pet failed', error)) },
+    onCancelHidden: () => { void Promise.resolve(cancelTimedPetHide()).catch(error => console.error('[CppPilot] Cancel pet hide failed', error)) },
+    onToggleFocusMode: enabled => { void Promise.resolve(setPetFocusMode(enabled)).catch(error => console.error('[CppPilot] Toggle focus mode failed', error)) },
+    onToggleLaunchAtLogin: enabled => { void Promise.resolve(setPetLaunchAtLogin(enabled)).catch(error => console.error('[CppPilot] Toggle launch-at-login failed', error)) },
+    onToggleMouseEvents: enabled => { void Promise.resolve(setPetMouseEvents(enabled)).catch(error => console.error('[CppPilot] Toggle pet mouse events failed', error)) }
+  })).popup({ ...(window ? { window } : {}) })
+}
+function createAppTray(): void {
+  if (tray) return
+  tray = new Tray(createTrayIcon())
+  tray.setToolTip('CppPilot')
+  tray.on('click', focusMainWindow)
+  refreshTrayMenu()
+}
+
+function togglePetVisibility(): PetWindowState {
+  const visible = !(petWindow && !petWindow.isDestroyed() && petWindow.isVisible())
+  const settings = savePetSettings({ visible, ...(visible ? { hiddenUntil: undefined } : {}) })
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+
+function setPetMouseEvents(ignoreMouseEvents: boolean): PetWindowState {
+  const settings = savePetSettings({ ignoreMouseEvents })
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+
+
+function openPetQuickChat(): void {
+  const settings = savePetSettings({ visible: true, hiddenUntil: undefined })
+  applyPetSettings(settings)
+  const window = createPetWindow()
+  window.webContents.send(ipc.petQuickChat)
+}
+
+function hidePetForOneHour(): PetWindowState {
+  const hiddenUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+  const settings = savePetSettings({ visible: false, hiddenUntil })
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+
+function cancelTimedPetHide(): PetWindowState {
+  const settings = savePetSettings({ visible: true, hiddenUntil: undefined })
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+
+function setPetFocusMode(enabled: boolean): PetWindowState {
+  const settings = savePetSettings({ focusModeEnabled: enabled })
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+
+function setPetLaunchAtLogin(enabled: boolean): PetWindowState {
+  const settings = savePetSettings({ launchAtLogin: enabled })
+  return emitPetWindowStateForSettings(settings)
+}
+
+function emitPetWindowStateForSettings(settings: PetSettings): PetWindowState {
+  applyPetSettings(settings)
+  return emitPetWindowState()
+}
+function registerShortcuts(): void {
+  const result = registerCppPilotShortcuts(globalShortcut, {
+    openMain: focusMainWindow,
+    togglePet: () => { togglePetVisibility() },
+    captureScreenshot: startScreenshotCapture
+  })
+  if (result.failed.length) {
+    console.warn(`[CppPilot] Global shortcut conflicts: ${result.failed.join(', ')}`)
+    const event = { eventId: randomUUID(), state: 'warning' as const, message: `快捷键冲突：${result.failed.join('、')}` }
+    mainWindow?.webContents.send(ipc.petChanged, event)
+    petWindow?.webContents.send(ipc.petChanged, event)
+  }
+}
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function normalizePetGrowthStage(value: number): PetGrowthStage {
+  return value === 1 || value === 2 || value === 3 || value === 4 ? value : 1
+}
+
+function currentPetState(): PetWindowState {
+  const settings = requiredServices().database.getSettings().pet
+  const customAssetUrl = petCustomAssetUrl(settings, petAssetsDirectory())
+  const summary = requiredServices().database.getLearnerSummary('local-user')
+  const growthStage = normalizePetGrowthStage(summary.growthStage)
+  return {
+    settings: { ...settings, launchAtLogin: systemLaunchAtLogin() },
+    windowVisible: Boolean(petWindow && !petWindow.isDestroyed() && petWindow.isVisible()),
+    ignoreMouseEvents: settings.ignoreMouseEvents,
+    growthStage,
+    progress: petProgressForLearnerSummary(summary),
+    ...(customAssetUrl ? { customAssetUrl } : {})
+  }
+}
+function emitPetWindowState(): PetWindowState {
+  const state = currentPetState()
+  mainWindow?.webContents.send(ipc.petWindowChanged, state)
+  petWindow?.webContents.send(ipc.petWindowChanged, state)
+  refreshTrayMenu()
+  return state
+}
+
+function savePetSettings(patch: Partial<PetSettings>): PetSettings {
+  const { database } = requiredServices()
+  const current = database.getSettings().pet
+  const settings = petSettingsSchema.parse({ ...current, ...patch })
+  if (typeof patch.launchAtLogin === 'boolean') setSystemLaunchAtLogin(patch.launchAtLogin)
+  database.updateSettings({ pet: settings })
+  schedulePetHiddenTimer()
+  return settings
+}
+
+function petRendererUrl(): string | undefined {
+  const base = process.env.ELECTRON_RENDERER_URL
+  if (!base) return undefined
+  const url = new URL(base)
+  url.searchParams.set('view', 'pet')
+  return url.toString()
+}
+
+function loadPetRenderer(window: BrowserWindow): void {
+  const url = petRendererUrl()
+  if (url) void window.loadURL(url)
+  else void window.loadFile(join(__dirname, '../renderer/index.html'), { query: { view: 'pet' } })
+}
+
+function createPetWindow(): BrowserWindow {
+  const existing = petWindow && !petWindow.isDestroyed() ? petWindow : null
+  if (existing) return existing
+
+  const settings = requiredServices().database.getSettings().pet
+  const iconPath = resolveWindowIconPath({ dirname: __dirname, resourcesPath: process.resourcesPath, packaged: app.isPackaged, exists: existsSync })
+  const window = new BrowserWindow(createPetWindowOptions({
+    bounds: petWindowBoundsForSettings(settings, workAreaForPetSettings(settings, screen.getAllDisplays().map(display => display.workArea), screen.getPrimaryDisplay().workArea)),
+    iconPath: iconPath ?? '',
+    iconExists: Boolean(iconPath),
+    preloadPath: join(__dirname, '../preload/index.cjs')
+  }))
+  petWindow = window
+  window.setIgnoreMouseEvents(settings.ignoreMouseEvents, { forward: true })
+  window.webContents.setWindowOpenHandler(({ url }) => { if (/^https:\/\//.test(url)) void shell.openExternal(url); return { action: 'deny' } })
+  window.webContents.on('will-navigate', event => event.preventDefault())
+  window.once('ready-to-show', () => {
+    const readySettings = requiredServices().database.getSettings().pet
+    if (!window.isDestroyed() && readySettings.visible && !petHiddenActive(readySettings)) window.show()
+    emitPetWindowState()
+  })
+  window.on('hide', () => {
+    savePetSettings({ visible: false })
+    emitPetWindowState()
+  })
+  window.on('show', () => {
+    savePetSettings({ visible: true, hiddenUntil: undefined })
+    emitPetWindowState()
+  })
+  window.on('close', event => {
+    if (shutdownStarted) return
+    event.preventDefault()
+    window.hide()
+  })
+  window.once('closed', () => {
+    if (petWindow === window) petWindow = null
+  })
+  loadPetRenderer(window)
+  return window
+}
+
+function applyPetSettings(settings: PetSettings): void {
+  const window = createPetWindow()
+  const current = window.getBounds()
+  const anchored = { ...settings, x: current.x, y: current.y }
+  const workArea = workAreaForPetSettings(anchored, screen.getAllDisplays().map(display => display.workArea), screen.getDisplayMatching(current).workArea)
+  const bounds = petWindowBoundsForSettings(anchored, workArea)
+  window.setBounds(bounds)
+  window.setIgnoreMouseEvents(settings.ignoreMouseEvents, { forward: true })
+  if (settings.visible && !petHiddenActive(settings)) window.show()
+  else window.hide()
+}
+
+function movePetWindow(delta: { deltaX: number; deltaY: number }): PetWindowState {
+  const window = createPetWindow()
+  const current = window.getBounds()
+  const next = movePetWindowBounds(current, delta, screen.getAllDisplays().map(display => display.workArea))
+  window.setBounds(next)
+  savePetSettings({ x: next.x, y: next.y })
+  return emitPetWindowState()
+}
+
+function dragPetWindow(input: PetDragWindowRequest): PetWindowState {
+  const window = createPetWindow()
+  const next = dragPetWindowBounds(
+    input.initialBounds,
+    { screenX: input.pointerStartScreenX, screenY: input.pointerStartScreenY },
+    { screenX: input.pointerCurrentScreenX, screenY: input.pointerCurrentScreenY },
+    screen.getAllDisplays().map(display => display.workArea)
+  )
+  window.setBounds(next)
+  savePetSettings({ x: next.x, y: next.y })
+  return emitPetWindowState()
+}
+function screenshotRendererUrl(): string | undefined {
+  const base = process.env.ELECTRON_RENDERER_URL
+  if (!base) return undefined
+  const url = new URL(base)
+  url.searchParams.set('view', 'screenshot')
+  return url.toString()
+}
+
+function loadScreenshotRenderer(window: BrowserWindow): void {
+  const url = screenshotRendererUrl()
+  if (url) void window.loadURL(url)
+  else void window.loadFile(join(__dirname, '../renderer/index.html'), { query: { view: 'screenshot' } })
+}
+
+function closeScreenshotWindow(): void {
+  const window = screenshotWindow
+  screenshotWindow = null
+  pendingScreenshot = null
+  pendingScreenshotRequest = null
+  if (window && !window.isDestroyed()) window.close()
+}
+
+function createScreenshotWindow(): BrowserWindow {
+  const existing = screenshotWindow && !screenshotWindow.isDestroyed() ? screenshotWindow : null
+  if (existing) return existing
+  const { workArea } = screen.getPrimaryDisplay()
+  const window = new BrowserWindow({
+    x: workArea.x,
+    y: workArea.y,
+    width: workArea.width,
+    height: workArea.height,
+    minWidth: 820,
+    minHeight: 560,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#111827',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true
+    }
+  })
+  screenshotWindow = window
+  window.webContents.setWindowOpenHandler(({ url }) => { if (/^https:\/\//.test(url)) void shell.openExternal(url); return { action: 'deny' } })
+  window.webContents.on('will-navigate', event => event.preventDefault())
+  window.once('ready-to-show', () => { if (!window.isDestroyed()) window.show() })
+  window.once('closed', () => {
+    if (screenshotWindow === window) screenshotWindow = null
+    pendingScreenshot = null
+    pendingScreenshotRequest = null
+  })
+  loadScreenshotRenderer(window)
+  return window
+}
+
+async function captureScreenshotFlow(input: ScreenshotCaptureRequest): Promise<void> {
+  pendingScreenshotRequest = input
+  const display = screen.getPrimaryDisplay()
+  const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: display.size })
+  const source = sources[0]
+  if (!source || source.thumbnail.isEmpty()) throw new ToolExecutionError('SCREENSHOT_CAPTURE_FAILED', '未能采集屏幕截图。', '重新触发截图；若仍失败，请检查系统屏幕录制权限。', true)
+  const size = source.thumbnail.getSize()
+  pendingScreenshot = {
+    previewDataUrl: source.thumbnail.toDataURL(),
+    mimeType: 'image/png',
+    width: size.width,
+    height: size.height,
+    capturedAt: new Date().toISOString()
+  }
+  createScreenshotWindow()
+}
+
+async function submitScreenshotFlow(input: ScreenshotCaptureSubmission) {
+  const requestContext = pendingScreenshotRequest
+  const screenshot = createScreenshotRef(input)
+  const projectId = input.projectId ?? requestContext?.projectId
+  const activeFile = input.activeFile ?? requestContext?.activeFile
+  const requestedConversationId = input.conversationId ?? requestContext?.conversationId
+  const { agentHost } = requiredAgentServices()
+  const conversation = projectId
+    ? requiredConversationService().getOrCreateActiveConversation({ projectId, ...(requestedConversationId ? { conversationId: requestedConversationId } : {}) })
+    : undefined
+  const exchange = projectId && conversation
+    ? requiredConversationService().beginAgentTask({
+      projectId,
+      conversationId: conversation.id,
+      message: input.message,
+      ...(activeFile ? { activeFile } : {}),
+      screenshot
+    })
+    : undefined
+  const request = createScreenshotAgentRequest({
+    message: input.message,
+    ...(projectId ? { projectId } : {}),
+    ...(activeFile ? { activeFile } : {}),
+    ...(conversation ? { conversationId: conversation.id } : {}),
+    ...(exchange ? { assistantMessageId: exchange.assistant.id } : {}),
+    screenshot
+  })
+  const run = await agentHost.start(request)
+  closeScreenshotWindow()
+  focusMainWindow()
+  mainWindow?.webContents.send(ipc.screenshotSubmitted, {
+    runId: run.id,
+    ...(projectId ? { projectId } : {}),
+    ...(conversation ? { conversationId: conversation.id } : {})
+  })
+  if (projectId && conversation) sendAppNavigation(`/workspace/${projectId}`, { agent: '1', conversationId: conversation.id })
+  else sendAppNavigation('/runs', { runId: run.id })
+  return run
+}
+
+function extractOjResponseText(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw
+  const record = raw as Record<string, unknown>
+  if (typeof record.output_text === 'string') return record.output_text
+  const output = Array.isArray(record.output) ? record.output : []
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue
+    const content = Array.isArray((item as Record<string, unknown>).content) ? (item as Record<string, unknown>).content as unknown[] : []
+    for (const part of content) {
+      if (!part || typeof part !== 'object') continue
+      const typed = part as Record<string, unknown>
+      if (typed.type === 'output_text' && typeof typed.text === 'string') return typed.text
+    }
+  }
+  return raw
+}
+
+async function importOjScreenshot(input: PracticeOjScreenshotInput): Promise<PracticeOjImportResult> {
+  const { database, modelSecrets } = requiredAgentServices()
+  const profile = database.listModelProfiles().find(item => item.enabled)
+  const apiKey = profile ? modelSecrets.get(profile.id) : undefined
+  if (!profile || !apiKey) {
+    throw new ToolExecutionError('MODEL_NOT_CONFIGURED', '尚未配置可用的 OpenAI Responses 模型。', '在设置页保存并启用模型配置与 API Key 后再导入 OJ 截图。')
+  }
+  let response: Response
+  try {
+    response = await fetch(`${profile.baseUrl.replace(/\/$/, '')}/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildOjScreenshotImportRequest({
+        model: profile.model,
+        previewDataUrl: input.previewDataUrl,
+        mimeType: input.mimeType,
+        width: input.width,
+        height: input.height
+      }))
+    })
+  } catch (error) {
+    throw new ToolExecutionError('MODEL_REQUEST_FAILED', 'OJ 截图导入请求模型失败。', error instanceof Error ? error.message : '检查网络与模型配置后重试。', true)
+  }
+  if (!response.ok) {
+    throw new ToolExecutionError('MODEL_REQUEST_FAILED', `OJ 截图导入请求模型失败：HTTP ${response.status}。`, '检查模型 Base URL、模型名和 API Key。', true)
+  }
+  let raw: unknown
+  try { raw = await response.json() }
+  catch (error) {
+    throw new ToolExecutionError('MODEL_PROTOCOL_INVALID', '模型返回的 OJ 导入结果不是有效 JSON。', '重新上传清晰截图；若持续失败，请检查模型兼容性。', true)
+  }
+  const result = parseOjImportModelOutput(extractOjResponseText(raw), new Date().toISOString())
+  if (result.status === 'added') database.savePracticeExercise(result.exercise)
+  return result
+}
+function practiceCatalogExercises() {
+  return [...builtInPracticeExercises, ...requiredServices().database.listPracticeExercises()]
+}
+
+function applyLearningGrowth(event: Parameters<AppDatabase['applyLearningEvent']>[0]): boolean {
+  const { database } = requiredServices()
+  const priorEvents = database.listLearningEvents(event.userId, 1_000)
+  const inserted = database.applyLearningEvent(event)
+  if (!inserted) return false
+  const engine = new AchievementEngine(achievementDefinitions)
+  const unlocked = database.listLearnerAchievements(event.userId)
+  for (const definition of engine.evaluate(event, priorEvents, unlocked)) {
+    database.awardAchievement({
+      userId: event.userId,
+      achievementId: definition.id,
+      sourceEventId: event.sourceEventId,
+      unlockedAt: event.occurredAt
+    })
+  }
+  return true
+}
+
+function practiceSubmissionXp(score: number): number {
+  if (score >= 100) return 0
+  if (score >= 60) return 5
+  if (score >= 20) return 2
+  return 0
+}
+
+function markKnowledgeMastered(userId: string, conceptIds: string[], evidenceId: string, occurredAt: string): void {
+  const { database } = requiredServices()
+  const known = new Set(database.listKnowledgeNodes().map(node => node.id))
+  for (const conceptId of [...new Set(conceptIds)].filter(id => known.has(id))) {
+    database.upsertLearnerKnowledge({
+      userId,
+      conceptId,
+      status: 'verified',
+      confidence: 1,
+      verifiedAt: occurredAt,
+      lastEvidenceId: evidenceId,
+      updatedAt: occurredAt
+    })
+    applyLearningGrowth({
+      id: randomUUID(),
+      sourceEventId: `knowledge-mastered:${userId}:${conceptId}`,
+      userId,
+      type: 'knowledge-mastered',
+      conceptIds: [conceptId],
+      xp: 10,
+      evidence: { kind: 'practice', referenceId: evidenceId, summary: `练习通过后通关知识点：${conceptId}` },
+      occurredAt
+    })
+  }
+}
+
+async function submitPractice(input: PracticeSubmissionRequest): Promise<PracticeSubmissionResult> {
+  const { database } = requiredServices()
+  const userId = input.userId ?? 'local-user'
+  const exercise = practiceCatalogExercises().find(item => item.id === input.exerciseId)
+  if (!exercise) throw new ToolExecutionError('PRACTICE_EXERCISE_NOT_FOUND', '练习题不存在。', '刷新练习题库后重试。', true)
+  const result = await judgePracticeSubmission(exercise, { ...input, userId }, {
+    profile: activeToolchain(),
+    workRoot: join(app.getPath('userData'), 'builds', 'practice'),
+    toolchainService
+  })
+  database.savePracticeSubmission(result)
+  const occurredAt = result.submittedAt
+  const submittedXp = practiceSubmissionXp(result.score)
+  applyLearningGrowth({
+    id: randomUUID(),
+    sourceEventId: `practice-submitted:${userId}:${exercise.id}:score:${result.score}`,
+    userId,
+    type: 'practice-submitted',
+    conceptIds: exercise.conceptIds,
+    xp: submittedXp,
+    evidence: { kind: 'practice', referenceId: result.submissionId, summary: `${exercise.title} 提交得分 ${result.score}/100` },
+    occurredAt
+  })
+  if (result.passed) {
+    applyLearningGrowth({
+      id: randomUUID(),
+      sourceEventId: `practice-passed:${userId}:${exercise.id}`,
+      userId,
+      type: 'practice-passed',
+      conceptIds: exercise.conceptIds,
+      xp: 20 + exercise.difficulty * 5,
+      evidence: { kind: 'practice', referenceId: result.submissionId, summary: `${exercise.title} 通过 5 个判题用例` },
+      occurredAt
+    })
+    markKnowledgeMastered(userId, exercise.conceptIds, result.submissionId, occurredAt)
+  }
+  emitPetWindowState()
+  return result
+}
+
+function completePracticeProject(input: PracticeProjectCompleteRequest): PracticeProjectCompleteResult {
+  const task = builtInPracticeProjects.find(item => item.id === input.taskId)
+  if (!task) throw new ToolExecutionError('PRACTICE_PROJECT_NOT_FOUND', '项目任务不存在。', '刷新练习题库后重试。', true)
+  const userId = input.userId ?? 'local-user'
+  const completedAt = new Date().toISOString()
+  const xp = 25 + task.difficulty * 10
+  const inserted = applyLearningGrowth({
+    id: randomUUID(),
+    sourceEventId: `project-task-completed:${userId}:${task.id}`,
+    userId,
+    type: 'project-task-completed',
+    conceptIds: task.conceptIds,
+    xp,
+    evidence: { kind: 'project', referenceId: task.id, summary: `完成项目任务：${task.title}` },
+    occurredAt: completedAt
+  })
+  if (inserted) markKnowledgeMastered(userId, task.conceptIds, task.id, completedAt)
+  emitPetWindowState()
+  return { taskId: task.id, userId, xp: inserted ? xp : 0, completedAt }
+}
+async function submitPetChat(input: { message: string }): Promise<PetChatResult> {
+  const message = input.message.trim()
+  const { database } = requiredServices()
+  const { agentHost } = requiredAgentServices()
+  const projectId = database.getSettings().lastProjectId ?? database.listProjects()[0]?.id
+  const conversation = projectId ? requiredConversationService().getOrCreateActiveConversation({ projectId }) : undefined
+  const exchange = projectId && conversation
+    ? requiredConversationService().beginAgentTask({ projectId, conversationId: conversation.id, message, mode: 'chat' })
+    : undefined
+  const request = {
+    requestId: randomUUID(),
+    source: 'pet' as const,
+    mode: 'chat' as const,
+    message,
+    ...(projectId ? { projectId } : {}),
+    ...(conversation ? { conversationId: conversation.id } : {}),
+    ...(exchange ? { assistantMessageId: exchange.assistant.id } : {})
+  }
+  const run = await agentHost.start(request)
+  if (projectId && conversation) {
+    sendAppNavigation(`/workspace/${projectId}`, {
+      agent: '1',
+      conversationId: conversation.id,
+      ...(exchange ? { messageId: exchange.assistant.id } : {})
+    })
+  } else sendAppNavigation('/runs', { runId: run.id, view: 'timeline' })
+  return {
+    runId: run.id,
+    ...(projectId ? { projectId } : {}),
+    ...(conversation ? { conversationId: conversation.id } : {}),
+    ...(exchange ? { assistantMessageId: exchange.assistant.id } : {})
+  }
+}
 function registerIpc(): void {
   const empty = z.undefined().or(z.null())
+  handlePet(ipc.petGetState, empty, () => { createPetWindow(); return currentPetState() })
+  handlePet(ipc.petUpdateSettings, petSettingsPatchSchema, input => { const settings = savePetSettings(input as Partial<PetSettings>); applyPetSettings(settings); return emitPetWindowState() })
+  handlePet(ipc.petShow, empty, () => { const settings = savePetSettings({ visible: true, hiddenUntil: undefined }); applyPetSettings(settings); return emitPetWindowState() })
+  handlePet(ipc.petHide, empty, () => { const settings = savePetSettings({ visible: false }); applyPetSettings(settings); return emitPetWindowState() })
+  handlePet(ipc.petToggle, empty, () => togglePetVisibility())
+  handlePet(ipc.petMove, z.object({ deltaX: z.number(), deltaY: z.number() }).strict(), input => movePetWindow(input))
+  handlePet(ipc.petDrag, petDragWindowRequestSchema, input => dragPetWindow(input))
+  handlePet(ipc.petSetIgnoreMouseEvents, z.object({ ignoreMouseEvents: z.boolean() }).strict(), input => { const settings = savePetSettings({ ignoreMouseEvents: input.ignoreMouseEvents }); applyPetSettings(settings); return emitPetWindowState() })
+  handlePet(ipc.petOpenMain, empty, () => { focusMainWindow() })
+  handlePet(ipc.petShowContextMenu, empty, () => { showPetContextMenu() })
+  handlePet(ipc.petSelectCustomAsset, petCustomAssetCreateInputSchema, input => selectCustomPetAsset(input))
+  handlePet(ipc.petResetCustomAsset, empty, () => resetCustomPetAsset())
+  handlePet(ipc.petRenameCustomAsset, petCustomAssetRenameSchema, input => renameCustomPetAsset(input))
+  handlePet(ipc.petDeleteCustomAsset, petCustomAssetMutationSchema, input => deleteCustomPetAsset(input))
+  handlePet(ipc.petActivateCustomAsset, petCustomAssetMutationSchema, input => activateCustomPetAsset(input))
+  handlePet(ipc.petHideForOneHour, empty, () => hidePetForOneHour())
+  handlePet(ipc.petCancelHidden, empty, () => cancelTimedPetHide())
+  handlePet(ipc.petToggleFocusMode, z.object({ enabled: z.boolean().optional() }).optional(), input => setPetFocusMode(input?.enabled ?? !requiredServices().database.getSettings().pet.focusModeEnabled))
+  handlePet(ipc.petToggleLaunchAtLogin, z.object({ enabled: z.boolean().optional() }).optional(), input => setPetLaunchAtLogin(input?.enabled ?? !systemLaunchAtLogin()))
+  handlePet(ipc.petChat, petChatRequestSchema, input => submitPetChat(input))
+  handleUtility(ipc.screenshotCapture, screenshotCaptureRequestSchema, input => captureScreenshotFlow(input))
+  handleUtility(ipc.screenshotGetPending, empty, () => pendingScreenshot)
+  handleUtility(ipc.screenshotSubmit, screenshotCaptureSubmissionSchema, input => submitScreenshotFlow(input))
+  handleUtility(ipc.screenshotCancel, empty, () => { closeScreenshotWindow() })
   handle(ipc.appBootstrap, empty, () => { const { database } = requiredServices(); return { version: app.getVersion(), platform: process.platform, recoveryMode: database.recoveryMode, settings: database.getSettings(), recentProjects: database.listProjects().slice(0, 8), workspaces: database.listWorkspaces(), recentEvents: database.listEvents(12) } })
   handle(ipc.appVersion, empty, () => app.getVersion())
   handle(ipc.settingsGet, empty, () => requiredServices().database.getSettings())
@@ -195,7 +1035,20 @@ function registerIpc(): void {
   })
   handle(ipc.filesTree, z.object({ projectId: z.string().uuid() }), input => requiredServices().workspaceService.listTree(input.projectId))
   handle(ipc.filesRead, z.object({ projectId: z.string().uuid(), relativePath: z.string() }), input => requiredServices().workspaceService.readFile(input.projectId, input.relativePath))
-  handle(ipc.filesWrite, fileRevisionSchema, input => requiredServices().workspaceService.writeFile(input.projectId, input.relativePath, input.content, input.expectedHash, input.createSnapshot))
+  handle(ipc.filesWrite, fileRevisionSchema, async input => {
+    const { workspaceService } = requiredServices()
+    const before = workspaceService.readFile(input.projectId, input.relativePath).content
+    const written = await workspaceService.writeFile(input.projectId, input.relativePath, input.content, input.expectedHash, input.createSnapshot)
+    const event = codeEditLearningEvent({
+      userId: 'local-user',
+      projectId: input.projectId,
+      relativePath: input.relativePath,
+      beforeContent: before,
+      afterContent: input.content
+    })
+    if (event && applyLearningGrowth(event)) emitPetWindowState()
+    return written
+  })
   handle(ipc.filesCreate, z.object({ projectId: z.string().uuid(), relativePath: z.string(), kind: z.enum(['file', 'directory']) }), input => requiredServices().workspaceService.createEntry(input.projectId, input.relativePath, input.kind))
   handle(ipc.filesCopy, z.object({ projectId: z.string().uuid(), relativePath: z.string(), destination: z.string() }), input => requiredServices().workspaceService.copyEntry(input.projectId, input.relativePath, input.destination))
   handle(ipc.filesMove, z.object({ projectId: z.string().uuid(), relativePath: z.string(), destination: z.string() }), input => requiredServices().workspaceService.moveEntry(input.projectId, input.relativePath, input.destination))
@@ -813,6 +1666,13 @@ function registerIpc(): void {
   }).optional(), input => requiredServices().database.listErrorBookEntries(input?.userId ?? 'local-user', input?.status))
   handle(ipc.learningReviews, z.object({ userId: z.string().min(1).max(100).default('local-user'), dueOnly: z.boolean().default(false) }).optional(), input => requiredServices().database.listReviewItems(input?.userId ?? 'local-user', input?.dueOnly ?? false))
   handle(ipc.learningSummary, z.object({ userId: z.string().min(1).max(100).default('local-user') }).optional(), input => requiredServices().database.getLearnerSummary(input?.userId ?? 'local-user'))
+  handle(ipc.learningPracticeCatalog, empty, () => ({
+    exercises: practiceCatalogExercises(),
+    projects: builtInPracticeProjects
+  }))
+  handle(ipc.learningPracticeSubmit, practiceSubmissionRequestSchema, input => submitPractice(input))
+  handle(ipc.learningPracticeCompleteProject, practiceProjectCompleteRequestSchema, input => completePracticeProject(input))
+  handle(ipc.learningPracticeImportOjScreenshot, practiceOjScreenshotInputSchema, input => importOjScreenshot(input))
   handle(ipc.modelList, empty, () => requiredServices().database.listModelProfiles())
   handle(ipc.modelSave, modelProfileInputSchema, input => {
     const { database, modelSecrets } = requiredAgentServices()
@@ -913,10 +1773,10 @@ function applyWindowChrome(theme: AppSettings['theme'] = database?.getSettings()
 function createWindow(): void {
   const theme = database?.getSettings().theme ?? 'system'
   const chrome = windowChrome(theme)
-  const iconPath = join(__dirname, '../../build/icon.ico')
+  const iconPath = resolveWindowIconPath({ dirname: __dirname, resourcesPath: process.resourcesPath, packaged: app.isPackaged, exists: existsSync })
   mainWindow = new BrowserWindow(createWindowOptions({
-    iconPath,
-    iconExists: existsSync(iconPath),
+    iconPath: iconPath ?? '',
+    iconExists: Boolean(iconPath),
     titleBarColor: chrome.titleBarOverlay.color,
     symbolColor: chrome.titleBarOverlay.symbolColor,
     backgroundColor: chrome.backgroundColor,
@@ -964,8 +1824,14 @@ app.whenReady().then(async () => {
   })
   conversationService.onChanged(event => mainWindow?.webContents.send(ipc.conversationsChanged, event))
   nativeTheme.themeSource = database.getSettings().theme
+  syncLaunchAtLoginFromSystem()
+  schedulePetHiddenTimer()
+  registerPetAssetProtocol()
   registerIpc()
   createWindow()
+  createPetWindow()
+  createAppTray()
+  registerShortcuts()
   nativeTheme.on('updated', () => applyWindowChrome())
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
   try {
@@ -1001,7 +1867,9 @@ app.whenReady().then(async () => {
     conversationService?.handleAgentRunChanged(run)
     mainWindow?.webContents.send(ipc.agentChanged, run)
     const currentLevel = database?.getLearnerSummary('local-user').level ?? lastLearnerLevel
-    mainWindow?.webContents.send(ipc.petChanged, petEventForRun(run, lastLearnerLevel, currentLevel))
+    const petEvent = petEventForRun(run, lastLearnerLevel, currentLevel)
+    mainWindow?.webContents.send(ipc.petChanged, petEvent)
+    petWindow?.webContents.send(ipc.petChanged, petEvent)
     lastLearnerLevel = currentLevel
   })
 })
@@ -1012,6 +1880,12 @@ app.on('before-quit', event => {
   shutdownStarted = true
     for (const controller of activeRuns.values()) controller.abort()
   conversationService?.shutdown()
+  globalShortcut.unregisterAll()
+  if (petHiddenTimer) clearTimeout(petHiddenTimer)
+  petHiddenTimer = null
+  tray?.destroy()
+  tray = null
+  petWindow?.destroy()
   void (async () => {
     await Promise.allSettled(agentHost ? [agentHost.shutdown()] : [])
     await Promise.allSettled([

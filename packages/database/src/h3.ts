@@ -174,6 +174,45 @@ CREATE TABLE IF NOT EXISTS agent_model_sessions (
 CREATE INDEX idx_agent_model_sessions_updated ON agent_model_sessions(updated_at DESC);
 `
 
+
+const screenshotConversationMessagesSql = `
+ALTER TABLE agent_messages ADD COLUMN screenshot_json TEXT;
+`
+
+const practiceExercisesSql = `
+CREATE TABLE IF NOT EXISTS practice_exercises (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  knowledge_point TEXT NOT NULL,
+  concept_ids_json TEXT NOT NULL,
+  difficulty INTEGER NOT NULL,
+  statement TEXT NOT NULL,
+  constraints_json TEXT NOT NULL,
+  samples_json TEXT NOT NULL,
+  starter_code TEXT,
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_practice_exercises_knowledge ON practice_exercises(knowledge_point, updated_at DESC);
+`
+const practiceOjSql = `
+ALTER TABLE practice_exercises ADD COLUMN judge_cases_json TEXT;
+CREATE TABLE IF NOT EXISTS practice_submissions (
+  submission_id TEXT PRIMARY KEY,
+  exercise_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  score INTEGER NOT NULL,
+  total_score INTEGER NOT NULL,
+  passed INTEGER NOT NULL,
+  submitted_at TEXT NOT NULL,
+  compile_json TEXT NOT NULL,
+  cases_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_practice_submissions_user ON practice_submissions(user_id, submitted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_practice_submissions_exercise ON practice_submissions(exercise_id, user_id, submitted_at DESC);
+`
 const singleEnabledModelProfileSql = `
 UPDATE model_profiles
 SET enabled = 0
@@ -198,5 +237,8 @@ export const h3Migrations: Migration[] = [
   { version: 10, name: 'stable-conversation-message-order', sql: stableConversationMessageOrderSql },
   { version: 11, name: 'linked-agent-conversations', sql: linkedAgentConversationSql },
   { version: 12, name: 'openai-agent-sessions', sql: openAiAgentSessionsSql },
-  { version: 13, name: 'single-enabled-model-profile', sql: singleEnabledModelProfileSql }
+  { version: 13, name: 'single-enabled-model-profile', sql: singleEnabledModelProfileSql },
+  { version: 14, name: 'h4-screenshot-conversation-messages', sql: screenshotConversationMessagesSql },
+  { version: 15, name: 'h4-practice-exercises', sql: practiceExercisesSql },
+  { version: 16, name: 'h4-practice-oj-submissions', sql: practiceOjSql }
 ]

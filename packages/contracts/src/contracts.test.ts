@@ -18,8 +18,19 @@ import {
   fileRevisionSchema,
   languageDocumentSyncSchema,
   languagePositionRequestSchema,
+  petChatRequestSchema,
+  petCustomAssetCreateInputSchema,
+  petDragWindowRequestSchema,
+  petSettingsSchema,
+  petWindowStateSchema,
+  practiceCatalogSchema,
+  practiceExerciseSchema,
+  practiceOjImportResultSchema,
+  practiceOjScreenshotInputSchema,
   programRunRequestSchema,
   projectDraftInputSchema,
+  screenshotCaptureRequestSchema,
+  screenshotCaptureSubmissionSchema,
   staticAnalysisRequestSchema,
   toolchainCandidateSchema,
   toolchainProfileSchema,
@@ -90,6 +101,14 @@ describe('contracts', () => {
       id: crypto.randomUUID(), conversationId: crypto.randomUUID(), role: 'assistant', kind: 'text',
       content: '你好', status: 'streaming', createdAt: now, updatedAt: now
     }).success).toBe(true)
+    expect(agentMessageSchema.safeParse({
+      id: crypto.randomUUID(), conversationId: crypto.randomUUID(), role: 'user', kind: 'screenshot-question',
+      content: '解释这张截图', status: 'completed', createdAt: now, updatedAt: now, completedAt: now,
+      screenshot: {
+        id: crypto.randomUUID(), previewDataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png',
+        width: 320, height: 180, createdAt: now
+      }
+    }).success).toBe(true)
     expect(conversationMessageDeltaSchema.safeParse({
       projectId: crypto.randomUUID(), conversationId: crypto.randomUUID(), messageId: crypto.randomUUID(), sequence: 0, delta: '你好'
     }).success).toBe(true)
@@ -107,9 +126,73 @@ describe('contracts', () => {
       id: crypto.randomUUID(), conversationId: crypto.randomUUID(), role: 'assistant', kind: 'text',
       content: '', status: 'pending', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     }).success).toBe(true)
+
     expect(conversationMessageDeltaSchema.safeParse({
       projectId: crypto.randomUUID(), conversationId: crypto.randomUUID(), messageId: crypto.randomUUID(), sequence: -1, delta: 'x'
     }).success).toBe(false)
+  })
+  it('validates H4 pet settings and screenshot request contracts', () => {
+    const settings = petSettingsSchema.parse({})
+    expect(settings).toMatchObject({
+      visible: true,
+      assetMode: 'cpppilot-logo',
+      scale: 1,
+      ignoreMouseEvents: false,
+      bubbleEnabled: true,
+      customAssets: []
+    })
+    expect(petSettingsSchema.safeParse({ assetMode: 'cat' }).success).toBe(false)
+    expect(petSettingsSchema.parse({ assetMode: 'cpppilot-cursor' }).assetMode).toBe('cpppilot-logo')
+    expect(petSettingsSchema.parse({ assetMode: 'cpppilot-mascot' }).assetMode).toBe('cpppilot-logo')
+    expect(petSettingsSchema.safeParse({ scale: 0.2 }).success).toBe(false)
+    const customAsset = {
+      id: 'asset-1', name: '猫猫', path: 'C:/Users/me/AppData/Roaming/CppPilot/pet-assets/cat.gif',
+      mime: 'image/gif' as const, updatedAt: new Date().toISOString()
+    }
+    expect(petSettingsSchema.safeParse({ assetMode: 'custom', customAssets: [customAsset], activeCustomAssetId: customAsset.id }).success).toBe(true)
+    expect(petSettingsSchema.parse({
+      assetMode: 'custom', customAssetPath: customAsset.path,
+      customAssetName: 'cat.gif', customAssetMime: 'image/gif', customAssetUpdatedAt: customAsset.updatedAt
+    })).toMatchObject({ assetMode: 'custom', customAssets: [expect.objectContaining({ name: 'cat.gif', mime: 'image/gif' })] })
+    expect(petSettingsSchema.safeParse({ assetMode: 'custom', customAssets: [{ ...customAsset, mime: 'image/svg+xml' }] }).success).toBe(false)
+    expect(petWindowStateSchema.safeParse({
+      settings, windowVisible: true, ignoreMouseEvents: false, growthStage: 2,
+      progress: { stage: 2, totalStages: 4, percent: 50, label: '通关进度 2/4' }
+    }).success).toBe(true)
+    expect(petDragWindowRequestSchema.safeParse({
+      initialBounds: { x: 10, y: 20, width: 220, height: 260 },
+      pointerStartScreenX: 20, pointerStartScreenY: 30, pointerCurrentScreenX: 100, pointerCurrentScreenY: 120
+    }).success).toBe(true)
+    expect(petChatRequestSchema.safeParse({ message: '解释一下循环' }).success).toBe(true)
+    expect(petChatRequestSchema.safeParse({ message: '   ' }).success).toBe(false)
+    const conversationId = crypto.randomUUID()
+    expect(screenshotCaptureRequestSchema.safeParse({ message: '解释这张截图', projectId: crypto.randomUUID(), conversationId }).success).toBe(true)
+    expect(screenshotCaptureSubmissionSchema.safeParse({
+      message: '解释这张截图', previewDataUrl: 'data:image/png;base64,AAAA', width: 320, height: 180,
+      projectId: crypto.randomUUID(), conversationId
+    }).success).toBe(true)
+    expect(screenshotCaptureRequestSchema.safeParse({ message: '' }).success).toBe(false)
+  })
+
+  it('validates practice catalog and OJ screenshot import contracts', () => {
+    const now = new Date().toISOString()
+    const exercise = {
+      id: 'loops-sum-1', title: '区间求和', knowledgePoint: '循环', conceptIds: ['control.loops'], difficulty: 2,
+      statement: '输入 n，输出 1 到 n 的和。', constraints: ['1 <= n <= 1000'],
+      samples: [{ input: '3', output: '6' }], source: 'built-in' as const, createdAt: now, updatedAt: now
+    }
+    const project = {
+      id: 'project-gradebook', title: '成绩统计器', knowledgePoint: '数组与函数', conceptIds: ['arrays.basic'], difficulty: 3,
+      description: '实现一个读取多人成绩并输出统计信息的小项目。', goals: ['读取输入', '计算平均值'], suggestedFiles: ['main.cpp']
+    }
+
+    expect(practiceCatalogSchema.safeParse({ exercises: [exercise], projects: [project] }).success).toBe(true)
+    expect(practiceExerciseSchema.safeParse({ ...exercise, conceptIds: [] }).success).toBe(false)
+    expect(practiceOjScreenshotInputSchema.safeParse({ previewDataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png', width: 320, height: 200 }).success).toBe(true)
+    expect(practiceOjScreenshotInputSchema.safeParse({ previewDataUrl: 'hello', mimeType: 'image/png', width: 320, height: 200 }).success).toBe(false)
+    expect(practiceOjImportResultSchema.safeParse({ status: 'added', exercise }).success).toBe(true)
+    expect(practiceOjImportResultSchema.safeParse({ status: 'refused', reason: '截图缺少完整题面和样例。' }).success).toBe(true)
+    expect(practiceOjImportResultSchema.safeParse({ status: 'added' }).success).toBe(false)
   })
   it('restricts environment downloads to known official targets', () => {
     expect(environmentOpenDownloadRequestSchema.safeParse({ target: 'msys2' }).success).toBe(true)

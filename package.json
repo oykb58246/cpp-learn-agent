@@ -12,7 +12,7 @@
     "test": "pnpm -r test",
     "verify": "pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e",
     "test:e2e": "pnpm --filter @cpp-pet/desktop build && node node_modules/@playwright/test/cli.js test",
-    "package:dir": "pnpm --filter @cpp-pet/desktop package:dir"
+    "package:nsis": "pnpm --filter @cpp-pet/desktop package:nsis"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

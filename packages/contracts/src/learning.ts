@@ -51,7 +51,7 @@ export const knowledgeGateResultSchema = z.object({
 export type KnowledgeGateResult = z.infer<typeof knowledgeGateResultSchema>
 
 export const learningEvidenceSchema = z.object({
-  kind: z.enum(['build', 'test', 'analysis', 'debug', 'review', 'user-confirmation']),
+  kind: z.enum(['build', 'test', 'analysis', 'debug', 'review', 'user-confirmation', 'editor', 'practice', 'project']),
   referenceId: z.string().min(1).max(200),
   summary: z.string().min(1).max(2_000)
 })
@@ -67,7 +67,12 @@ export const learningEventTypeSchema = z.enum([
   'error-resolved',
   'review-completed',
   'review-failed',
-  'project-completed'
+  'project-completed',
+  'code-edited',
+  'practice-submitted',
+  'practice-passed',
+  'knowledge-mastered',
+  'project-task-completed'
 ])
 
 export const learningEventSchema = z.object({
@@ -136,6 +141,12 @@ export const learnerAchievementSchema = z.object({
 })
 export type LearnerAchievement = z.infer<typeof learnerAchievementSchema>
 
+export const learnerXpBreakdownSchema = z.object({
+  type: z.string().min(1).max(100),
+  xp: z.number().int().nonnegative()
+}).strict()
+export type LearnerXpBreakdown = z.infer<typeof learnerXpBreakdownSchema>
+
 export const learnerSummarySchema = z.object({
   userId: z.string().min(1).max(100),
   xp: z.number().int().nonnegative(),
@@ -145,6 +156,8 @@ export const learnerSummarySchema = z.object({
   learningConcepts: z.number().int().nonnegative(),
   openErrors: z.number().int().nonnegative(),
   dueReviews: z.number().int().nonnegative(),
+  masteredConcepts: z.number().int().nonnegative().optional(),
+  xpBreakdown: z.array(learnerXpBreakdownSchema).optional(),
   achievements: z.array(learnerAchievementSchema),
   recentEvents: z.array(learningEventSchema)
 })

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Bot, Filter, RefreshCw } from 'lucide-vue-next'
+import { useRoute } from 'vue-router'
 import type { AgentStartRequest } from '@cpp-pet/contracts'
 import { useAgentStore } from '../stores/agent'
 import { useProductTourStore } from '../stores/product-tour'
@@ -13,6 +14,7 @@ import { agentTourSuggestion, beginnerTourSteps } from '../utils/product-tour'
 
 const store = useAgentStore()
 const tour = useProductTourStore()
+const route = useRoute()
 const status = ref('all')
 const filtered = computed(() => status.value === 'all' ? store.runs : store.runs.filter(run => run.status === status.value))
 const timeline = computed(() => {
@@ -24,6 +26,7 @@ const toolCalls = computed(() => {
   return current && 'toolCalls' in current ? current.toolCalls : []
 })
 const active = computed(() => isAgentRunBusy(store.currentRun?.status))
+const timelineOpen = computed(() => route.query.view === 'timeline' || route.query.panel === 'timeline')
 const tourStep = computed(() => beginnerTourSteps[tour.currentStepIndex])
 const showTourSuggestion = computed(() => tour.open && tourStep.value?.id === 'assistant-input')
 const summaryFor = summarizeAssistantRecord
@@ -31,9 +34,16 @@ const summaryFor = summarizeAssistantRecord
 onMounted(async () => {
   store.subscribe()
   await store.refreshAll()
+  await selectRouteRun()
   if (!store.currentRun && store.runs[0]) await store.selectRun(store.runs[0].id)
 })
 onBeforeUnmount(() => store.dispose())
+watch(() => route.query.runId, () => { void selectRouteRun() })
+
+async function selectRouteRun() {
+  const runId = typeof route.query.runId === 'string' ? route.query.runId : undefined
+  if (runId) await store.selectRun(runId)
+}
 
 async function submit(request: AgentStartRequest) {
   const current = store.currentRun
@@ -73,7 +83,7 @@ async function decide(decision: 'approved' | 'rejected') {
             :data-tour="store.currentRun.status === 'completed' ? 'assistant-result' : undefined"
           ><strong>助教解释与建议</strong><p>{{ store.currentRun.response }}</p></section>
           <p class="assistant-next-action"><strong>下一步：</strong>{{ summaryFor(store.currentRun).nextAction }}</p>
-          <details class="assistant-technical-details"><summary>查看处理过程与技术细节</summary><RunTimeline :events="timeline" /><section v-if="toolCalls.length" class="tool-call-list"><header><strong>工具调用</strong><span>{{ toolCalls.length }}</span></header><article v-for="call in toolCalls" :key="call.id"><div><strong>{{ call.toolName }}</strong><small>{{ call.serverName }} · {{ call.risk }} · {{ call.status }}</small></div><code>{{ JSON.stringify(call.parameterSummary) }}</code><span>{{ call.result?.summary ?? call.errorCode ?? '执行中' }}</span><time>{{ call.durationMs ?? 0 }} ms</time></article></section></details>
+          <details class="assistant-technical-details" :open="timelineOpen"><summary>查看处理过程与技术细节</summary><RunTimeline :events="timeline" /><section v-if="toolCalls.length" class="tool-call-list"><header><strong>工具调用</strong><span>{{ toolCalls.length }}</span></header><article v-for="call in toolCalls" :key="call.id"><div><strong>{{ call.toolName }}</strong><small>{{ call.serverName }} · {{ call.risk }} · {{ call.status }}</small></div><code>{{ JSON.stringify(call.parameterSummary) }}</code><span>{{ call.result?.summary ?? call.errorCode ?? '执行中' }}</span><time>{{ call.durationMs ?? 0 }} ms</time></article></section></details>
         </template>
         <div v-else class="panel-empty">选择一条记录查看证据链</div>
       </main>

@@ -46,7 +46,7 @@ import type {
   ModelProfile,
   ModelProfileInput
 } from './agent'
-import type { PetEvent } from './future'
+import type { AppNavigationEvent, PetChatRequest, PetChatResult, PetCustomAssetCreateInput, PetCustomAssetMutation, PetCustomAssetRename, PetDragWindowRequest, PetEvent, PetSettings, PetWindowState, PracticeCatalog, PracticeOjImportResult, PracticeOjScreenshotInput, PracticeProjectCompleteRequest, PracticeProjectCompleteResult, PracticeSubmissionRequest, PracticeSubmissionResult, ScreenshotCaptureRequest, ScreenshotCaptureSubmission, ScreenshotPendingCapture, ScreenshotSubmittedEvent } from './future'
 import type {
   BackgroundProfile,
   BackgroundProfileInput,
@@ -205,10 +205,10 @@ export interface AppSettings {
   inspectorWidth: number
   bottomPanelHeight: number
   /**
-   * 鼠标光标样式：
+   * 鼠标指针样式：
    * - system: 系统默认
    * - classic: 经典代码箭头
-   * - mascot: 桌宠光标（默认）
+   * - mascot: 猫猫指针（默认）
    */
   cursorStyle: CursorStyle
   onboardingCompleted: boolean
@@ -217,6 +217,7 @@ export interface AppSettings {
   productTourStatus: 'pending' | 'in-progress' | 'completed' | 'dismissed'
   productTourStep: number
   productTourWelcomeSeen: boolean
+  pet: PetSettings
 }
 export interface AppBootstrap {
   version: string; platform: string; recoveryMode: boolean; settings: AppSettings
@@ -227,7 +228,11 @@ export interface MockDashboard {
 }
 
 export interface CppPetApi {
-  app: { getBootstrap(): Promise<ApiResult<AppBootstrap>>; getVersion(): Promise<ApiResult<string>> }
+  app: {
+    getBootstrap(): Promise<ApiResult<AppBootstrap>>
+    getVersion(): Promise<ApiResult<string>>
+    onNavigate(listener: (event: AppNavigationEvent) => void): () => void
+  }
   settings: { get(): Promise<ApiResult<AppSettings>>; update(input: Partial<AppSettings>): Promise<ApiResult<AppSettings>> }
   workspace: {
     selectRoot(): Promise<ApiResult<Workspace | null>>
@@ -344,6 +349,10 @@ export interface CppPetApi {
     errors(input?: { userId?: string; status?: ErrorBookEntry['status'] }): Promise<ApiResult<ErrorBookEntry[]>>
     reviews(input?: { userId?: string; dueOnly?: boolean }): Promise<ApiResult<ReviewItem[]>>
     summary(input?: { userId?: string }): Promise<ApiResult<LearnerSummary>>
+    practiceCatalog(): Promise<ApiResult<PracticeCatalog>>
+    submitPractice(input: PracticeSubmissionRequest): Promise<ApiResult<PracticeSubmissionResult>>
+    completePracticeProject(input: PracticeProjectCompleteRequest): Promise<ApiResult<PracticeProjectCompleteResult>>
+    importOjScreenshot(input: PracticeOjScreenshotInput): Promise<ApiResult<PracticeOjImportResult>>
   }
   model: {
     list(): Promise<ApiResult<ModelProfile[]>>
@@ -352,7 +361,37 @@ export interface CppPetApi {
     clearKey(input: { profileId: string }): Promise<ApiResult<ModelProfile>>
     test(input: { profileId: string }): Promise<ApiResult<{ ok: boolean; latencyMs: number; detail: string }>>
   }
+  screenshot: {
+    capture(input: ScreenshotCaptureRequest): Promise<ApiResult<void>>
+    getPending(): Promise<ApiResult<ScreenshotPendingCapture | null>>
+    submit(input: ScreenshotCaptureSubmission): Promise<ApiResult<AgentRun>>
+    cancel(): Promise<ApiResult<void>>
+    onSubmitted(listener: (event: ScreenshotSubmittedEvent) => void): () => void
+  }
   pet: {
+    getState(): Promise<ApiResult<PetWindowState>>
+    updateSettings(input: Partial<PetSettings>): Promise<ApiResult<PetWindowState>>
+    show(): Promise<ApiResult<PetWindowState>>
+    hide(): Promise<ApiResult<PetWindowState>>
+    toggle(): Promise<ApiResult<PetWindowState>>
+    move(input: { deltaX: number; deltaY: number }): Promise<ApiResult<PetWindowState>>
+    drag(input: PetDragWindowRequest): Promise<ApiResult<PetWindowState>>
+    setIgnoreMouseEvents(input: { ignoreMouseEvents: boolean }): Promise<ApiResult<PetWindowState>>
+    openMain(): Promise<ApiResult<void>>
+    showContextMenu(): Promise<ApiResult<void>>
+    selectCustomAsset(input: PetCustomAssetCreateInput): Promise<ApiResult<PetWindowState>>
+    resetCustomAsset(): Promise<ApiResult<PetWindowState>>
+    renameCustomAsset(input: PetCustomAssetRename): Promise<ApiResult<PetWindowState>>
+    deleteCustomAsset(input: PetCustomAssetMutation): Promise<ApiResult<PetWindowState>>
+    activateCustomAsset(input: PetCustomAssetMutation): Promise<ApiResult<PetWindowState>>
+    hideForOneHour(): Promise<ApiResult<PetWindowState>>
+    cancelHidden(): Promise<ApiResult<PetWindowState>>
+    toggleFocusMode(input?: { enabled?: boolean }): Promise<ApiResult<PetWindowState>>
+    toggleLaunchAtLogin(input?: { enabled?: boolean }): Promise<ApiResult<PetWindowState>>
+    chat(input: PetChatRequest): Promise<ApiResult<PetChatResult>>
+    onQuickChat(listener: () => void): () => void
+    onStateChanged(listener: (state: PetWindowState) => void): () => void
+    onChanged(listener: (event: PetEvent) => void): () => void
     onEvent(listener: (event: PetEvent) => void): () => void
   }
   mocks: { getDashboard(): Promise<ApiResult<MockDashboard>> }

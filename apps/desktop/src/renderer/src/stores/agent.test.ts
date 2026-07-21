@@ -108,6 +108,124 @@ describe('agent store', () => {
     expect((store.currentRun as AgentRunDetail).timeline).toHaveLength(1)
   })
 
+
+  it('selects an existing waiting model approval when loading a workspace conversation', async () => {
+    const item = conversation()
+    const approval = {
+      id: crypto.randomUUID(), runId: crypto.randomUUID(), stepId: 'model-context', toolName: 'model.remote-context', risk: 'L3' as const,
+      title: '发送上下文到 OpenAI 模型', description: '发送选区上下文', parameterSummary: {}, sideEffects: ['remote-request'], status: 'pending' as const, createdAt: now
+    }
+    const waiting: AgentRun = {
+      id: approval.runId, requestId: crypto.randomUUID(), source: 'editor', mode: 'auto', message: '解释选区',
+      projectId, conversationId: item.id, assistantMessageId: crypto.randomUUID(), status: 'waiting-model-approval',
+      pendingApproval: approval, steps: [], createdAt: now, updatedAt: now
+    }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      cppPet: {
+        diagnostics: { listActive: async () => ({ ok: true, data: { projectId, groups: [], attention: false, updatedAt: now } }) },
+        conversations: {
+          list: async () => ({ ok: true, data: [item] }),
+          messages: async () => ({ ok: true, data: [] })
+        }
+      }
+    } })
+    const store = useAgentStore()
+    store.runs = [waiting]
+
+    await store.loadProjectAgent(projectId)
+
+    expect(store.currentConversationId).toBe(item.id)
+    expect(store.currentRun?.id).toBe(waiting.id)
+    expect(store.pendingApproval?.toolName).toBe('model.remote-context')
+  })
+  it('surfaces approvals for the current workspace conversation even when no run is selected', async () => {
+    const conversationId = crypto.randomUUID()
+    const approval = {
+      id: crypto.randomUUID(), runId: crypto.randomUUID(), stepId: 'remote-context', toolName: 'model.remote-context', risk: 'L3' as const,
+      title: '发送上下文到 OpenAI', description: '将当前选区上下文发送给模型', parameterSummary: {}, sideEffects: ['remote-request'], status: 'pending' as const, createdAt: now
+    }
+    const changedRun: AgentRun = {
+      id: approval.runId, requestId: crypto.randomUUID(), source: 'editor', mode: 'auto', message: '解释选区',
+      projectId, conversationId, assistantMessageId: crypto.randomUUID(), status: 'waiting-model-approval',
+      pendingApproval: approval, steps: [], createdAt: now, updatedAt: now
+    }
+    const detail: AgentRunDetail = { ...changedRun, timeline: [], approvals: [approval], toolCalls: [] }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      cppPet: { agent: { get: async () => ({ ok: true, data: detail }) } }
+    } })
+    const store = useAgentStore()
+    store.agentProjectId = projectId
+    store.currentConversationId = conversationId
+    store.currentRun = null
+
+    await store.handleRunChanged(changedRun)
+
+    expect((store.currentRun as AgentRunDetail | null)?.id).toBe(changedRun.id)
+    expect(store.pendingApproval?.toolName).toBe('model.remote-context')
+  })
+  it('settles the current run when a terminal assistant message arrives before the run event', () => {
+    const conversationId = crypto.randomUUID()
+    const assistantMessageId = crypto.randomUUID()
+    const staleRun: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto', message: '解释选区',
+      projectId, conversationId, assistantMessageId, status: 'model-requesting', steps: [], createdAt: now, updatedAt: now
+    }
+    const failedMessage: AgentMessage = {
+      id: assistantMessageId, conversationId, role: 'assistant', kind: 'text', content: 'OpenAI 请求失败，回答未完成。',
+      status: 'failed', errorCode: 'MODEL_REQUEST_FAILED', errorMessage: 'OpenAI 请求失败',
+      createdAt: now, updatedAt: now, completedAt: now
+    }
+    const store = useAgentStore()
+    store.agentProjectId = projectId
+    store.currentConversationId = conversationId
+    store.currentRun = staleRun
+    store.runs = [staleRun]
+    store.messages = [{ ...failedMessage, content: '', status: 'pending', errorCode: undefined, errorMessage: undefined, completedAt: undefined }]
+
+    store.handleConversationChanged({ kind: 'message', projectId, message: failedMessage })
+
+    expect(store.messages[0]).toMatchObject({ status: 'failed', errorMessage: 'OpenAI 请求失败' })
+    expect(store.currentRun?.status).toBe('failed')
+    expect(store.runs[0]).toMatchObject({ id: staleRun.id, status: 'failed', errorCode: 'MODEL_REQUEST_FAILED' })
+  })
+  it('tracks terminal failures for the current workspace conversation and refreshes messages', async () => {
+    const conversationId = crypto.randomUUID()
+    const assistantMessageId = crypto.randomUUID()
+    const failed: AgentRun = {
+      id: crypto.randomUUID(), requestId: crypto.randomUUID(), source: 'editor', mode: 'auto', message: '解释选区',
+      projectId, conversationId, assistantMessageId, status: 'failed', errorCode: 'MODEL_REQUEST_FAILED',
+      errorMessage: 'OpenAI 请求失败', steps: [], createdAt: now, updatedAt: now, completedAt: now
+    }
+    const detail: AgentRunDetail = { ...failed, timeline: [], approvals: [], toolCalls: [] }
+    const updatedAssistant: AgentMessage = {
+      id: assistantMessageId, conversationId, role: 'assistant', kind: 'text', content: '任务未能完成。',
+      status: 'failed', errorCode: 'MODEL_REQUEST_FAILED', errorMessage: 'OpenAI 请求失败',
+      createdAt: now, updatedAt: now, completedAt: now
+    }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      cppPet: {
+        agent: { get: async () => ({ ok: true, data: detail }) },
+        conversations: { messages: async () => ({ ok: true, data: [updatedAssistant] }) }
+      }
+    } })
+    const store = useAgentStore()
+    store.agentProjectId = projectId
+    store.currentConversationId = conversationId
+    store.currentRun = {
+      ...failed,
+      status: 'model-requesting',
+      errorCode: undefined,
+      errorMessage: undefined,
+      completedAt: undefined
+    }
+    store.messages = [{ ...updatedAssistant, content: '', status: 'pending', errorCode: undefined, errorMessage: undefined, completedAt: undefined }]
+
+    await store.handleRunChanged(failed)
+
+    expect(store.currentRun?.status).toBe('failed')
+    expect(store.currentRun?.errorCode).toBe('MODEL_REQUEST_FAILED')
+    expect(store.messages[0]).toMatchObject({ status: 'failed', errorMessage: 'OpenAI 请求失败' })
+  })
   it('clears a model key without removing the profile', async () => {
     const profile = {
       id: crypto.randomUUID(), name: 'Local gateway', baseUrl: 'https://models.example/v1', model: 'teacher',

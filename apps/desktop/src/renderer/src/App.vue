@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { BookOpen, ChevronsLeft, ChevronsRight, CircleHelp, Code2, Home, Settings, Workflow } from 'lucide-vue-next'
+import { BookOpen, ChevronsLeft, ChevronsRight, CircleHelp, Code2, Dumbbell, Home, Settings, Workflow } from 'lucide-vue-next'
 import { useAppStore } from './stores/app'
 import { useAgentStore } from './stores/agent'
 import { useWorkspaceStore } from './stores/workspace'
@@ -22,12 +22,14 @@ const productTour = useProductTourStore()
 const route = useRoute()
 const router = useRouter()
 const railExpanded = ref(false)
+const logoFailed = ref(false)
 const isDarkTheme = ref(false)
 const railTrackEl = ref<HTMLElement | null>(null)
 const indicator = ref({ top: 0, height: 38, visible: false })
 const indicatorMoving = ref(false)
 const backgroundDialogVisible = ref(false)
 let unlisten: (() => void) | undefined
+let unlistenNavigate: (() => void) | undefined
 let themeObserver: MutationObserver | undefined
 let moveTimer: ReturnType<typeof setTimeout> | undefined
 let resizeObserver: ResizeObserver | undefined
@@ -102,6 +104,7 @@ onMounted(async () => {
   else await checkBackgroundDialog()
   await workspace.loadProjects()
   unlisten = window.cppPet.workspace.onChanged(event => workspace.handleExternal(event))
+  unlistenNavigate = window.cppPet.app.onNavigate(event => { void router.push({ path: event.path, query: event.query ?? {} }) })
   await updateRailIndicator(false)
   if (typeof ResizeObserver !== 'undefined' && railTrackEl.value) {
     resizeObserver = new ResizeObserver(() => { void updateRailIndicator(false) })
@@ -111,6 +114,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unlisten?.()
+  unlistenNavigate?.()
   themeObserver?.disconnect()
   resizeObserver?.disconnect()
   if (moveTimer) clearTimeout(moveTimer)
@@ -128,6 +132,7 @@ const primaryNav = [
   { to: '/home', label: '首页', icon: Home },
   { to: '/workspace', label: '工作区', icon: Code2 },
   { to: '/knowledge', label: '知识树', icon: BookOpen },
+  { to: '/practice', label: '练习', icon: Dumbbell },
   { to: '/runs', label: '助教记录', icon: Workflow }
 ]
 const settingsNav = { to: '/settings', label: '设置', icon: Settings }
@@ -156,7 +161,7 @@ const indicatorStyle = computed(() => ({
 <template>
   <div :class="['app-shell', { 'onboarding-shell': route.path === '/onboarding', 'rail-expanded': railExpanded && route.path !== '/onboarding' }]">
     <header class="titlebar">
-      <div class="brand-mark"><img :src="logoUrl" alt="CppPilot" /></div>
+      <div class="brand-mark"><span class="brand-mark-fallback">CP</span><img v-if="!logoFailed" :src="logoUrl" alt="CppPilot" @error="logoFailed = true" /></div>
       <span class="title-project">{{ appTitle }}</span>
       <span class="title-context">{{ titleContext }}</span>
     </header>

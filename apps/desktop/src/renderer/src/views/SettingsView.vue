@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bot, CheckCircle2, Database, FolderRoot, KeyRound, MonitorCog, Moon, Play, Plus, RefreshCw, Save, Sparkles, Sun, Trash2, Wifi, WifiOff, Wrench } from 'lucide-vue-next'
+import { Bot, CheckCircle2, Database, FolderRoot, ImagePlus, KeyRound, MonitorCog, Moon, MousePointer2, Play, Plus, RefreshCw, Save, Sparkles, Sun, Trash2, Wifi, WifiOff, Wrench } from 'lucide-vue-next'
 import type {
   CursorStyle,
+  PetAssetMode,
+  PetCustomAsset,
+  PetWindowState,
   ToolchainBindingState,
   ToolchainCandidate,
   ToolchainDetectionResult,
@@ -25,6 +28,7 @@ const detecting = ref(false)
 const activeAction = ref('')
 const modelAction = ref('')
 const modelNotice = ref('')
+const newCustomPetAssetName = ref('')
 const activeSection = ref('appearance')
 const scrollRoot = ref<HTMLElement | null>(null)
 let observer: IntersectionObserver | null = null
@@ -32,6 +36,7 @@ let ignoreObserverUntil = 0
 
 const sections = [
   { id: 'appearance', label: '外观', hint: '主题与光标', icon: Sun },
+  { id: 'pet', label: '桌宠', hint: '素材与交互', icon: MousePointer2 },
   { id: 'toolchains', label: 'C++ 工具链', hint: '检测与绑定', icon: Wrench },
   { id: 'workspace', label: '工作区', hint: '授权目录', icon: FolderRoot },
   { id: 'models', label: '模型服务', hint: 'BYOK 与离线', icon: Bot },
@@ -44,13 +49,28 @@ const modelForm = reactive({ id: '', name: 'OpenAI Compatible', baseUrl: 'https:
 const selectedModelId = ref('')
 const selectedModel = computed(() => agent.models.find(item => item.id === selectedModelId.value))
 const offlineMode = computed(() => !agent.models.some(item => item.enabled && item.apiKeyConfigured))
+const hiddenUntilText = computed(() => {
+  const value = app.settings.pet.hiddenUntil
+  if (!value) return '未启用'
+  const time = Date.parse(value)
+  if (!Number.isFinite(time) || time <= Date.now()) return '未启用'
+  return `隐藏至 ${new Date(time).toLocaleString()}`
+})
 
 const cursorOptions: Array<{ id: CursorStyle; title: string; detail: string; preview?: string }> = [
-  { id: 'mascot', title: '桌宠光标', detail: '默认 · 猫猫 + 箭头', preview: mascotPreview },
+  { id: 'mascot', title: '猫猫指针', detail: '默认 · 猫猫 + 箭头', preview: mascotPreview },
   { id: 'classic', title: '经典箭头', detail: '代码风格指针', preview: classicPreview },
   { id: 'system', title: '系统光标', detail: '跟随操作系统' }
 ]
 
+type PetAssetListItem =
+  | { id: PetAssetMode; kind: 'built-in'; title: string; detail: string; mode: Exclude<PetAssetMode, 'custom'> }
+  | { id: string; kind: 'custom'; title: string; detail: string; asset: PetCustomAsset }
+
+const builtInPetAssets: PetAssetListItem[] = [
+  { id: 'cpppilot-logo', kind: 'built-in', mode: 'cpppilot-logo', title: 'CppPilot Logo', detail: '内置品牌桌宠，适合作为默认形象。' },
+  { id: 'salary-cat', kind: 'built-in', mode: 'salary-cat', title: 'Salary Cat', detail: '内置 cat.GIF 动画桌宠。' }
+]
 function resolveTargetSection(): string | null {
   const fromQuery = typeof route.query.section === 'string' ? route.query.section : ''
   if (sectionIds.has(fromQuery as typeof sections[number]['id'])) return fromQuery
@@ -243,6 +263,134 @@ function familyName(family: ToolchainCandidate['family']) {
 async function selectCursor(style: CursorStyle) {
   await app.updateSettings({ cursorStyle: style })
 }
+
+const customPetAssets = computed(() => app.settings.pet.customAssets ?? [])
+const activeCustomAssetId = computed(() => app.settings.pet.activeCustomAssetId ?? '')
+const petAssetList = computed<PetAssetListItem[]>(() => [
+  ...builtInPetAssets,
+  ...customPetAssets.value.map(asset => ({
+    id: asset.id,
+    kind: 'custom' as const,
+    title: asset.name,
+    detail: `${customAssetFileName(asset)} · ${asset.mime}`,
+    asset
+  }))
+])
+
+function applyPetState(next: PetWindowState) {
+  app.applyPetWindowState(next)
+}
+
+async function updatePetSettings(patch: Partial<typeof app.settings.pet>) {
+  activeAction.value = 'pet:update'
+  const result = await window.cppPet.pet.updateSettings(patch)
+  if (result.ok) applyPetState(result.data)
+  else app.setError(result.error)
+  activeAction.value = ''
+}
+
+
+async function selectCustomPetAsset() {
+  const name = newCustomPetAssetName.value.trim()
+  if (!name) return
+  activeAction.value = 'pet:asset:create'
+  const result = await window.cppPet.pet.selectCustomAsset({ name })
+  if (result.ok) {
+    applyPetState(result.data)
+    newCustomPetAssetName.value = ''
+  } else app.setError(result.error)
+  activeAction.value = ''
+}
+
+async function resetCustomPetAsset() {
+  activeAction.value = 'pet:asset'
+  const result = await window.cppPet.pet.resetCustomAsset()
+  if (result.ok) applyPetState(result.data)
+  else app.setError(result.error)
+  activeAction.value = ''
+}
+
+async function activateCustomPetAsset(assetId: string) {
+  activeAction.value = `pet:asset:${assetId}`
+  const result = await window.cppPet.pet.activateCustomAsset({ assetId })
+  if (result.ok) applyPetState(result.data)
+  else app.setError(result.error)
+  activeAction.value = ''
+}
+
+async function renameCustomPetAsset(asset: PetCustomAsset, event: Event) {
+  const name = (event.target as HTMLInputElement).value.trim()
+  if (!name || name === asset.name) return
+  activeAction.value = `pet:asset:${asset.id}`
+  const result = await window.cppPet.pet.renameCustomAsset({ assetId: asset.id, name })
+  if (result.ok) applyPetState(result.data)
+  else app.setError(result.error)
+  activeAction.value = ''
+}
+
+async function deleteCustomPetAsset(assetId: string) {
+  activeAction.value = `pet:asset:${assetId}`
+  const result = await window.cppPet.pet.deleteCustomAsset({ assetId })
+  if (result.ok) applyPetState(result.data)
+  else app.setError(result.error)
+  activeAction.value = ''
+}
+
+function customAssetFileName(asset: PetCustomAsset) {
+  return asset.path.split(/[\\/]/).pop() ?? asset.name
+}
+
+function customAssetActive(asset: PetCustomAsset) {
+  return app.settings.pet.assetMode === 'custom' && activeCustomAssetId.value === asset.id
+}
+
+function petAssetActive(item: PetAssetListItem) {
+  return item.kind === 'built-in'
+    ? app.settings.pet.assetMode === item.mode
+    : customAssetActive(item.asset)
+}
+
+async function activatePetAsset(item: PetAssetListItem) {
+  if (item.kind === 'built-in') await updatePetSettings({ assetMode: item.mode, activeCustomAssetId: undefined })
+  else await activateCustomPetAsset(item.asset.id)
+}
+
+async function hidePetForOneHour() {
+  activeAction.value = 'pet:update'
+  const result = await window.cppPet.pet.hideForOneHour()
+  if (result.ok) applyPetState(result.data)
+  else app.setError(result.error)
+  activeAction.value = ''
+}
+
+async function cancelTimedPetHide() {
+  activeAction.value = 'pet:update'
+  const result = await window.cppPet.pet.cancelHidden()
+  if (result.ok) applyPetState(result.data)
+  else app.setError(result.error)
+  activeAction.value = ''
+}
+
+async function toggleFocusMode(enabled: boolean) {
+  activeAction.value = 'pet:update'
+  const result = await window.cppPet.pet.toggleFocusMode({ enabled })
+  if (result.ok) applyPetState(result.data)
+  else app.setError(result.error)
+  activeAction.value = ''
+}
+
+async function toggleLaunchAtLogin(enabled: boolean) {
+  activeAction.value = 'pet:update'
+  const result = await window.cppPet.pet.toggleLaunchAtLogin({ enabled })
+  if (result.ok) applyPetState(result.data)
+  else app.setError(result.error)
+  activeAction.value = ''
+}
+function changePetScale(event: Event) {
+  const target = event.target as HTMLInputElement
+  const scale = Number(target.value)
+  if (Number.isFinite(scale)) void updatePetSettings({ scale })
+}
 </script>
 
 <template>
@@ -284,7 +432,7 @@ async function selectCursor(style: CursorStyle) {
           <Sun :size="18" />
           <div>
             <h2>外观</h2>
-            <p>主题与鼠标光标等界面偏好。</p>
+            <p>主题与鼠标指针等界面偏好。</p>
           </div>
         </header>
         <div class="setting-row">
@@ -297,7 +445,7 @@ async function selectCursor(style: CursorStyle) {
         </div>
         <div class="setting-block">
           <div class="setting-copy">
-            <span>鼠标光标</span>
+            <span>鼠标指针</span>
             <small>在卡片上悬停可预览真实指针效果，点击即可切换并保存。</small>
           </div>
           <div class="cursor-option-grid">
@@ -317,6 +465,92 @@ async function selectCursor(style: CursorStyle) {
                 <small>{{ option.detail }}</small>
               </div>
             </button>
+          </div>
+        </div>
+      </section>
+
+      <section id="pet" class="settings-section">
+        <header>
+          <MousePointer2 :size="18" />
+          <div>
+            <h2>桌宠</h2>
+            <p>控制透明桌宠窗口、素材列表、通关进度条、状态气泡和鼠标穿透。</p>
+          </div>
+        </header>
+        <div class="setting-row">
+          <span>显示桌宠</span>
+          <div class="segmented compact">
+            <button :class="{ active: app.settings.pet.visible }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ visible: true })">显示</button>
+            <button :class="{ active: !app.settings.pet.visible }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ visible: false })">隐藏</button>
+          </div>
+        </div>
+        <div class="setting-block">
+          <div class="setting-copy">
+            <span>桌宠素材列表</span>
+            <small>内置素材和你创建的本地素材都在这里；自定义素材会保存在本机并可继续命名、启用或删除。</small>
+          </div>
+          <div class="pet-create-row">
+            <label>
+              <span>自定义素材库</span>
+              <input v-model="newCustomPetAssetName" maxlength="120" placeholder="给新桌宠命名" @keyup.enter="selectCustomPetAsset" />
+            </label>
+            <small>{{ customPetAssets.length ? `${customPetAssets.length} 个本地素材` : '未上传' }}</small>
+            <button class="secondary-command" :disabled="activeAction === 'pet:asset:create' || !newCustomPetAssetName.trim()" @click="selectCustomPetAsset"><ImagePlus :size="14" />创建桌宠</button>
+            <button class="secondary-command" :disabled="activeAction === 'pet:update' || app.settings.pet.assetMode === 'cpppilot-logo'" @click="resetCustomPetAsset"><RefreshCw :size="14" />切回 Logo</button>
+          </div>
+          <div class="pet-custom-asset-list pet-asset-library">
+            <div v-for="item in petAssetList" :key="item.id" :class="['pet-custom-asset-row', { active: petAssetActive(item) }]">
+              <div class="pet-custom-asset-main">
+                <strong v-if="item.kind === 'built-in'">{{ item.title }}</strong>
+                <input v-else :value="item.asset.name" maxlength="120" :disabled="activeAction === `pet:asset:${item.asset.id}`" aria-label="自定义素材名称" @change="renameCustomPetAsset(item.asset, $event)" />
+                <small>{{ item.detail }}</small>
+              </div>
+              <button class="secondary-command" :disabled="activeAction === `pet:asset:${item.id}` || activeAction === 'pet:update'" @click="activatePetAsset(item)"><CheckCircle2 :size="14" />{{ petAssetActive(item) ? '使用中' : '使用' }}</button>
+              <button v-if="item.kind === 'custom'" class="icon-command danger" title="删除自定义素材" :disabled="activeAction === `pet:asset:${item.asset.id}`" @click="deleteCustomPetAsset(item.asset.id)"><Trash2 :size="15" /></button>
+            </div>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span>隐藏一小时</span>
+          <div class="segmented compact">
+            <button :disabled="activeAction === 'pet:update' || Boolean(app.settings.pet.hiddenUntil && Date.parse(app.settings.pet.hiddenUntil) > Date.now())" @click="hidePetForOneHour">隐藏一小时</button>
+            <button :disabled="activeAction === 'pet:update' || !app.settings.pet.hiddenUntil" @click="cancelTimedPetHide">取消隐藏</button>
+            <small>{{ hiddenUntilText }}</small>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span>专注模式</span>
+          <div class="segmented compact">
+            <button :class="{ active: app.settings.pet.focusModeEnabled }" :disabled="activeAction === 'pet:update'" @click="toggleFocusMode(true)">开启</button>
+            <button :class="{ active: !app.settings.pet.focusModeEnabled }" :disabled="activeAction === 'pet:update'" @click="toggleFocusMode(false)">关闭</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span>开机启动</span>
+          <div class="segmented compact">
+            <button :class="{ active: app.settings.pet.launchAtLogin }" :disabled="activeAction === 'pet:update'" @click="toggleLaunchAtLogin(true)">开启</button>
+            <button :class="{ active: !app.settings.pet.launchAtLogin }" :disabled="activeAction === 'pet:update'" @click="toggleLaunchAtLogin(false)">关闭</button>
+          </div>
+        </div>
+        <div class="setting-row pet-scale-row">
+          <span>缩放</span>
+          <label>
+            <input type="range" min="0.5" max="2" step="0.1" :value="app.settings.pet.scale" :disabled="activeAction === 'pet:update'" @change="changePetScale" />
+            <small>{{ Math.round(app.settings.pet.scale * 100) }}%</small>
+          </label>
+        </div>
+        <div class="setting-row">
+          <span>状态气泡</span>
+          <div class="segmented compact">
+            <button :class="{ active: app.settings.pet.bubbleEnabled }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ bubbleEnabled: true })">开启</button>
+            <button :class="{ active: !app.settings.pet.bubbleEnabled }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ bubbleEnabled: false })">关闭</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span>鼠标穿透</span>
+          <div class="segmented compact">
+            <button :class="{ active: app.settings.pet.ignoreMouseEvents }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ ignoreMouseEvents: true })">穿透</button>
+            <button :class="{ active: !app.settings.pet.ignoreMouseEvents }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ ignoreMouseEvents: false })">交互</button>
           </div>
         </div>
       </section>

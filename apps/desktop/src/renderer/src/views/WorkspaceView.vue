@@ -145,6 +145,7 @@ const activeDiagnostics = computed(() => {
   return allDiagnostics.value.filter(item => !item.file || normalizePath(item.file) === normalized)
 })
 const agentRunning = computed(() => isAgentRunBusy(agent.currentRun?.status))
+const focusMessageId = computed(() => typeof route.query.messageId === 'string' ? route.query.messageId : undefined)
 const inboxGroups = computed(() => agent.inbox?.groups ?? [])
 const inboxCount = computed(() => inboxGroups.value.length)
 const outputText = computed(() => {
@@ -233,6 +234,7 @@ watch(
   },
   { immediate: true }
 )
+watch(() => route.query, () => { void applyAgentRouteQuery() })
 watch(() => store.currentProject?.id, async id => {
   inboxOpen.value = false
   snapshotOpen.value = false
@@ -241,6 +243,7 @@ watch(() => store.currentProject?.id, async id => {
   languageStatusText.value = id ? '正在检测 clangd…' : ''
   if (!id) return
   await agent.loadProjectAgent(id)
+  await applyAgentRouteQuery()
   const result = await window.cppPet.language.status({ projectId: id })
   if (!result.ok) {
     languageStatusText.value = result.error.message
@@ -383,6 +386,20 @@ function toggleAgentPanel() {
   agentOpen.value = !agentOpen.value
 }
 
+function askSelectedCode() {
+  if (!agentSelection.value) return
+  agentOpen.value = true
+}
+
+async function applyAgentRouteQuery() {
+  if (!store.currentProject?.id) return
+  if (route.query.agent !== '1' && route.query.panel !== 'diff') return
+  agentOpen.value = true
+  const conversationId = typeof route.query.conversationId === 'string' ? route.query.conversationId : undefined
+  if (!conversationId || agent.currentConversationId === conversationId) return
+  if (agent.agentProjectId !== store.currentProject.id) await agent.loadProjectAgent(store.currentProject.id)
+  await agent.selectConversation(conversationId)
+}
 function toggleDiagnosticInbox() {
   if (inboxCount.value) inboxOpen.value = !inboxOpen.value
 }
@@ -396,7 +413,8 @@ async function submitAgent(request: AgentStartRequest) {
       mode: synchronizedRequest.mode,
       ...(synchronizedRequest.activeFile ? { activeFile: synchronizedRequest.activeFile } : {}),
       ...(synchronizedRequest.selection ? { selection: { ...synchronizedRequest.selection } } : {}),
-      ...(synchronizedRequest.diagnostics?.length ? { diagnostics: synchronizedRequest.diagnostics.map(item => ({ ...item, relatedConceptIds: [...item.relatedConceptIds] })) } : {})
+      ...(synchronizedRequest.diagnostics?.length ? { diagnostics: synchronizedRequest.diagnostics.map(item => ({ ...item, relatedConceptIds: [...item.relatedConceptIds] })) } : {}),
+      ...(synchronizedRequest.screenshot ? { screenshot: synchronizedRequest.screenshot } : {})
     })
   })
 }
@@ -425,6 +443,18 @@ async function explainDiagnostic(snapshot: DiagnosticExplanationSnapshot, create
   })
 }
 
+
+function openPendingDiffInMain() {
+  if (!store.currentProject?.id) return
+  void router.push({
+    path: `/workspace/${store.currentProject.id}`,
+    query: {
+      agent: '1',
+      panel: 'diff',
+      ...(agent.currentConversationId ? { conversationId: agent.currentConversationId } : {})
+    }
+  })
+}
 async function decideAgent(decision: 'approved' | 'rejected') {
   if (agent.pendingApproval) await agent.decide(agent.pendingApproval.id, decision)
 }
@@ -816,6 +846,7 @@ async function overwriteDisk() {
         <button class="tool-command" :disabled="!canCmake" title="配置并构建 CMake 项目" @click="buildCmake"><Boxes :size="15" />工程构建</button>
         <button class="tool-command" :disabled="!canTest" title="运行最近一次 CMake 构建中的 CTest" @click="runTests"><CheckCheck :size="15" />测试</button>
         <button class="tool-command" :disabled="!canAnalyze" title="使用 clang-tidy 分析当前文件" @click="analyze"><ScanSearch :size="15" />分析</button>
+        <button v-if="agentSelection" class="tool-command" title="选中代码问 AI" @click="askSelectedCode"><Bot :size="15" />问 AI</button>
         <button class="icon-command external-editor-command" :disabled="!store.currentProject" title="在新的 VS Code 窗口中打开当前文件和光标位置" @click="openVsCode"><ExternalLink :size="15" /></button>
         <span class="toolbar-separator" />
         <button v-if="!debugState || ['exited', 'error'].includes(debugState.status)" class="tool-command debug" :disabled="!canDebug" title="使用 GDB 调试当前 C++ 文件" @click="startDebug"><Bug :size="15" />调试</button>
@@ -984,12 +1015,13 @@ async function overwriteDisk() {
         :approval-pending="Boolean(agent.pendingApproval)"
         :tool-busy="agentRunning || agent.running"
         :tool-status="agent.currentRun?.status"
+        :focus-message-id="focusMessageId"
         @close="agentOpen = false"
         @tool-submit="submitAgent"
         @cancel-tool="agent.currentRun && agent.cancel(agent.currentRun.id)"
       >
         <template #approval>
-          <ApprovalCard v-if="agent.pendingApproval" :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" />
+          <ApprovalCard v-if="agent.pendingApproval" :approval="agent.pendingApproval" :busy="agent.running" @decide="decideAgent" @open-main="openPendingDiffInMain" />
         </template>
       </ConversationPanel>
     </aside>
