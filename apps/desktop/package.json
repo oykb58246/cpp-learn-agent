@@ -7,11 +7,14 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
+    "electron:install": "install-electron --no",
+    "predev": "install-electron --no",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run --passWithNoTests",
-    "package:nsis": "pnpm build && electron-builder --win nsis"
+    "package:dir": "install-electron --no && corepack pnpm build && electron-builder --dir",
+    "package:nsis": "install-electron --no && corepack pnpm build && electron-builder --win nsis"
   },
   "dependencies": {
     "@cpp-pet/agent-runtime": "workspace:*",
