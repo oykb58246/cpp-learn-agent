@@ -75,11 +75,11 @@ import {
   type ScreenshotCaptureSubmission,
   type ScreenshotPendingCapture
 } from '@cpp-pet/contracts'
-import { AchievementEngine, achievementDefinitions, builtInKnowledge, builtInPracticeExercises, builtInPracticeProjects, OpenAiAgentRuntime, OpenAiResponsesClient, transitionKnowledge } from '@cpp-pet/agent-runtime'
+import { AchievementEngine, achievementDefinitions, builtInKnowledge, builtInPracticeExercises, builtInPracticeProjects, OpenAiAgentRuntime, OpenAiResponsesClient, transitionKnowledge, unlockKnowledgePath } from '@cpp-pet/agent-runtime'
 import { z } from 'zod'
 import { createWindowOptions } from './window-options'
 import { resolveTrayIconPath, resolveWindowIconPath } from './app-icons'
-import { createPetWindowOptions, dragPetWindowBounds, movePetWindowBounds, petProgressForLearnerSummary, petWindowBoundsForSettings, workAreaForPetSettings } from './pet-window'
+import { createPetWindowOptions, detectPetDockEdge, dockedPetBounds, dragPetWindowBounds, movePetWindowBounds, petProgressForLearnerSummary, petWindowBoundsForSettings, workAreaForPetSettings } from './pet-window'
 import { createPetContextMenuTemplate, createPetTrayMenuTemplate } from './tray'
 import { registerCppPilotShortcuts } from './shortcuts'
 import { createScreenshotAgentRequest, createScreenshotRef } from './screenshot-flow'
@@ -104,6 +104,7 @@ import {
 } from './agent-integration'
 
 let mainWindow: BrowserWindow | null = null
+let applyingPetSettings = false
 let petWindow: BrowserWindow | null = null
 let screenshotWindow: BrowserWindow | null = null
 let pendingScreenshot: ScreenshotPendingCapture | null = null
@@ -169,10 +170,54 @@ const activeToolchain = () => {
   if (!profile) throw new ToolExecutionError('TOOLCHAIN_NOT_BOUND', '尚未绑定可用的 C++ 工具链。', '前往设置页检测并绑定编译器。')
   return profile
 }
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const isProjectUuid = (value: unknown): value is string => typeof value === 'string' && UUID_RE.test(value)
+const resolveProjectId = (): string | undefined => {
+  const { database } = requiredServices()
+  const last = database.getSettings().lastProjectId
+  if (isProjectUuid(last) && database.getProject(last)) return last
+  const first = database.listProjects()[0]?.id
+  return isProjectUuid(first) ? first : undefined
+}
+const isZodError = (error: unknown): error is z.ZodError =>
+  error instanceof z.ZodError
+  || Boolean(error && typeof error === 'object' && (error as { name?: string }).name === 'ZodError' && Array.isArray((error as { issues?: unknown }).issues))
+
+const formatZodError = (error: z.ZodError): AppError => {
+  const issue = error.issues[0]
+  const path = issue?.path?.map(String).join('.') || 'input'
+  const code = String((issue as { code?: string } | undefined)?.code ?? '')
+  const format = String((issue as { format?: string } | undefined)?.format ?? '')
+  if (code === 'invalid_format' && format === 'uuid') {
+    if (path === 'projectId' || path.endsWith('.projectId')) {
+      return {
+        code: 'VALIDATION_INVALID_PROJECT_ID',
+        message: '项目标识无效或已失效。',
+        retryable: true,
+        userAction: '请从首页或工作区重新打开一个项目。'
+      }
+    }
+    return {
+      code: 'VALIDATION_INVALID_UUID',
+      message: `字段 ${path} 不是有效的标识。`,
+      retryable: true,
+      userAction: '刷新后重试，或重新打开项目。'
+    }
+  }
+  return {
+    code: 'VALIDATION_FAILED',
+    message: path === 'input' ? '请求参数不合法。' : `请求参数不合法（${path}）。`,
+    retryable: true,
+    userAction: '检查输入后重试。'
+  }
+}
+
 const asError = (error: unknown): AppError => error instanceof DomainError
   ? { code: error.code, message: error.message, retryable: error.retryable, userAction: error.userAction }
   : error instanceof ToolExecutionError
     ? { code: error.code, message: error.message, retryable: error.retryable, userAction: error.userAction }
+  : isZodError(error)
+    ? formatZodError(error)
   : error instanceof Error && error.message === 'Database is in read-only recovery mode'
     ? { code: 'APP_RECOVERY_MODE', message: '数据库处于只读恢复模式。', retryable: false, userAction: '检查迁移备份并恢复数据库后再写入。' }
   : { code: 'APP_UNEXPECTED', message: error instanceof Error ? error.message : '发生未知错误。', retryable: false, userAction: '重试；若问题持续，请查看本地日志。' }
@@ -472,8 +517,13 @@ function hidePetForOneHour(): PetWindowState {
 }
 
 function cancelTimedPetHide(): PetWindowState {
-  const settings = savePetSettings({ visible: true, hiddenUntil: undefined })
-  applyPetSettings(settings)
+  const current = requiredServices().database.getSettings().pet
+  const { hiddenUntil: _ignored, ...rest } = current
+  // 先去掉限时字段再 parse，确保设置与前端状态真正清除
+  const cleared = petSettingsSchema.parse({ ...rest, visible: true })
+  requiredServices().database.updateSettings({ pet: cleared })
+  schedulePetHiddenTimer()
+  applyPetSettings(cleared)
   return emitPetWindowState()
 }
 
@@ -517,7 +567,8 @@ function normalizePetGrowthStage(value: number): PetGrowthStage {
 }
 
 function currentPetState(): PetWindowState {
-  const settings = requiredServices().database.getSettings().pet
+  const appSettings = requiredServices().database.getSettings()
+  const settings = appSettings.pet
   const customAssetUrl = petCustomAssetUrl(settings, petAssetsDirectory())
   const summary = requiredServices().database.getLearnerSummary('local-user')
   const growthStage = normalizePetGrowthStage(summary.growthStage)
@@ -527,6 +578,7 @@ function currentPetState(): PetWindowState {
     ignoreMouseEvents: settings.ignoreMouseEvents,
     growthStage,
     progress: petProgressForLearnerSummary(summary),
+    theme: appSettings.theme,
     ...(customAssetUrl ? { customAssetUrl } : {})
   }
 }
@@ -541,11 +593,63 @@ function emitPetWindowState(): PetWindowState {
 function savePetSettings(patch: Partial<PetSettings>): PetSettings {
   const { database } = requiredServices()
   const current = database.getSettings().pet
-  const settings = petSettingsSchema.parse({ ...current, ...patch })
+  const next: PetSettings = {
+    ...current,
+    assetMode: current.assetMode,
+    customAssets: [...(current.customAssets ?? [])],
+    scale: current.scale,
+    visible: current.visible,
+    ignoreMouseEvents: current.ignoreMouseEvents,
+    bubbleEnabled: current.bubbleEnabled ?? true,
+    frameEnabled: current.frameEnabled ?? true,
+    progressBarEnabled: current.progressBarEnabled ?? true,
+    edgeDockEnabled: current.edgeDockEnabled ?? true,
+    docked: current.docked ?? false,
+    focusModeEnabled: current.focusModeEnabled,
+    launchAtLogin: current.launchAtLogin
+  }
+  if (current.activeCustomAssetId) next.activeCustomAssetId = current.activeCustomAssetId
+  if (current.hiddenUntil) next.hiddenUntil = current.hiddenUntil
+  if (typeof current.x === 'number') next.x = current.x
+  if (typeof current.y === 'number') next.y = current.y
+  if (typeof current.undockedX === 'number') next.undockedX = current.undockedX
+  if (typeof current.undockedY === 'number') next.undockedY = current.undockedY
+  if (typeof current.undockedScale === 'number') next.undockedScale = current.undockedScale
+
+  for (const key of Object.keys(patch) as Array<keyof PetSettings>) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) continue
+    const value = patch[key]
+    if (key === 'hiddenUntil' && value === undefined) {
+      delete next.hiddenUntil
+      continue
+    }
+    if (key === 'activeCustomAssetId' && value === undefined) {
+      delete next.activeCustomAssetId
+      continue
+    }
+    if (value !== undefined) (next as Record<string, unknown>)[key as string] = value
+  }
+
+  // 形象字段硬保护：未在 patch 中显式修改则绝不改写
+  if (!Object.prototype.hasOwnProperty.call(patch, 'assetMode')) next.assetMode = current.assetMode
+  if (!Object.prototype.hasOwnProperty.call(patch, 'customAssets')) next.customAssets = [...(current.customAssets ?? [])]
+  if (!Object.prototype.hasOwnProperty.call(patch, 'activeCustomAssetId')) {
+    if (current.activeCustomAssetId) next.activeCustomAssetId = current.activeCustomAssetId
+    else delete next.activeCustomAssetId
+  }
+
+  const settings = petSettingsSchema.parse(next)
+  if (!Object.prototype.hasOwnProperty.call(patch, 'assetMode')) settings.assetMode = current.assetMode
+  if (!Object.prototype.hasOwnProperty.call(patch, 'customAssets')) settings.customAssets = [...(current.customAssets ?? [])]
+  if (!Object.prototype.hasOwnProperty.call(patch, 'activeCustomAssetId')) {
+    if (current.activeCustomAssetId) settings.activeCustomAssetId = current.activeCustomAssetId
+    else delete settings.activeCustomAssetId
+  }
+
   if (typeof patch.launchAtLogin === 'boolean') setSystemLaunchAtLogin(patch.launchAtLogin)
   database.updateSettings({ pet: settings })
   schedulePetHiddenTimer()
-  return settings
+  return database.getSettings().pet
 }
 
 function petRendererUrl(): string | undefined {
@@ -575,20 +679,37 @@ function createPetWindow(): BrowserWindow {
     preloadPath: join(__dirname, '../preload/index.cjs')
   }))
   petWindow = window
+  // 再强制一次：独立悬浮助教，不进任务栏，并尽量压在最上层
+  window.setSkipTaskbar(true)
+  window.setAlwaysOnTop(true, 'screen-saver')
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   window.setIgnoreMouseEvents(settings.ignoreMouseEvents, { forward: true })
   window.webContents.setWindowOpenHandler(({ url }) => { if (/^https:\/\//.test(url)) void shell.openExternal(url); return { action: 'deny' } })
   window.webContents.on('will-navigate', event => event.preventDefault())
   window.once('ready-to-show', () => {
+    if (window.isDestroyed()) return
+    window.setSkipTaskbar(true)
+    window.setAlwaysOnTop(true, 'screen-saver')
     const readySettings = requiredServices().database.getSettings().pet
-    if (!window.isDestroyed() && readySettings.visible && !petHiddenActive(readySettings)) window.show()
+    if (readySettings.visible && !petHiddenActive(readySettings)) {
+      // show() 比 showInactive 更可靠；再强制一次 skipTaskbar，避免任务栏残留
+      window.show()
+      window.setSkipTaskbar(true)
+    }
     emitPetWindowState()
   })
   window.on('hide', () => {
-    savePetSettings({ visible: false })
+    // applyPetSettings 内部 hide/show 不写库，避免开关装饰项时连带改写 pet 整包状态
+    if (!applyingPetSettings && !shutdownStarted && requiredServices().database.getSettings().pet.visible) {
+      savePetSettings({ visible: false })
+    }
     emitPetWindowState()
   })
   window.on('show', () => {
-    savePetSettings({ visible: true, hiddenUntil: undefined })
+    if (!applyingPetSettings) {
+      const pet = requiredServices().database.getSettings().pet
+      if (!pet.visible || pet.hiddenUntil) savePetSettings({ visible: true, hiddenUntil: undefined })
+    }
     emitPetWindowState()
   })
   window.on('close', event => {
@@ -604,15 +725,52 @@ function createPetWindow(): BrowserWindow {
 }
 
 function applyPetSettings(settings: PetSettings): void {
-  const window = createPetWindow()
-  const current = window.getBounds()
-  const anchored = { ...settings, x: current.x, y: current.y }
-  const workArea = workAreaForPetSettings(anchored, screen.getAllDisplays().map(display => display.workArea), screen.getDisplayMatching(current).workArea)
-  const bounds = petWindowBoundsForSettings(anchored, workArea)
-  window.setBounds(bounds)
-  window.setIgnoreMouseEvents(settings.ignoreMouseEvents, { forward: true })
-  if (settings.visible && !petHiddenActive(settings)) window.show()
-  else window.hide()
+  applyingPetSettings = true
+  try {
+    const window = createPetWindow()
+    const current = window.getBounds()
+    const workAreas = screen.getAllDisplays().map(display => display.workArea)
+    const workArea = workAreaForPetSettings(
+      { ...settings, x: current.x, y: current.y },
+      workAreas,
+      screen.getDisplayMatching(current).workArea
+    )
+    const bounds = petWindowBoundsForSettings(
+      {
+        ...settings,
+        x: Number.isFinite(settings.x) ? settings.x : undefined,
+        y: Number.isFinite(settings.y) ? settings.y : undefined
+      },
+      workArea
+    )
+    window.setBounds(bounds)
+    window.setSkipTaskbar(true)
+    window.setAlwaysOnTop(true, 'screen-saver')
+    window.setIgnoreMouseEvents(settings.ignoreMouseEvents, { forward: true })
+    if (settings.visible && !petHiddenActive(settings)) {
+      window.show()
+      window.setSkipTaskbar(true)
+    } else {
+      window.hide()
+    }
+  } finally {
+    applyingPetSettings = false
+  }
+}
+
+/** 强制把桌宠拉回可见位置（开发/恢复用） */
+function forceShowPetCompanion(): PetWindowState {
+  const workArea = screen.getPrimaryDisplay().workArea
+  const settings = savePetSettings({
+    visible: true,
+    hiddenUntil: undefined,
+    ignoreMouseEvents: false,
+    // 清掉可能跑飞的坐标，重新锚到右下角
+    x: workArea.x + workArea.width - Math.round(200 * Math.min(Math.max(requiredServices().database.getSettings().pet.scale, 0.5), 2)) - 28,
+    y: workArea.y + workArea.height - Math.round(280 * Math.min(Math.max(requiredServices().database.getSettings().pet.scale, 0.5), 2)) - 28
+  })
+  applyPetSettings(settings)
+  return emitPetWindowState()
 }
 
 function movePetWindow(delta: { deltaX: number; deltaY: number }): PetWindowState {
@@ -626,14 +784,79 @@ function movePetWindow(delta: { deltaX: number; deltaY: number }): PetWindowStat
 
 function dragPetWindow(input: PetDragWindowRequest): PetWindowState {
   const window = createPetWindow()
+  const currentSettings = requiredServices().database.getSettings().pet
+  // 拖拽中若已是吸附态，先按正常尺寸跟随指针
+  const initial = currentSettings.docked
+    ? (() => {
+        const scale = Math.min(Math.max(currentSettings.undockedScale ?? currentSettings.scale, 0.5), 2)
+        const width = Math.round(240 * scale)
+        const height = Math.round(420 * scale)
+        const cx = input.initialBounds.x + input.initialBounds.width / 2
+        const cy = input.initialBounds.y + input.initialBounds.height / 2
+        return {
+          x: Math.round(cx - width / 2),
+          y: Math.round(cy - height / 2),
+          width,
+          height
+        }
+      })()
+    : input.initialBounds
   const next = dragPetWindowBounds(
-    input.initialBounds,
+    initial,
     { screenX: input.pointerStartScreenX, screenY: input.pointerStartScreenY },
     { screenX: input.pointerCurrentScreenX, screenY: input.pointerCurrentScreenY },
     screen.getAllDisplays().map(display => display.workArea)
   )
   window.setBounds(next)
-  savePetSettings({ x: next.x, y: next.y })
+  savePetSettings({ x: next.x, y: next.y, docked: false })
+  return emitPetWindowState()
+}
+
+function finalizePetDockFromBounds(): PetWindowState {
+  const window = createPetWindow()
+  const current = window.getBounds()
+  const settings = requiredServices().database.getSettings().pet
+  if (settings.edgeDockEnabled === false) {
+    savePetSettings({ x: current.x, y: current.y, docked: false })
+    return emitPetWindowState()
+  }
+  const workArea = screen.getDisplayMatching(current).workArea
+  const edge = detectPetDockEdge(current, workArea)
+  if (!edge) {
+    savePetSettings({ x: current.x, y: current.y, docked: false })
+    return emitPetWindowState()
+  }
+  const docked = dockedPetBounds(edge, workArea, current)
+  window.setBounds(docked)
+  savePetSettings({
+    x: docked.x,
+    y: docked.y,
+    docked: true,
+    undockedX: current.x,
+    undockedY: current.y,
+    undockedScale: settings.scale
+  })
+  return emitPetWindowState()
+}
+
+function undockPetCompanion(): PetWindowState {
+  const settings = requiredServices().database.getSettings().pet
+  const workArea = screen.getPrimaryDisplay().workArea
+  const scale = Math.min(Math.max(settings.undockedScale ?? settings.scale, 0.5), 2)
+  const next = petWindowBoundsForSettings({
+    ...settings,
+    docked: false,
+    scale,
+    x: settings.undockedX ?? settings.x,
+    y: settings.undockedY ?? settings.y
+  }, workArea)
+  const restored = savePetSettings({
+    docked: false,
+    scale,
+    x: next.x,
+    y: next.y
+  })
+  applyPetSettings(restored)
   return emitPetWindowState()
 }
 function screenshotRendererUrl(): string | undefined {
@@ -926,7 +1149,7 @@ async function submitPetChat(input: { message: string }): Promise<PetChatResult>
   const message = input.message.trim()
   const { database } = requiredServices()
   const { agentHost } = requiredAgentServices()
-  const projectId = database.getSettings().lastProjectId ?? database.listProjects()[0]?.id
+  const projectId = resolveProjectId()
   const conversation = projectId ? requiredConversationService().getOrCreateActiveConversation({ projectId }) : undefined
   const exchange = projectId && conversation
     ? requiredConversationService().beginAgentTask({ projectId, conversationId: conversation.id, message, mode: 'chat' })
@@ -958,14 +1181,37 @@ async function submitPetChat(input: { message: string }): Promise<PetChatResult>
 function registerIpc(): void {
   const empty = z.undefined().or(z.null())
   handlePet(ipc.petGetState, empty, () => { createPetWindow(); return currentPetState() })
-  handlePet(ipc.petUpdateSettings, petSettingsPatchSchema, input => { const settings = savePetSettings(input as Partial<PetSettings>); applyPetSettings(settings); return emitPetWindowState() })
-  handlePet(ipc.petShow, empty, () => { const settings = savePetSettings({ visible: true, hiddenUntil: undefined }); applyPetSettings(settings); return emitPetWindowState() })
-  handlePet(ipc.petHide, empty, () => { const settings = savePetSettings({ visible: false }); applyPetSettings(settings); return emitPetWindowState() })
+  handlePet(ipc.petUpdateSettings, petSettingsPatchSchema, input => {
+    const patch = input as Partial<PetSettings>
+    const settings = savePetSettings(patch)
+    const needsWindowApply = (
+      Object.prototype.hasOwnProperty.call(patch, 'scale')
+      || Object.prototype.hasOwnProperty.call(patch, 'visible')
+      || Object.prototype.hasOwnProperty.call(patch, 'ignoreMouseEvents')
+      || Object.prototype.hasOwnProperty.call(patch, 'docked')
+      || Object.prototype.hasOwnProperty.call(patch, 'edgeDockEnabled')
+      || Object.prototype.hasOwnProperty.call(patch, 'x')
+      || Object.prototype.hasOwnProperty.call(patch, 'y')
+    )
+    if (needsWindowApply) applyPetSettings(settings)
+    return emitPetWindowState()
+  })
+  handlePet(ipc.petShow, empty, () => forceShowPetCompanion())
+  handlePet(ipc.petHide, empty, () => { const settings = savePetSettings({ visible: false, hiddenUntil: undefined }); applyPetSettings(settings); return emitPetWindowState() })
   handlePet(ipc.petToggle, empty, () => togglePetVisibility())
   handlePet(ipc.petMove, z.object({ deltaX: z.number(), deltaY: z.number() }).strict(), input => movePetWindow(input))
   handlePet(ipc.petDrag, petDragWindowRequestSchema, input => dragPetWindow(input))
+  handlePet(ipc.petDragEnd, empty, () => finalizePetDockFromBounds())
+  handlePet(ipc.petUndock, empty, () => undockPetCompanion())
   handlePet(ipc.petSetIgnoreMouseEvents, z.object({ ignoreMouseEvents: z.boolean() }).strict(), input => { const settings = savePetSettings({ ignoreMouseEvents: input.ignoreMouseEvents }); applyPetSettings(settings); return emitPetWindowState() })
-  handlePet(ipc.petOpenMain, empty, () => { focusMainWindow() })
+  handlePet(ipc.petOpenMain, empty, () => {
+    const projectId = resolveProjectId()
+    if (projectId) sendAppNavigation(`/workspace/${projectId}`, { agent: '1' })
+    else {
+      focusMainWindow()
+      sendAppNavigation('/workspace', { agent: '1' })
+    }
+  })
   handlePet(ipc.petShowContextMenu, empty, () => { showPetContextMenu() })
   handlePet(ipc.petSelectCustomAsset, petCustomAssetCreateInputSchema, input => selectCustomPetAsset(input))
   handlePet(ipc.petResetCustomAsset, empty, () => resetCustomPetAsset())
@@ -986,7 +1232,7 @@ function registerIpc(): void {
   handle(ipc.settingsGet, empty, () => requiredServices().database.getSettings())
   handle(ipc.settingsUpdate, z.object({
     theme: z.enum(['system', 'light', 'dark']).optional(),
-    lastProjectId: z.string().optional(),
+    lastProjectId: z.preprocess(value => (value === '' || value === null ? undefined : value), z.string().uuid().optional()),
     sidebarWidth: z.number().min(180).max(480).optional(),
     inspectorWidth: z.number().min(220).max(480).optional(),
     bottomPanelHeight: z.number().min(120).max(560).optional(),
@@ -997,12 +1243,15 @@ function registerIpc(): void {
     onboardingReminderDismissed: z.boolean().optional(),
     productTourStatus: z.enum(['pending', 'in-progress', 'completed', 'dismissed']).optional(),
     productTourStep: z.number().int().min(0).max(5).optional(),
-    productTourWelcomeSeen: z.boolean().optional()
+    productTourWelcomeSeen: z.boolean().optional(),
+    agentApprovalMode: z.enum(['always', 'on-risk', 'full']).optional()
   }), input => {
     const { database } = requiredServices()
     const settings = database.updateSettings(input as Partial<AppSettings>)
     nativeTheme.themeSource = settings.theme
     applyWindowChrome(settings.theme)
+    // 主题变更同步到桌宠窗口
+    if (input.theme) emitPetWindowState()
     return settings
   })
   handle(ipc.workspaceSelect, empty, async () => { const result = await dialog.showOpenDialog({ title: '选择学习工作区', properties: ['openDirectory', 'createDirectory'] }); if (result.canceled || !result.filePaths[0]) return null; return requiredServices().workspaceService.registerWorkspace(result.filePaths[0]) })
@@ -1015,7 +1264,7 @@ function registerIpc(): void {
   handle(ipc.projectImportPreview, empty, async () => { const result = await dialog.showOpenDialog({ title: '导入已有 C++ 项目', properties: ['openDirectory'] }); if (result.canceled || !result.filePaths[0]) return null; return requiredServices().workspaceService.previewImport(result.filePaths[0]) })
   handle(ipc.projectImport, z.object({ draftId: z.string().uuid() }), input => requiredServices().workspaceService.commitDraft(input.draftId))
   handle(ipc.projectList, z.object({ workspaceId: z.string().uuid().optional() }).optional(), input => requiredServices().database.listProjects(input?.workspaceId))
-  handle(ipc.projectOpen, z.object({ projectId: z.string().uuid() }), input => { const { database, workspaceService } = requiredServices(); const project = database.touchProject(input.projectId); stopWatching?.(); stopWatching = workspaceService.watchProject(project.id, event => mainWindow?.webContents.send(ipc.workspaceChanged, event)); return project })
+  handle(ipc.projectOpen, z.object({ projectId: z.string().uuid() }), input => { const { database, workspaceService } = requiredServices(); const project = database.touchProject(input.projectId); database.updateSettings({ lastProjectId: project.id }); stopWatching?.(); stopWatching = workspaceService.watchProject(project.id, event => mainWindow?.webContents.send(ipc.workspaceChanged, event)); return project })
   handle(ipc.projectRename, z.object({ projectId: z.string().uuid(), name: z.string().min(1).max(80) }), input => requiredServices().workspaceService.renameProject(input.projectId, input.name))
   handle(ipc.projectRemove, z.object({ projectId: z.string().uuid(), deleteFiles: z.boolean() }), async input => {
     if (input.deleteFiles) {
@@ -1648,16 +1897,23 @@ function registerIpc(): void {
   handle(ipc.learningUpdateKnowledge, z.object({
     userId: z.string().min(1).max(100).default('local-user'),
     conceptId: z.string().min(1).max(100),
-    status: knowledgeStatusSchema
+    status: knowledgeStatusSchema,
+    unlockPath: z.boolean().optional()
   }), input => {
     if (input.status === 'verified') throw new DomainError('LEARNING_VERIFICATION_REQUIRED', '已验证状态只能由工具证据产生。', '先完成编译、测试或复习验证。')
     const now = new Date().toISOString()
     const { database } = requiredServices()
     try {
-      const state = transitionKnowledge(input.userId, builtInKnowledge, database.listLearnerKnowledge(input.userId), input.conceptId, input.status, now)
+      const current = database.listLearnerKnowledge(input.userId)
+      if (input.unlockPath && (input.status === 'learning' || input.status === 'self-claimed')) {
+        const pathStates = unlockKnowledgePath(input.userId, builtInKnowledge, current, input.conceptId, input.status, now)
+        const saved = pathStates.map(state => database.upsertLearnerKnowledge({ ...state, lastEvidenceId: `user:${randomUUID()}` }))
+        return saved
+      }
+      const state = transitionKnowledge(input.userId, builtInKnowledge, current, input.conceptId, input.status, now)
       return database.upsertLearnerKnowledge({ ...state, lastEvidenceId: `user:${randomUUID()}` })
     } catch (error) {
-      throw new DomainError('KNOWLEDGE_PREREQUISITE_REQUIRED', error instanceof Error ? error.message : String(error), '先完成知识树中标出的前置节点。')
+      throw new DomainError('KNOWLEDGE_PREREQUISITE_REQUIRED', error instanceof Error ? error.message : String(error), '可使用“点亮到此”自动补齐前置节点。')
     }
   })
   handle(ipc.learningErrors, z.object({
@@ -1830,6 +2086,8 @@ app.whenReady().then(async () => {
   registerIpc()
   createWindow()
   createPetWindow()
+  // 启动时强制拉起桌宠，避免历史隐藏状态/越界坐标导致“看不见”
+  forceShowPetCompanion()
   createAppTray()
   registerShortcuts()
   nativeTheme.on('updated', () => applyWindowChrome())

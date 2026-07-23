@@ -19,6 +19,7 @@ const settings: AppSettings = {
   productTourStatus: 'completed',
   productTourStep: 5,
   productTourWelcomeSeen: true,
+    agentApprovalMode: 'on-risk',
   pet: {
     visible: true,
     assetMode: 'custom',
@@ -67,7 +68,11 @@ describe('SettingsView pet settings', () => {
     expect(html).not.toContain('成长形象')
     expect(html).not.toContain('光标形象')
     expect(html).toContain('隐藏一小时')
-    expect(html).toContain('取消隐藏')
+    expect(html).toContain('恢复显示')
+    expect(html).toContain('Agent 权限')
+    expect(html).toContain('请求批准')
+    expect(html).toContain('替我审批')
+    expect(html).toContain('完全访问权限')
     expect(html).toContain('专注模式')
     expect(html).toContain('开机启动')
   })

@@ -96,7 +96,7 @@ describe('DesktopPet', () => {
 
     expect(html).toContain('src="cpppilot-pet-asset://asset/my-cat.gif?v=2026-07-20T10%3A00%3A00.000Z"')
     expect(html).toContain('alt="我的猫"')
-    expect(html).toContain('class="pet-chat-popover"')
+    expect(html).toContain('class="pet-chat-card"')
     expect(html).toContain('已发送，回答可在主窗口查看')
   })
 })

@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { BookOpenCheck, CircleHelp, Sparkles } from 'lucide-vue-next'
 import type { BackgroundStartingPoint } from '@cpp-pet/contracts'
 import { useAgentStore } from '../stores/agent'
+import tutorMarkUrl from '../assets/logo.png'
 
 const props = defineProps<{ modelValue: boolean; required?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean]; saved: [] }>()
@@ -75,7 +76,7 @@ watch(() => props.modelValue, value => { if (value) syncProfile() })
 <template>
   <el-dialog
     :model-value="modelValue"
-    width="760"
+    width="780"
     class="background-profile-dialog"
     :close-on-click-modal="false"
     :show-close="!required"
@@ -83,7 +84,16 @@ watch(() => props.modelValue, value => { if (value) syncProfile() })
     @update:model-value="updateVisible"
   >
     <template #header>
-      <div class="dialog-title"><strong>先了解一下你的 C++ 背景</strong><span>这些信息只用于调整助教的解释方式，不代表掌握程度，也不会触发测验。</span></div>
+      <div class="background-profile-hero">
+        <div class="background-profile-mascot" aria-hidden="true">
+          <img :src="tutorMarkUrl" alt="" />
+        </div>
+        <div class="background-profile-hero-copy">
+          <p class="background-profile-kicker">CppPilot 助教</p>
+          <h2>让 CppPilot 助教先了解一下你的情况</h2>
+          <p>选一下你的起点就好。这些信息只用来调整讲解方式，不代表掌握程度，也不会触发测验。</p>
+        </div>
+      </div>
     </template>
     <div class="background-profile-form">
       <button :class="['background-choice', { active: startingPoint === 'zero-beginner' }]" type="button" @click="startingPoint = 'zero-beginner'">

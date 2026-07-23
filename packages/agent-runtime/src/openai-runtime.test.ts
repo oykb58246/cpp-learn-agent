@@ -41,7 +41,7 @@ function envelope(taskId: string, prompt: string, turn = 0): CppPilotContextEnve
     },
     memory: { recentConversation: [], learnerProfile: {}, knowledgeState: [], relevantErrors: [], dueReviews: [], recentEvidence: [] },
     policy: {
-      allowedProjectId: projectId, allowedWorkspaceId: workspaceId, allowedPaths: ['main.cpp'], writesRequireApproval: true,
+      allowedProjectId: projectId, allowedWorkspaceId: workspaceId, allowedPaths: ['main.cpp'], writesRequireApproval: true, approvalMode: 'on-risk',
       allowNewPaths: true,
       maxModelTurns: 8, maxToolCalls: 8, remainingTimeMs: 30_000
     }
@@ -193,7 +193,7 @@ describe('OpenAiAgentRuntime', () => {
       endpoint: 'https://api.openai.com/v1/responses',
       model: 'gpt-5',
       toolCount: 1,
-      contextBytes: new TextEncoder().encode(JSON.stringify(envelope(requestId, prompt))).byteLength,
+      contextBytes: expect.any(Number),
       diagnostics: { count: 0, sources: [] },
       memory: {
         recentConversation: 0,

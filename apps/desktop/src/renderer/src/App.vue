@@ -71,9 +71,8 @@ async function updateRailIndicator(animated = true) {
       indicatorMoving.value = false
       moveTimer = undefined
     }, INDICATOR_MOVE_MS)
-  } else {
-    indicatorMoving.value = false
   }
+  // 动画进行中的二次校准只更新位置，不强制关掉 moving（否则竖线“气泡”动效会被掐掉）
 
   indicator.value = next
 }
@@ -120,11 +119,24 @@ onBeforeUnmount(() => {
   if (moveTimer) clearTimeout(moveTimer)
 })
 
-watch(() => route.path, () => { void updateRailIndicator(true) })
+watch(() => route.fullPath, async () => {
+  await nextTick()
+  await updateRailIndicator(true)
+  // 仅补测坐标，保留 moving 状态以完成滑块/竖线动画
+  requestAnimationFrame(() => {
+    const root = railTrackEl.value
+    const active = root?.querySelector<HTMLElement>('.rail-button.active')
+    if (!active) return
+    indicator.value = {
+      top: active.offsetTop,
+      height: active.offsetHeight,
+      visible: true
+    }
+  })
+})
 watch(() => route.path, () => { void checkBackgroundDialog() })
 watch(railExpanded, async () => {
   await nextTick()
-  // 展开宽度变化后再量一次，避免指示器尺寸错位
   requestAnimationFrame(() => { void updateRailIndicator(false) })
 })
 
@@ -135,6 +147,11 @@ const primaryNav = [
   { to: '/practice', label: '练习', icon: Dumbbell },
   { to: '/runs', label: '助教记录', icon: Workflow }
 ]
+
+function isRailNavActive(to: string) {
+  // 精确匹配段前缀，避免工作区路由下指示器丢失或误匹配
+  return route.path === to || route.path.startsWith(`${to}/`)
+}
 const settingsNav = { to: '/settings', label: '设置', icon: Settings }
 const appTitle = 'CppPilot'
 const titleContext = computed(() => workspace.currentProject?.name
@@ -187,7 +204,7 @@ const indicatorStyle = computed(() => ({
           v-for="item in primaryNav"
           :key="item.to"
           :to="item.to"
-          :class="['rail-button', { active: route.path.startsWith(item.to) }]"
+          :class="['rail-button', { active: isRailNavActive(item.to) }]"
           :title="item.label"
         >
           <component :is="item.icon" :size="19" />
@@ -203,7 +220,7 @@ const indicatorStyle = computed(() => ({
 
         <router-link
           :to="settingsNav.to"
-          :class="['rail-button', { active: route.path.startsWith(settingsNav.to) }]"
+          :class="['rail-button', { active: isRailNavActive(settingsNav.to) }]"
           :title="settingsNav.label"
         >
           <component :is="settingsNav.icon" :size="19" />
@@ -219,9 +236,8 @@ const indicatorStyle = computed(() => ({
     <ProductTour :blocked="route.path === '/onboarding' || backgroundDialogVisible" />
     <BackgroundProfileDialog v-model="backgroundDialogVisible" required @saved="backgroundDialogVisible = false" />
     <footer class="statusbar">
-      <span><i class="status-dot" /> 数据库已连接</span>
-      <span v-if="appStore.bootstrap?.recoveryMode" class="danger">只读恢复模式</span>
-      <span>H2 · C++ Tools</span><span class="status-spacer" /><span>Windows</span><span>UTF-8</span>
+      <span v-if="appStore.bootstrap?.recoveryMode" class="danger"><i class="status-dot" /> 当前为只读恢复模式，请先检查数据后再继续学习</span>
+      <span v-else><i class="status-dot" /> CppPilot 已就绪，可以开始你的 C++ 学习之旅</span>
     </footer>
     <div v-if="appStore.error || workspace.error" class="error-toast">
       <strong>{{ (appStore.error || workspace.error)?.message }}</strong>

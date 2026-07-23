@@ -13,13 +13,18 @@ import type { PetCustomAsset, PetSettings } from '@cpp-pet/contracts'
 const directory = 'C:/Users/me/AppData/Roaming/CppPilot/pet-assets'
 const baseSettings = {
   visible: true,
-  assetMode: 'custom',
+  assetMode: 'custom' as const,
   scale: 1,
   ignoreMouseEvents: false,
   bubbleEnabled: true,
+  frameEnabled: true,
+  progressBarEnabled: true,
+  edgeDockEnabled: true,
+  docked: false,
   focusModeEnabled: false,
-  launchAtLogin: false
-} as const
+  launchAtLogin: false,
+  customAssets: [] as PetCustomAsset[]
+}
 const asset = (id: string, name: string, fileName: string, updatedAt = '2026-07-20T10:00:00.000Z'): PetCustomAsset => ({
   id,
   name,

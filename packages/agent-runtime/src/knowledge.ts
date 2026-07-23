@@ -173,6 +173,59 @@ export class KnowledgeGate {
   }
 }
 
+
+/** 目标节点自身 + 全部传递前置，拓扑顺序（先前置后目标） */
+export function collectKnowledgePath(nodes: KnowledgeNode[], conceptId: string): string[] {
+  const byId = new Map(nodes.map(node => [node.id, node]))
+  if (!byId.has(conceptId)) return []
+  const ordered: string[] = []
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const visit = (id: string): void => {
+    if (visited.has(id) || !byId.has(id)) return
+    if (visiting.has(id)) return
+    visiting.add(id)
+    for (const prerequisite of byId.get(id)?.prerequisites ?? []) visit(prerequisite)
+    visiting.delete(id)
+    visited.add(id)
+    ordered.push(id)
+  }
+  visit(conceptId)
+  return ordered
+}
+
+export function unlockKnowledgePath(
+  userId: string,
+  nodes: KnowledgeNode[],
+  states: LearnerKnowledge[],
+  conceptId: string,
+  targetStatus: Extract<LearnerKnowledge['status'], 'learning' | 'self-claimed'> = 'self-claimed',
+  now = new Date().toISOString()
+): LearnerKnowledge[] {
+  const path = collectKnowledgePath(nodes, conceptId)
+  if (!path.length) throw new Error(`未知知识节点：${conceptId}`)
+  let current = [...states]
+  const results: LearnerKnowledge[] = []
+  for (const id of path) {
+    const desired = id === conceptId ? targetStatus : 'self-claimed'
+    const existing = current.find(item => item.userId === userId && item.conceptId === id)
+    const active = existing && ['learning', 'self-claimed', 'verified', 'review'].includes(existing.status)
+    if (id !== conceptId && active) continue
+    if (id === conceptId && existing?.status === desired) {
+      results.push(existing)
+      continue
+    }
+    // 若已是 verified/review，点亮到 mastered 时不降级
+    if (id === conceptId && existing && ['verified', 'review'].includes(existing.status) && desired === 'self-claimed') {
+      results.push(existing)
+      continue
+    }
+    const next = transitionKnowledge(userId, nodes, current, id, desired, now)
+    current = [...current.filter(item => !(item.userId === userId && item.conceptId === id)), next]
+    results.push(next)
+  }
+  return results
+}
 export function transitionKnowledge(
   userId: string,
   nodes: KnowledgeNode[],

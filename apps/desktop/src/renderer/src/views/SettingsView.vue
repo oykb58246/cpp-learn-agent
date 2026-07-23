@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bot, CheckCircle2, Database, FolderRoot, ImagePlus, KeyRound, MonitorCog, Moon, MousePointer2, Play, Plus, RefreshCw, Save, Sparkles, Sun, Trash2, Wifi, WifiOff, Wrench } from 'lucide-vue-next'
+import { AlertTriangle, Bot, CheckCircle2, Database, FolderRoot, Hand, ImagePlus, KeyRound, MonitorCog, Moon, MousePointer2, Play, Plus, RefreshCw, Save, Shield, Sparkles, Sun, Trash2, Wifi, WifiOff, Wrench } from 'lucide-vue-next'
 import type {
   CursorStyle,
   PetAssetMode,
@@ -39,6 +39,7 @@ const sections = [
   { id: 'pet', label: '桌宠', hint: '素材与交互', icon: MousePointer2 },
   { id: 'toolchains', label: 'C++ 工具链', hint: '检测与绑定', icon: Wrench },
   { id: 'workspace', label: '工作区', hint: '授权目录', icon: FolderRoot },
+  { id: 'agent', label: 'Agent 权限', hint: '操作审批策略', icon: Shield },
   { id: 'models', label: '模型服务', hint: 'BYOK 与离线', icon: Bot },
   { id: 'data', label: '本地数据', hint: '数据库状态', icon: Database }
 ] as const
@@ -49,12 +50,15 @@ const modelForm = reactive({ id: '', name: 'OpenAI Compatible', baseUrl: 'https:
 const selectedModelId = ref('')
 const selectedModel = computed(() => agent.models.find(item => item.id === selectedModelId.value))
 const offlineMode = computed(() => !agent.models.some(item => item.enabled && item.apiKeyConfigured))
-const hiddenUntilText = computed(() => {
+const petTimedHideActive = computed(() => {
   const value = app.settings.pet.hiddenUntil
-  if (!value) return '未启用'
+  if (!value) return false
   const time = Date.parse(value)
-  if (!Number.isFinite(time) || time <= Date.now()) return '未启用'
-  return `隐藏至 ${new Date(time).toLocaleString()}`
+  return Number.isFinite(time) && time > Date.now()
+})
+const hiddenUntilText = computed(() => {
+  if (!petTimedHideActive.value || !app.settings.pet.hiddenUntil) return '当前未启用限时隐藏'
+  return `隐藏至 ${new Date(app.settings.pet.hiddenUntil).toLocaleString()}`
 })
 
 const cursorOptions: Array<{ id: CursorStyle; title: string; detail: string; preview?: string }> = [
@@ -79,8 +83,14 @@ function resolveTargetSection(): string | null {
   return null
 }
 
+let stopPetState: (() => void) | undefined
+
 onMounted(async () => {
   await Promise.all([loadBindings(), loadModels()])
+  // 与桌宠右键/托盘设置实时同步
+  stopPetState = window.cppPet.pet.onStateChanged(state => applyPetState(state))
+  const petState = await window.cppPet.pet.getState()
+  if (petState.ok) applyPetState(petState.data)
   await nextTick()
   setupSectionObserver()
   const target = resolveTargetSection()
@@ -88,6 +98,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  stopPetState?.()
   observer?.disconnect()
   observer = null
 })
@@ -283,9 +294,27 @@ function applyPetState(next: PetWindowState) {
 
 async function updatePetSettings(patch: Partial<typeof app.settings.pet>) {
   activeAction.value = 'pet:update'
+  // 先乐观更新本地，避免 UI 闪回默认形象
+  const previous = { ...app.settings.pet }
+  if (app.bootstrap) {
+    app.bootstrap.settings = {
+      ...app.bootstrap.settings,
+      pet: {
+        ...previous,
+        ...patch,
+        assetMode: patch.assetMode ?? previous.assetMode,
+        customAssets: Object.prototype.hasOwnProperty.call(patch, 'customAssets')
+          ? (patch.customAssets ?? [])
+          : previous.customAssets
+      }
+    }
+  }
   const result = await window.cppPet.pet.updateSettings(patch)
   if (result.ok) applyPetState(result.data)
-  else app.setError(result.error)
+  else {
+    if (app.bootstrap) app.bootstrap.settings = { ...app.bootstrap.settings, pet: previous }
+    app.setError(result.error)
+  }
   activeAction.value = ''
 }
 
@@ -511,11 +540,54 @@ function changePetScale(event: Event) {
           </div>
         </div>
         <div class="setting-row">
-          <span>隐藏一小时</span>
-          <div class="segmented compact">
-            <button :disabled="activeAction === 'pet:update' || Boolean(app.settings.pet.hiddenUntil && Date.parse(app.settings.pet.hiddenUntil) > Date.now())" @click="hidePetForOneHour">隐藏一小时</button>
-            <button :disabled="activeAction === 'pet:update' || !app.settings.pet.hiddenUntil" @click="cancelTimedPetHide">取消隐藏</button>
+          <div class="setting-copy">
+            <span>隐藏一小时</span>
             <small>{{ hiddenUntilText }}</small>
+          </div>
+          <div class="segmented compact">
+            <button
+              type="button"
+              :class="{ active: petTimedHideActive }"
+              :disabled="activeAction === 'pet:update' || petTimedHideActive"
+              @click="hidePetForOneHour"
+            >隐藏 1 小时</button>
+            <button
+              type="button"
+              :class="{ active: !petTimedHideActive }"
+              :disabled="activeAction === 'pet:update' || !petTimedHideActive"
+              @click="cancelTimedPetHide"
+            >恢复显示</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span>状态气泡</span>
+          <div class="segmented compact">
+            <button :class="{ active: app.settings.pet.bubbleEnabled !== false }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ bubbleEnabled: true })">显示</button>
+            <button :class="{ active: app.settings.pet.bubbleEnabled === false }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ bubbleEnabled: false })">隐藏</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span>旋转装饰框</span>
+          <div class="segmented compact">
+            <button :class="{ active: app.settings.pet.frameEnabled !== false }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ frameEnabled: true })">开启</button>
+            <button :class="{ active: app.settings.pet.frameEnabled === false }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ frameEnabled: false })">关闭</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span>等级进度条</span>
+          <div class="segmented compact">
+            <button :class="{ active: app.settings.pet.progressBarEnabled !== false }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ progressBarEnabled: true })">显示</button>
+            <button :class="{ active: app.settings.pet.progressBarEnabled === false }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ progressBarEnabled: false })">隐藏</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-copy">
+            <span>边缘吸附缩小</span>
+            <small>拖到屏幕边缘自动缩成小图标，单击还原。</small>
+          </div>
+          <div class="segmented compact">
+            <button :class="{ active: app.settings.pet.edgeDockEnabled !== false }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ edgeDockEnabled: true })">开启</button>
+            <button :class="{ active: app.settings.pet.edgeDockEnabled === false }" :disabled="activeAction === 'pet:update'" @click="updatePetSettings({ edgeDockEnabled: false, docked: false })">关闭</button>
           </div>
         </div>
         <div class="setting-row">
@@ -629,6 +701,62 @@ function changePetScale(event: Event) {
         <button class="secondary-command" @click="app.selectWorkspace">添加工作区</button>
       </section>
 
+
+      <section id="agent" class="settings-section">
+        <header>
+          <Shield :size="18" />
+          <div>
+            <h2>Agent 权限</h2>
+            <p>控制 Agent 在调用模型与执行本地操作时是否需要你确认。</p>
+          </div>
+        </header>
+
+        <div class="approval-mode-list" role="radiogroup" aria-label="Agent 审批模式">
+          <button
+            type="button"
+            role="radio"
+            class="approval-mode-card"
+            :class="{ active: (app.settings.agentApprovalMode ?? 'on-risk') === 'always' }"
+            :aria-checked="(app.settings.agentApprovalMode ?? 'on-risk') === 'always'"
+            @click="app.updateSettings({ agentApprovalMode: 'always' })"
+          >
+            <Hand :size="18" />
+            <div>
+              <strong>请求批准</strong>
+              <span>每次发送模型上下文、修改文件、编译运行前都会询问。</span>
+            </div>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            class="approval-mode-card"
+            :class="{ active: (app.settings.agentApprovalMode ?? 'on-risk') === 'on-risk' }"
+            :aria-checked="(app.settings.agentApprovalMode ?? 'on-risk') === 'on-risk'"
+            @click="app.updateSettings({ agentApprovalMode: 'on-risk' })"
+          >
+            <AlertTriangle :size="18" />
+            <div>
+              <strong>替我审批</strong>
+              <span>仅对发送上下文与高风险操作（写文件/补丁等）请求批准；只读查询自动执行。</span>
+            </div>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            class="approval-mode-card warn"
+            :class="{ active: (app.settings.agentApprovalMode ?? 'on-risk') === 'full' }"
+            :aria-checked="(app.settings.agentApprovalMode ?? 'on-risk') === 'full'"
+            @click="app.updateSettings({ agentApprovalMode: 'full' })"
+          >
+            <Shield :size="18" />
+            <div>
+              <strong>完全访问权限</strong>
+              <span>自动执行模型调用与本地工具，不再弹出审批。请仅在信任当前环境时使用。</span>
+            </div>
+          </button>
+        </div>
+        <p class="settings-footnote">默认「替我审批」。完全访问会跳过上下文发送与写操作确认。</p>
+      </section>
       <section id="models" class="settings-section model-settings-section">
         <header>
           <Bot :size="18" />

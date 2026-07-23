@@ -16,6 +16,7 @@ const baseSettings = (): AppSettings => ({
   productTourStatus: 'pending',
   productTourStep: 0,
   productTourWelcomeSeen: false,
+    agentApprovalMode: 'on-risk',
   pet: { visible: true, assetMode: 'cpppilot-logo', scale: 1, ignoreMouseEvents: false, bubbleEnabled: true, focusModeEnabled: false, launchAtLogin: false, customAssets: [] }
 })
 

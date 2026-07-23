@@ -97,6 +97,7 @@ export const cppPilotContextEnvelopeSchema = z.object({
     allowedPaths: z.array(z.string().min(1).max(1_024)).max(500),
     allowNewPaths: z.boolean(),
     writesRequireApproval: z.boolean(),
+    approvalMode: z.enum(['always', 'on-risk', 'full']).default('on-risk'),
     maxModelTurns: z.number().int().positive().max(50),
     maxToolCalls: z.number().int().positive().max(100),
     remainingTimeMs: z.number().int().nonnegative().max(300_000)

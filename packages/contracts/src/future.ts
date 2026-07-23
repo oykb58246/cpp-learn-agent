@@ -362,7 +362,7 @@ export type LearnerProfile = z.infer<typeof learnerProfileSchema>
 export const agentRequestSchema = z.object({
   requestId: z.string().uuid(), source: z.enum(['main', 'editor', 'pet', 'screenshot', 'system']),
   mode: z.enum(['environment', 'explain', 'diagnose', 'solve', 'project', 'review', 'edit', 'chat']), message: z.string(),
-  projectId: z.string().uuid().optional(), activeFile: z.string().optional(),
+  projectId: z.preprocess(value => (value === '' || value === null ? undefined : value), z.string().uuid().optional()), activeFile: z.string().optional(),
   selection: z.object({ startLine: z.number(), startColumn: z.number(), endLine: z.number(), endColumn: z.number() }).optional(),
   screenshotRef: z.string().optional()
 })
@@ -407,25 +407,60 @@ const petSettingsObjectSchema = z.object({
   scale: z.number().min(0.5).max(2).default(1),
   ignoreMouseEvents: z.boolean().default(false),
   bubbleEnabled: z.boolean().default(true),
+  frameEnabled: z.boolean().default(true),
+  progressBarEnabled: z.boolean().default(true),
+  edgeDockEnabled: z.boolean().default(true),
+  docked: z.boolean().default(false),
   focusModeEnabled: z.boolean().default(false),
   launchAtLogin: z.boolean().default(false),
   hiddenUntil: z.string().datetime().optional(),
   customAssets: z.array(petCustomAssetSchema).max(50).default([]),
   activeCustomAssetId: z.string().min(1).max(120).optional(),
   x: z.number().optional(),
-  y: z.number().optional()
-}).strict()
+  y: z.number().optional(),
+  undockedX: z.number().optional(),
+  undockedY: z.number().optional(),
+  undockedScale: z.number().min(0.5).max(2).optional()
+}).strip()
 export const petSettingsSchema = z.preprocess(normalizePetSettingsInput, petSettingsObjectSchema)
 export type PetSettings = z.infer<typeof petSettingsSchema>
-export const petSettingsPatchSchema = z.preprocess(normalizePetSettingsInput, petSettingsObjectSchema.partial().strict())
+// Patch must be truly partial: Zod .default() still fills omitted keys on .partial(),
+// which made frame/progress/asset toggles rewrite unrelated pet settings.
+const petSettingsPatchObjectSchema = z.object({
+  visible: z.boolean().optional(),
+  assetMode: petAssetModeSchema.optional(),
+  scale: z.number().min(0.5).max(2).optional(),
+  ignoreMouseEvents: z.boolean().optional(),
+  bubbleEnabled: z.boolean().optional(),
+  frameEnabled: z.boolean().optional(),
+  progressBarEnabled: z.boolean().optional(),
+  edgeDockEnabled: z.boolean().optional(),
+  docked: z.boolean().optional(),
+  focusModeEnabled: z.boolean().optional(),
+  launchAtLogin: z.boolean().optional(),
+  hiddenUntil: z.string().datetime().optional(),
+  customAssets: z.array(petCustomAssetSchema).max(50).optional(),
+  activeCustomAssetId: z.string().min(1).max(120).optional(),
+  x: z.number().optional(),
+  y: z.number().optional(),
+  undockedX: z.number().optional(),
+  undockedY: z.number().optional(),
+  undockedScale: z.number().min(0.5).max(2).optional()
+}).strip()
+export const petSettingsPatchSchema = z.preprocess(normalizePetSettingsInput, petSettingsPatchObjectSchema)
 export type PetSettingsPatch = z.infer<typeof petSettingsPatchSchema>
 
 function normalizePetSettingsInput(input: unknown): unknown {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return input
-  const raw = input as Record<string, unknown>
-  const assetMode = raw.assetMode === 'cpppilot-mascot' || raw.assetMode === 'cpppilot-cursor'
-    ? 'cpppilot-logo'
-    : raw.assetMode
+  const raw = { ...(input as Record<string, unknown>) }
+
+  // 仅在显式传入 assetMode 时规范化，避免 partial patch 覆盖成 undefined/默认值
+  if ('assetMode' in raw) {
+    raw.assetMode = raw.assetMode === 'cpppilot-mascot' || raw.assetMode === 'cpppilot-cursor'
+      ? 'cpppilot-logo'
+      : raw.assetMode
+  }
+
   const legacyPath = typeof raw.customAssetPath === 'string' ? raw.customAssetPath : ''
   const legacyName = typeof raw.customAssetName === 'string' && raw.customAssetName.trim()
     ? raw.customAssetName.trim()
@@ -436,33 +471,37 @@ function normalizePetSettingsInput(input: unknown): unknown {
   const legacyUpdatedAt = typeof raw.customAssetUpdatedAt === 'string'
     ? raw.customAssetUpdatedAt
     : new Date(0).toISOString()
-  const existingAssets = Array.isArray(raw.customAssets) ? raw.customAssets : []
-  const customAssets = existingAssets.length || !legacyPath || !legacyMime
-    ? existingAssets
-    : [{
-        id: `legacy-${legacyPath.replace(/[^a-zA-Z0-9]+/g, '-').slice(-72) || 'asset'}`,
-        name: legacyName,
-        path: legacyPath,
-        mime: legacyMime,
-        updatedAt: legacyUpdatedAt
-      }]
-  const firstCustomAsset = customAssets[0]
-  const activeCustomAssetId = typeof raw.activeCustomAssetId === 'string'
-    ? raw.activeCustomAssetId
-    : assetMode === 'custom' && firstCustomAsset && typeof (firstCustomAsset as { id?: unknown }).id === 'string'
-      ? (firstCustomAsset as { id: string }).id
-      : undefined
-  const normalized: Record<string, unknown> = {
-    ...raw,
-    assetMode,
-    customAssets,
-    ...(activeCustomAssetId ? { activeCustomAssetId } : {})
+
+  // 仅在已有 customAssets 字段或需要迁入 legacy 路径时处理，避免空数组冲掉已有素材
+  if (Array.isArray(raw.customAssets) || (legacyPath && legacyMime)) {
+    const existingAssets = Array.isArray(raw.customAssets) ? raw.customAssets : []
+    raw.customAssets = existingAssets.length || !legacyPath || !legacyMime
+      ? existingAssets
+      : [{
+          id: `legacy-${legacyPath.replace(/[^a-zA-Z0-9]+/g, '-').slice(-72) || 'asset'}`,
+          name: legacyName,
+          path: legacyPath,
+          mime: legacyMime,
+          updatedAt: legacyUpdatedAt
+        }]
+    const firstCustomAsset = (raw.customAssets as unknown[])[0]
+    if (
+      !('activeCustomAssetId' in raw)
+      && raw.assetMode === 'custom'
+      && firstCustomAsset
+      && typeof firstCustomAsset === 'object'
+      && firstCustomAsset
+      && typeof (firstCustomAsset as { id?: unknown }).id === 'string'
+    ) {
+      raw.activeCustomAssetId = (firstCustomAsset as { id: string }).id
+    }
   }
-  delete normalized.customAssetPath
-  delete normalized.customAssetName
-  delete normalized.customAssetMime
-  delete normalized.customAssetUpdatedAt
-  return normalized
+
+  delete raw.customAssetPath
+  delete raw.customAssetName
+  delete raw.customAssetMime
+  delete raw.customAssetUpdatedAt
+  return raw
 }
 
 const petWindowBoundsSchema = z.object({
@@ -500,6 +539,7 @@ export const petWindowStateSchema = z.object({
   ignoreMouseEvents: z.boolean(),
   growthStage: petGrowthStageSchema.default(1),
   progress: petProgressSchema,
+  theme: z.enum(['system', 'light', 'dark']).default('system'),
   customAssetUrl: z.string().max(2_048).optional()
 }).strict()
 export type PetWindowState = z.infer<typeof petWindowStateSchema>
@@ -510,7 +550,7 @@ export const petChatRequestSchema = z.object({
 export type PetChatRequest = z.infer<typeof petChatRequestSchema>
 export const petChatResultSchema = z.object({
   runId: z.string().uuid(),
-  projectId: z.string().uuid().optional(),
+  projectId: z.preprocess(value => (value === '' || value === null ? undefined : value), z.string().uuid().optional()),
   conversationId: z.string().uuid().optional(),
   assistantMessageId: z.string().uuid().optional()
 }).strict()
@@ -518,7 +558,7 @@ export type PetChatResult = z.infer<typeof petChatResultSchema>
 
 export const screenshotCaptureRequestSchema = z.object({
   message: z.string().min(1).max(20_000).refine(value => value.trim().length > 0, '截图问题不能为空。'),
-  projectId: z.string().uuid().optional(),
+  projectId: z.preprocess(value => (value === '' || value === null ? undefined : value), z.string().uuid().optional()),
   activeFile: z.string().max(1_024).optional(),
   conversationId: z.string().uuid().optional()
 }).strict()
@@ -538,7 +578,7 @@ export const screenshotCaptureSubmissionSchema = z.object({
   previewDataUrl: z.string().startsWith('data:image/').max(5_000_000),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
-  projectId: z.string().uuid().optional(),
+  projectId: z.preprocess(value => (value === '' || value === null ? undefined : value), z.string().uuid().optional()),
   activeFile: z.string().max(1_024).optional(),
   conversationId: z.string().uuid().optional()
 }).strict()
@@ -546,7 +586,7 @@ export type ScreenshotCaptureSubmission = z.infer<typeof screenshotCaptureSubmis
 
 export const screenshotSubmittedEventSchema = z.object({
   runId: z.string().uuid(),
-  projectId: z.string().uuid().optional(),
+  projectId: z.preprocess(value => (value === '' || value === null ? undefined : value), z.string().uuid().optional()),
   conversationId: z.string().uuid().optional()
 }).strict()
 export type ScreenshotSubmittedEvent = z.infer<typeof screenshotSubmittedEventSchema>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { PetAssetMode, PetDragWindowRequest, PetEvent, PetWindowState } from '@cpp-pet/contracts'
 import logoUrl from '../assets/logo.png'
 import catUrl from '../assets/cat.GIF'
@@ -17,6 +17,8 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   drag: [request: PetDragWindowRequest]
+  dragEnd: []
+  undock: []
   openMain: []
   quickChat: []
   closeChat: []
@@ -31,8 +33,18 @@ interface DragState extends PetDragSession {
 
 const dragState = ref<DragState | null>(null)
 const suppressClick = ref(false)
-const chatText = ref('')
+const CHAT_DRAFT_KEY = 'cpppilot.pet.quick-chat-draft'
+const chatText = ref((() => {
+  try { return localStorage.getItem(CHAT_DRAFT_KEY) ?? '' } catch { return '' }
+})())
+
+watch(chatText, value => {
+  try { localStorage.setItem(CHAT_DRAFT_KEY, value) } catch { /* ignore quota */ }
+})
 const imageFailed = ref(false)
+const hearts = ref<Array<{ id: number; left: number; delay: number; size: number }>>([])
+let heartTimer: ReturnType<typeof setInterval> | undefined
+let heartId = 0
 
 const builtInAssets: Record<Exclude<PetAssetMode, 'custom'>, { url: string; name: string; className: string }> = {
   'cpppilot-logo': { url: logoUrl, name: 'CppPilot Logo 桌宠', className: 'logo' },
@@ -73,14 +85,43 @@ const fallbackMessage = computed(() => {
     case 'approval': return '等待确认'
     case 'success': return '任务完成'
     case 'warning': return '需要处理'
-    case 'level-up': return '等级提升'
-    default: return 'CppPilot 待命'
+    case 'level-up': return '等级提升啦！'
+    default: return '我在这儿陪你写 C++～'
   }
 })
 const bubble = computed(() => props.state.settings.bubbleEnabled && !props.state.settings.focusModeEnabled ? (props.event?.message ?? fallbackMessage.value) : '')
 const dragging = computed(() => Boolean(dragState.value?.dragging))
+const isAnimatedAsset = computed(() => asset.value.className === 'cat')
 
 watch(() => [props.state.settings.assetMode, props.state.settings.activeCustomAssetId, props.state.customAssetUrl], () => { imageFailed.value = false })
+
+function spawnHearts() {
+  if (props.state.settings.focusModeEnabled || dragging.value || props.state.settings.docked) return
+  const burst = Array.from({ length: 3 + Math.floor(Math.random() * 3) }, () => {
+    heartId += 1
+    return {
+      id: heartId,
+      // 偏上：靠近头部区域冒出
+      left: 30 + Math.random() * 40,
+      delay: Math.random() * 0.25,
+      size: 10 + Math.random() * 8
+    }
+  })
+  hearts.value = burst
+  window.setTimeout(() => {
+    if (hearts.value[0]?.id === burst[0]?.id) hearts.value = []
+  }, 2200)
+}
+
+onMounted(() => {
+  heartTimer = setInterval(() => {
+    if (Math.random() > 0.45) spawnHearts()
+  }, 12_000 + Math.random() * 8_000)
+  window.setTimeout(() => spawnHearts(), 1800)
+})
+onBeforeUnmount(() => {
+  if (heartTimer) clearInterval(heartTimer)
+})
 
 function startDrag(event: PointerEvent) {
   dragState.value = {
@@ -112,8 +153,10 @@ function moveDrag(event: PointerEvent) {
 
 function endDrag(event: PointerEvent) {
   if (dragState.value?.pointerId === event.pointerId) {
+    const wasDragging = dragState.value.dragging
     ;(event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId)
     dragState.value = null
+    if (wasDragging) emit('dragEnd')
   }
 }
 
@@ -122,6 +165,15 @@ function handleClick(event: MouseEvent) {
     suppressClick.value = false
     event.preventDefault()
     event.stopPropagation()
+    return
+  }
+  if (props.state.settings.docked) {
+    emit('undock')
+    return
+  }
+  // 再次单击桌宠关闭速问面板；输入草稿保留
+  if (props.chatOpen) {
+    if (!props.chatBusy) emit('closeChat')
     return
   }
   emit('quickChat')
@@ -137,43 +189,88 @@ function submitChat() {
   if (!message || props.chatBusy) return
   emit('chatSubmit', message)
   chatText.value = ''
+  try { localStorage.removeItem(CHAT_DRAFT_KEY) } catch { /* ignore */ }
 }
 </script>
 
 <template>
   <section
-    :class="['desktop-pet', `state-${visualState}`, `pass-stage-${growthStage}`, { passthrough: state.ignoreMouseEvents, dragging, 'focus-mode': state.settings.focusModeEnabled }]"
+    :class="['desktop-pet', `state-${visualState}`, `pass-stage-${growthStage}`, {
+      passthrough: state.ignoreMouseEvents,
+      dragging,
+      'focus-mode': state.settings.focusModeEnabled,
+      'asset-animated': isAnimatedAsset,
+      docked: state.settings.docked,
+      'hide-frame': state.settings.frameEnabled === false,
+      'hide-progress': state.settings.progressBarEnabled === false
+    }]"
     @contextmenu="handleContextMenu"
   >
-    <p v-if="bubble" class="desktop-pet-bubble">{{ bubble }}</p>
-    <div class="desktop-pet-body">
-      <button
-        class="desktop-pet-button"
-        type="button"
-        :aria-label="asset.name"
-        @click="handleClick"
-        @pointerdown="startDrag"
-        @pointermove="moveDrag"
-        @pointerup="endDrag"
-        @pointercancel="endDrag"
-      >
-        <span :class="['pet-status-frame', `frame-${visualState}`]" aria-hidden="true"><i /><i /><i /></span>
-        <img :class="['desktop-pet-image', asset.className]" :src="asset.url" :alt="asset.name" draggable="false" @error="imageFailed = true" />
-      </button>
-      <div class="desktop-pet-progress" role="progressbar" :aria-label="progressLabel" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="progressPercent">
+    <div :class="['desktop-pet-body', { 'chat-open': chatOpen }]">
+      <!-- 速问面板固定在窗口顶部，与宠物分层，避免被形象盖住 -->
+      <form v-if="chatOpen" class="pet-chat-card" @submit.prevent="submitChat" @pointerdown.stop @click.stop>
+        <header class="pet-chat-card-header">
+          <div>
+            <strong>问 CppPilot</strong>
+            <span>{{ chatBusy ? '正在思考…' : '轻量速问，详细回答会同步到主窗口' }}</span>
+          </div>
+          <button type="button" class="pet-chat-close" title="关闭" @click="emit('closeChat')">×</button>
+        </header>
+        <div class="pet-chat-card-body">
+          <textarea
+            v-model="chatText"
+            rows="3"
+            maxlength="20000"
+            :disabled="chatBusy"
+            placeholder="例如：这段循环为什么会越界？"
+            @keydown.ctrl.enter="submitChat"
+          />
+          <div class="pet-chat-card-actions">
+            <button type="submit" class="pet-chat-primary" :disabled="chatBusy || !chatText.trim()">发送</button>
+            <button type="button" class="pet-chat-secondary" @click="emit('openMain')">打开工作区对话</button>
+          </div>
+          <small v-if="chatNotice" :class="{ busy: chatBusy }">{{ chatNotice }}</small>
+        </div>
+      </form>
+
+      <div class="desktop-pet-stage">
+        <div v-if="bubble && !chatOpen" class="desktop-pet-bubble" role="status">
+          <p>{{ bubble }}</p>
+          <i class="desktop-pet-bubble-tail" aria-hidden="true" />
+        </div>
+        <button
+          class="desktop-pet-button"
+          type="button"
+          :aria-label="asset.name"
+          @click="handleClick"
+          @pointerdown="startDrag"
+          @pointermove="moveDrag"
+          @pointerup="endDrag"
+          @pointercancel="endDrag"
+        >
+          <span class="pet-aura" aria-hidden="true" />
+          <span v-if="state.settings.frameEnabled !== false" :class="['pet-status-frame', `frame-${visualState}`]" aria-hidden="true">
+            <i /><i /><i /><i />
+          </span>
+          <span class="pet-avatar-wrap" aria-hidden="true">
+            <img :class="['desktop-pet-image', asset.className]" :src="asset.url" :alt="asset.name" draggable="false" @error="imageFailed = true" />
+            <span v-if="!isAnimatedAsset" class="pet-paw" />
+            <span class="pet-hearts" aria-hidden="true">
+              <i
+                v-for="item in hearts"
+                :key="item.id"
+                class="pet-heart"
+                :style="{ left: `${item.left}%`, animationDelay: `${item.delay}s`, fontSize: `${item.size}px` }"
+              >♥</i>
+            </span>
+          </span>
+        </button>
+      </div>
+      <div v-if="state.settings.progressBarEnabled !== false && !state.settings.docked" class="desktop-pet-progress" role="progressbar" :aria-label="progressLabel" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="progressPercent">
         <div class="desktop-pet-progress-meta"><span>{{ progressSummary.levelToken }}</span><b>{{ progressSummary.stageToken }}</b><em>{{ progressSummary.percentToken }}</em></div>
         <div class="desktop-pet-progress-track"><i :style="progressStyle" /></div>
       </div>
     </div>
-    <form v-if="chatOpen" class="pet-chat-popover" @submit.prevent="submitChat" @pointerdown.stop @click.stop>
-      <input v-model="chatText" maxlength="20000" :disabled="chatBusy" placeholder="问 CppPilot" />
-      <div class="pet-chat-actions">
-        <button type="submit" :disabled="chatBusy || !chatText.trim()">发送</button>
-        <button type="button" @click="emit('openMain')">主窗口</button>
-        <button type="button" @click="emit('closeChat')">关闭</button>
-      </div>
-      <small v-if="chatNotice">{{ chatNotice }}</small>
-    </form>
   </section>
 </template>
 

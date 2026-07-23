@@ -197,6 +197,7 @@ export interface DomainEvent<T = unknown> {
   eventId: string; type: string; version: 1; occurredAt: string
   actor: 'user' | 'system' | 'agent' | 'tool'; projectId?: string; payload: T
 }
+export type AgentApprovalMode = 'always' | 'on-risk' | 'full'
 export interface AppSettings {
   theme: ThemePreference
   lastProjectId?: string
@@ -217,6 +218,8 @@ export interface AppSettings {
   productTourStatus: 'pending' | 'in-progress' | 'completed' | 'dismissed'
   productTourStep: number
   productTourWelcomeSeen: boolean
+  /** Agent 操作审批：always=每次询问，on-risk=仅风险操作，full=完全自动 */
+  agentApprovalMode: AgentApprovalMode
   pet: PetSettings
 }
 export interface AppBootstrap {
@@ -343,7 +346,7 @@ export interface CppPetApi {
   learning: {
     catalog(): Promise<ApiResult<KnowledgeNode[]>>
     knowledge(input?: { userId?: string }): Promise<ApiResult<LearnerKnowledge[]>>
-    updateKnowledge(input: { userId?: string; conceptId: string; status: KnowledgeStatus }): Promise<ApiResult<LearnerKnowledge>>
+    updateKnowledge(input: { userId?: string; conceptId: string; status: KnowledgeStatus; unlockPath?: boolean }): Promise<ApiResult<LearnerKnowledge | LearnerKnowledge[]>>
     background(input?: { userId?: string }): Promise<ApiResult<BackgroundProfile | null>>
     saveBackground(input: BackgroundProfileInput & { userId?: string }): Promise<ApiResult<BackgroundProfile>>
     errors(input?: { userId?: string; status?: ErrorBookEntry['status'] }): Promise<ApiResult<ErrorBookEntry[]>>
@@ -376,6 +379,8 @@ export interface CppPetApi {
     toggle(): Promise<ApiResult<PetWindowState>>
     move(input: { deltaX: number; deltaY: number }): Promise<ApiResult<PetWindowState>>
     drag(input: PetDragWindowRequest): Promise<ApiResult<PetWindowState>>
+    dragEnd(): Promise<ApiResult<PetWindowState>>
+    undock(): Promise<ApiResult<PetWindowState>>
     setIgnoreMouseEvents(input: { ignoreMouseEvents: boolean }): Promise<ApiResult<PetWindowState>>
     openMain(): Promise<ApiResult<void>>
     showContextMenu(): Promise<ApiResult<void>>

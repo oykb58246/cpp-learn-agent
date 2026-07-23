@@ -23,7 +23,21 @@ export const useAppStore = defineStore('app', {
       productTourStatus: 'pending',
       productTourStep: 0,
       productTourWelcomeSeen: false,
-      pet: { visible: true, assetMode: 'cpppilot-logo', scale: 1, ignoreMouseEvents: false, bubbleEnabled: true, focusModeEnabled: false, launchAtLogin: false, customAssets: [] }
+      agentApprovalMode: 'on-risk',
+      pet: {
+        visible: true,
+        assetMode: 'cpppilot-logo',
+        scale: 1,
+        ignoreMouseEvents: false,
+        bubbleEnabled: true,
+        frameEnabled: true,
+        progressBarEnabled: true,
+        edgeDockEnabled: true,
+        docked: false,
+        focusModeEnabled: false,
+        launchAtLogin: false,
+        customAssets: []
+      }
     } as AppSettings),
     projects: state => state.bootstrap?.recentProjects ?? [],
     workspaces: state => state.bootstrap?.workspaces ?? []
@@ -68,10 +82,33 @@ export const useAppStore = defineStore('app', {
     async trustWorkspace(id: string): Promise<Workspace | null> { const result = await window.cppPet.workspace.setTrust({ workspaceId: id, trusted: true }); if (!result.ok) { this.error = result.error; return null } await this.refreshWorkspaces(); return result.data },
     applyPetWindowState(next: PetWindowState) {
       if (!this.bootstrap) return
-      this.bootstrap.settings = {
-        ...this.bootstrap.settings,
-        pet: mergeAppPetState(this.bootstrap.settings, next.settings)
+      const previous = this.bootstrap.settings.pet
+      const incoming = next.settings
+      // Full pet window state from main is authoritative for fields it includes.
+      // Only preserve customAssets when an older payload omits that field entirely.
+      const hasCustomAssets = Object.prototype.hasOwnProperty.call(incoming, 'customAssets')
+      const pet = {
+        ...previous,
+        ...incoming,
+        assetMode: incoming.assetMode ?? previous.assetMode,
+        customAssets: hasCustomAssets
+          ? (incoming.customAssets ?? [])
+          : (previous.customAssets ?? []),
+        frameEnabled: incoming.frameEnabled ?? previous.frameEnabled ?? true,
+        progressBarEnabled: incoming.progressBarEnabled ?? previous.progressBarEnabled ?? true,
+        edgeDockEnabled: incoming.edgeDockEnabled ?? previous.edgeDockEnabled ?? true,
+        bubbleEnabled: incoming.bubbleEnabled ?? previous.bubbleEnabled ?? true,
+        docked: incoming.docked ?? previous.docked ?? false
+      } as typeof previous
+      if (incoming.activeCustomAssetId) pet.activeCustomAssetId = incoming.activeCustomAssetId
+      else if (pet.assetMode === 'custom' && previous.activeCustomAssetId && !Object.prototype.hasOwnProperty.call(incoming, 'activeCustomAssetId')) {
+        pet.activeCustomAssetId = previous.activeCustomAssetId
+      } else if (!incoming.activeCustomAssetId) {
+        delete (pet as { activeCustomAssetId?: string }).activeCustomAssetId
       }
+      if (incoming.hiddenUntil) pet.hiddenUntil = incoming.hiddenUntil
+      else delete (pet as { hiddenUntil?: string }).hiddenUntil
+      this.bootstrap.settings = { ...this.bootstrap.settings, pet }
     },
     setError(error: AppError | null) { this.error = error }
   }

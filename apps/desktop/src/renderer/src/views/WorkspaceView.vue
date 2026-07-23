@@ -60,6 +60,7 @@ import { useAppStore } from '../stores/app'
 import { useAgentStore } from '../stores/agent'
 import { useWorkspaceStore } from '../stores/workspace'
 import { submitAgentRequestAfterContextSync } from '../utils/agent-request'
+import { isUuid } from '../utils/ids'
 import type { AgentEditorSelection } from '../utils/editor-selection'
 import { isAgentRunBusy } from '../utils/agent-run-state'
 import { diagnosticBadgeLabel } from '../utils/diagnostic-inbox'
@@ -78,7 +79,7 @@ const contextPos = ref({ x: 0, y: 0 })
 const active = computed(() => store.activeTab)
 const editorHost = ref<InstanceType<typeof EditorHost> | null>(null)
 const editorFontSize = ref(13)
-const agentOpen = ref(false)
+const agentOpen = ref(true)
 const inboxOpen = ref(false)
 const agentSelection = ref<AgentEditorSelection>()
 const diffOpen = ref(false)
@@ -192,6 +193,7 @@ const outputText = computed(() => {
 
 onMounted(async () => {
   agent.subscribe()
+  agentOpen.value = true
   window.addEventListener('resize', fitLayoutToViewport)
   stopLanguageDiagnostics = window.cppPet.language.onDiagnostics(event => {
     if (event.projectId !== store.currentProject?.id) return
@@ -201,12 +203,21 @@ onMounted(async () => {
     }
   })
   await Promise.all([store.loadProjects(), agent.refreshAll()])
-  const id = route.params.projectId as string | undefined
-  if (id) await store.openProject(id)
+  const routeProjectId = typeof route.params.projectId === 'string' ? route.params.projectId : undefined
+  if (isUuid(routeProjectId)) await store.openProject(routeProjectId)
   else if (store.projects[0]) {
     await store.openProject(store.projects[0].id)
-    await router.replace(`/workspace/${store.projects[0].id}`)
+    await router.replace({ path: `/workspace/${store.projects[0].id}`, query: { ...route.query } })
+  } else if (routeProjectId) {
+    store.error = {
+      code: 'VALIDATION_INVALID_PROJECT_ID',
+      message: '项目标识无效或已失效。',
+      retryable: true,
+      userAction: '请从首页重新打开一个项目。'
+    }
+    await router.replace({ path: '/workspace', query: { ...route.query } })
   }
+  await applyAgentRouteQuery()
   fitLayoutToViewport()
 })
 onBeforeUnmount(() => {
@@ -220,7 +231,8 @@ onBeforeUnmount(() => {
   }
 })
 watch(() => route.params.projectId, async id => {
-  if (typeof id === 'string' && id !== store.currentProject?.id) await store.openProject(id)
+  if (!isUuid(id) || id === store.currentProject?.id) return
+  await store.openProject(id)
 })
 watch(() => active.value?.relativePath, () => { diffOpen.value = false; agentSelection.value = undefined })
 watch(
@@ -241,7 +253,7 @@ watch(() => store.currentProject?.id, async id => {
   languageDiagnostics.value = {}
   languageAvailable.value = false
   languageStatusText.value = id ? '正在检测 clangd…' : ''
-  if (!id) return
+  if (!isUuid(id)) return
   await agent.loadProjectAgent(id)
   await applyAgentRouteQuery()
   const result = await window.cppPet.language.status({ projectId: id })
@@ -392,12 +404,13 @@ function askSelectedCode() {
 }
 
 async function applyAgentRouteQuery() {
+  // 从桌宠进入或带 agent 参数时强制展开对话面板
+  if (route.query.agent === '1' || route.query.panel === 'diff') agentOpen.value = true
   if (!store.currentProject?.id) return
   if (route.query.agent !== '1' && route.query.panel !== 'diff') return
-  agentOpen.value = true
   const conversationId = typeof route.query.conversationId === 'string' ? route.query.conversationId : undefined
-  if (!conversationId || agent.currentConversationId === conversationId) return
   if (agent.agentProjectId !== store.currentProject.id) await agent.loadProjectAgent(store.currentProject.id)
+  if (!conversationId || agent.currentConversationId === conversationId) return
   await agent.selectConversation(conversationId)
 }
 function toggleDiagnosticInbox() {

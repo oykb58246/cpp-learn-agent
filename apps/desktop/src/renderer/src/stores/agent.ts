@@ -272,13 +272,20 @@ export const useAgentStore = defineStore('agent', {
       this.currentRun = result.data
       return result.data
     },
-    async updateKnowledge(conceptId: string, status: LearnerKnowledge['status']) {
-      const result = await window.cppPet.learning.updateKnowledge({ conceptId, status })
+    async updateKnowledge(conceptId: string, status: LearnerKnowledge['status'], options?: { unlockPath?: boolean }) {
+      const result = await window.cppPet.learning.updateKnowledge({
+        conceptId,
+        status,
+        ...(options?.unlockPath ? { unlockPath: true } : {})
+      })
       if (!result.ok) { this.error = result.error; return null }
-      const index = this.knowledge.findIndex(item => item.conceptId === conceptId)
-      if (index >= 0) this.knowledge[index] = result.data
-      else this.knowledge.push(result.data)
-      return result.data
+      const states = Array.isArray(result.data) ? result.data : [result.data]
+      for (const state of states) {
+        const index = this.knowledge.findIndex(item => item.conceptId === state.conceptId)
+        if (index >= 0) this.knowledge[index] = state
+        else this.knowledge.push(state)
+      }
+      return states.at(-1) ?? null
     },
     async loadBackground() {
       const result = await window.cppPet.learning.background({ userId: 'local-user' })

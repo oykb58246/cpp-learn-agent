@@ -355,7 +355,8 @@ export class DesktopOpenAiContextBuilder implements OpenAiAgentContextBuilder {
         ...(project ? { allowedWorkspaceId: project.workspaceId } : {}),
         allowedPaths,
         allowNewPaths: true,
-        writesRequireApproval: true,
+        writesRequireApproval: this.db.getSettings().agentApprovalMode !== 'full',
+        approvalMode: this.db.getSettings().agentApprovalMode ?? 'on-risk',
         maxModelTurns: 12,
         maxToolCalls: 20,
         remainingTimeMs: 120_000

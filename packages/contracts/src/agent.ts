@@ -51,7 +51,7 @@ export const contextSourceSchema = z.object({
   label: z.string().min(1).max(500),
   content: z.string().max(100_000),
   trusted: z.boolean(),
-  projectId: z.string().uuid().optional(),
+  projectId: z.preprocess(value => (value === '' || value === null ? undefined : value), z.string().uuid().optional()),
   relativePath: z.string().max(1_024).optional(),
   metadata: z.record(z.string(), jsonValueSchema).optional()
 })
@@ -181,7 +181,7 @@ export const agentRunSchema = z.object({
   source: z.enum(['main', 'editor', 'pet', 'screenshot', 'system']),
   mode: agentModeSchema,
   message: z.string().min(1).max(20_000),
-  projectId: z.string().uuid().optional(),
+  projectId: z.preprocess(value => (value === '' || value === null ? undefined : value), z.string().uuid().optional()),
   activeFile: z.string().max(1_024).optional(),
   conversationId: z.string().uuid().optional(),
   assistantMessageId: z.string().uuid().optional(),
@@ -230,7 +230,7 @@ export const agentStartRequestSchema = z.object({
   source: z.enum(['main', 'editor', 'pet', 'screenshot', 'system']),
   mode: agentModeSchema,
   message: z.string().min(1).max(20_000),
-  projectId: z.string().uuid().optional(),
+  projectId: z.preprocess(value => (value === '' || value === null ? undefined : value), z.string().uuid().optional()),
   activeFile: z.string().max(1_024).optional(),
   conversationId: z.string().uuid().optional(),
   assistantMessageId: z.string().uuid().optional(),

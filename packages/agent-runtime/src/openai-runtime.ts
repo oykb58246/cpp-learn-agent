@@ -171,6 +171,25 @@ class AgentLoopFailure extends Error {
   }
 }
 
+
+function resolveApprovalMode(policy: { approvalMode?: 'always' | 'on-risk' | 'full'; writesRequireApproval?: boolean } | undefined): 'always' | 'on-risk' | 'full' {
+  if (policy?.approvalMode === 'always' || policy?.approvalMode === 'on-risk' || policy?.approvalMode === 'full') return policy.approvalMode
+  if (policy?.writesRequireApproval === false) return 'full'
+  return 'on-risk'
+}
+
+function shouldRequireApproval(
+  policy: { approvalMode?: 'always' | 'on-risk' | 'full'; writesRequireApproval?: boolean } | undefined,
+  risk: ToolRisk,
+  kind: 'remote-context' | 'tool'
+): boolean {
+  const mode = resolveApprovalMode(policy)
+  if (mode === 'full') return false
+  if (mode === 'always') return true
+  // on-risk: remote model context + L2/L3 tools
+  if (kind === 'remote-context') return true
+  return risk === 'L2' || risk === 'L3'
+}
 export class OpenAiAgentRuntime implements AgentRuntimeController {
   private readonly executions = new Map<string, OpenAiExecutionState>()
   private readonly listeners = new Set<(run: AgentRun) => void>()
@@ -234,7 +253,13 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
         throw new AgentLoopFailure('CONTEXT_PROTOCOL_INVALID', '上下文 taskId 与请求不一致。')
       }
       await this.timeline(state, 'context', 'completed', '构建模型上下文', contextSummary(state.context))
-      await this.requestRemoteApproval(state)
+      if (shouldRequireApproval(state.context.policy, 'L3', 'remote-context')) {
+        await this.requestRemoteApproval(state)
+      } else {
+        state.remoteContextApproved = true
+        await this.timeline(state, 'approval', 'completed', '审批策略：完全访问，跳过上下文审批', 'full')
+        await this.drive(state)
+      }
     })
     return structuredClone(run)
   }
@@ -599,7 +624,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
     })
     await this.persist(state)
 
-    if (parsed.definition.risk === 'L2' || parsed.definition.risk === 'L3') {
+    if (shouldRequireApproval(state.context?.policy, parsed.definition.risk, 'tool')) {
       state.pendingCall = call
       const diff = createApprovalDiff(parsed.definition.name, parsed.arguments, writeBase)
       const approval: Approval = {

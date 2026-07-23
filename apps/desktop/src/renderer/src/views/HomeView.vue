@@ -73,7 +73,7 @@ function goOnboarding() {
   <div class="home-view page-scroll">
     <section class="page-header" data-tour="home-primary">
       <div>
-        <p class="eyebrow">今日工作台</p>
+        <p class="eyebrow">Today's Desk</p>
         <h1>开始处理你的 C++ 问题</h1>
         <p>打开一个项目开始编写、编译和调试；遇到不懂的概念或报错时，随时向助教提问。</p>
       </div>

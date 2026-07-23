@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BackgroundProfile, LearnerKnowledge } from '@cpp-pet/contracts'
-import { buildExplanationContext, builtInKnowledge, KnowledgeGate, transitionKnowledge, validateKnowledgeGraph } from './knowledge'
+import { buildExplanationContext, builtInKnowledge, collectKnowledgePath, KnowledgeGate, transitionKnowledge, unlockKnowledgePath, validateKnowledgeGraph } from './knowledge'
 
 const now = new Date().toISOString()
 
@@ -74,5 +74,13 @@ describe('explanation context', () => {
     expect(context.focusConceptIds).toEqual(['control.loops'])
     expect(context.unseenConceptIds).toEqual(['data.arrays'])
     expect(context.instructions).toContain('先用简短定义介绍未接触概念')
+  })
+  it('unlocks the full prerequisite path to a target concept', () => {
+    const path = collectKnowledgePath(builtInKnowledge, 'control.loops')
+    expect(path[0]).toBe('basics.program')
+    expect(path.at(-1)).toBe('control.loops')
+    const unlocked = unlockKnowledgePath('local-user', builtInKnowledge, [], 'control.loops', 'self-claimed')
+    expect(unlocked.map(item => item.conceptId)).toEqual(path)
+    expect(unlocked.every(item => item.status === 'self-claimed')).toBe(true)
   })
 })

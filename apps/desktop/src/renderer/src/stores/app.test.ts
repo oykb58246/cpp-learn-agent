@@ -18,6 +18,7 @@ function baseSettings(): AppSettings {
     productTourStatus: 'completed',
     productTourStep: 5,
     productTourWelcomeSeen: true,
+    agentApprovalMode: 'on-risk',
     pet: {
       visible: true,
       assetMode: 'custom',
@@ -115,5 +116,58 @@ describe('app store pet window state sync', () => {
     expect(store.settings.pet.assetMode).toBe('custom')
     expect(store.settings.pet.activeCustomAssetId).toBe('asset-1')
     expect(store.settings.pet.customAssets).toEqual(baseSettings().pet.customAssets)
+  })
+
+  it('accepts an intentional switch back to the logo asset mode', () => {
+    const store = seedStore()
+
+    store.applyPetWindowState({
+      settings: {
+        ...baseSettings().pet,
+        assetMode: 'cpppilot-logo',
+        activeCustomAssetId: undefined
+      },
+      windowVisible: true,
+      ignoreMouseEvents: false,
+      growthStage: 1,
+      progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' }
+    })
+
+    expect(store.settings.pet.assetMode).toBe('cpppilot-logo')
+    expect(store.settings.pet.activeCustomAssetId).toBeUndefined()
+    expect(store.settings.pet.customAssets).toEqual(baseSettings().pet.customAssets)
+  })
+
+  it('applies frame and progress toggles without inventing defaults over existing values', () => {
+    const previous = baseSettings()
+    const store = seedStore({
+      ...previous,
+      pet: {
+        ...previous.pet,
+        bubbleEnabled: false,
+        frameEnabled: true,
+        progressBarEnabled: false,
+        scale: 1.5
+      }
+    })
+
+    store.applyPetWindowState({
+      settings: {
+        ...store.settings.pet,
+        frameEnabled: false,
+        progressBarEnabled: true
+      },
+      windowVisible: true,
+      ignoreMouseEvents: false,
+      growthStage: 1,
+      progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' }
+    })
+
+    expect(store.settings.pet.frameEnabled).toBe(false)
+    expect(store.settings.pet.progressBarEnabled).toBe(true)
+    expect(store.settings.pet.bubbleEnabled).toBe(false)
+    expect(store.settings.pet.scale).toBe(1.5)
+    expect(store.settings.pet.assetMode).toBe('custom')
+    expect(store.settings.pet.activeCustomAssetId).toBe('asset-1')
   })
 })

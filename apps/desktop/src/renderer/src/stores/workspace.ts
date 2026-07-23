@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ElMessageBox } from 'element-plus'
 import type { AppError, FileDocument, FileTreeNode, Project, ProjectDraft, ProjectDraftInput, SearchResult, SnapshotManifest } from '@cpp-pet/contracts'
+import { isUuid } from '../utils/ids'
 
 export interface OpenTab extends FileDocument { draft: string; dirty: boolean; conflicted: boolean; conflictDocument?: FileDocument }
 const pendingWorkspaceSaves = new WeakMap<object, Promise<void>>()
@@ -10,7 +11,28 @@ export const useWorkspaceStore = defineStore('workspace', {
   getters: { activeTab: state => state.tabs.find(x => x.relativePath === state.activePath) ?? null },
   actions: {
     async loadProjects() { const result = await window.cppPet.project.list(); if (result.ok) this.projects = result.data; else this.error = result.error },
-    async openProject(id: string) { this.loading = true; const switching = this.currentProject?.id !== id; const result = await window.cppPet.project.open({ projectId: id }); if (result.ok) { if (switching) { this.tabs = []; this.activePath = ''; this.searchResults = [] } this.currentProject = result.data; await Promise.all([this.refreshTree(), this.refreshSnapshots()]) } else this.error = result.error; this.loading = false },
+    async openProject(id: string) {
+      if (!isUuid(id)) {
+        this.error = {
+          code: 'VALIDATION_INVALID_PROJECT_ID',
+          message: '项目标识无效或已失效。',
+          retryable: true,
+          userAction: '请从首页或工作区重新打开一个项目。'
+        }
+        return
+      }
+      this.loading = true
+      this.error = null
+      const switching = this.currentProject?.id !== id
+      const result = await window.cppPet.project.open({ projectId: id })
+      if (result.ok) {
+        if (switching) { this.tabs = []; this.activePath = ''; this.searchResults = [] }
+        this.currentProject = result.data
+        await Promise.all([this.refreshTree(), this.refreshSnapshots()])
+      } else this.error = result.error
+      this.loading = false
+    },
+
     async refreshTree() { if (!this.currentProject) return; const result = await window.cppPet.files.listTree({ projectId: this.currentProject.id }); if (result.ok) this.tree = result.data; else this.error = result.error },
     async openFile(relativePath: string) {
       if (!this.currentProject) return

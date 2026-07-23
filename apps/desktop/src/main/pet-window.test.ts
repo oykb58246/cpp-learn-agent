@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createPetWindowOptions,
+  dockedPetBounds,
   dragPetWindowBounds,
   petProgressForGrowthStage,
   petProgressForLearnerSummary,
@@ -60,6 +61,9 @@ describe('desktop pet window options', () => {
       alwaysOnTop: true,
       skipTaskbar: true,
       resizable: false,
+      maximizable: false,
+      minimizable: false,
+      hasShadow: false,
       show: false,
       icon: 'cpppilot.ico'
     })
@@ -91,14 +95,14 @@ describe('desktop pet window options', () => {
     expect(petWindowBoundsForSettings({ ...settings, scale: 1, x: 80, y: 90 }, display)).toMatchObject({
       x: 80,
       y: 90,
-      width: 180,
-      height: 220
+      width: 240,
+      height: 420
     })
     expect(petWindowBoundsForSettings({ ...settings, scale: 2, x: 80, y: 90 }, display)).toMatchObject({
       x: 80,
       y: 90,
-      width: 360,
-      height: 440
+      width: 480,
+      height: 840
     })
   })
 
@@ -180,7 +184,7 @@ describe('desktop pet window options', () => {
     const first = movePetWindowBounds(start, { deltaX: 5_000, deltaY: 5_000 }, [display])
     const second = movePetWindowBounds(first, { deltaX: 5_000, deltaY: 5_000 }, [display])
 
-    expect(first).toEqual({ x: 1920 - 360, y: 1040 - 440, width: 360, height: 440 })
+    expect(first).toEqual({ x: 1920 - 480, y: 1040 - 840, width: 480, height: 840 })
     expect(second).toEqual(first)
   })
 
@@ -214,5 +218,36 @@ describe('desktop pet window options', () => {
 
     expect(next.x).toBeGreaterThanOrEqual(secondary.x)
     expect(next.x + next.width).toBeLessThanOrEqual(secondary.x + secondary.width)
+  })
+  it('keeps the visual center when docking shrinks the window', () => {
+    const display = { x: 0, y: 0, width: 1920, height: 1040 }
+    const from = { x: 1600, y: 400, width: 240, height: 420 }
+
+    const right = dockedPetBounds('right', display, from)
+    expect(right).toMatchObject({ width: 78, height: 78, x: 1920 - 78 })
+    // center Y preserved: 400 + 210 - 39 = 571
+    expect(right.y).toBe(571)
+
+    const left = dockedPetBounds('left', display, from)
+    expect(left.x).toBe(0)
+    expect(left.y).toBe(571)
+
+    const bottom = dockedPetBounds('bottom', display, from)
+    // center X preserved: 1600 + 120 - 39 = 1681
+    expect(bottom.x).toBe(1681)
+    expect(bottom.y).toBe(1040 - 78)
+
+    const top = dockedPetBounds('top', display, from)
+    expect(top.x).toBe(1681)
+    expect(top.y).toBe(0)
+  })
+
+  it('does not jump up/left by using the large window top-left as dock origin', () => {
+    const display = { x: 0, y: 0, width: 1920, height: 1040 }
+    const from = { x: 1500, y: 500, width: 360, height: 440 }
+    const docked = dockedPetBounds('right', display, from)
+    // Old behavior would set y = 500; center-preserving y = 500 + 220 - 39 = 681
+    expect(docked.y).toBe(681)
+    expect(docked.y).toBeGreaterThan(from.y)
   })
 })

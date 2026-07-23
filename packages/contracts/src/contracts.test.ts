@@ -22,6 +22,7 @@ import {
   petCustomAssetCreateInputSchema,
   petDragWindowRequestSchema,
   petSettingsSchema,
+  petSettingsPatchSchema,
   petWindowStateSchema,
   practiceCatalogSchema,
   practiceExerciseSchema,
@@ -174,6 +175,33 @@ describe('contracts', () => {
     expect(screenshotCaptureRequestSchema.safeParse({ message: '' }).success).toBe(false)
   })
 
+  it('keeps pet settings patches truly partial without filling defaults', () => {
+    const frameOnly = petSettingsPatchSchema.parse({ frameEnabled: false })
+    expect(frameOnly).toEqual({ frameEnabled: false })
+    expect(Object.keys(frameOnly)).toEqual(['frameEnabled'])
+
+    const progressOnly = petSettingsPatchSchema.parse({ progressBarEnabled: false })
+    expect(progressOnly).toEqual({ progressBarEnabled: false })
+
+    const assetOnly = petSettingsPatchSchema.parse({ assetMode: 'salary-cat' })
+    expect(assetOnly).toEqual({ assetMode: 'salary-cat' })
+    expect(Object.prototype.hasOwnProperty.call(assetOnly, 'customAssets')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(assetOnly, 'scale')).toBe(false)
+
+    const empty = petSettingsPatchSchema.parse({})
+    expect(empty).toEqual({})
+
+    const multi = petSettingsPatchSchema.parse({
+      bubbleEnabled: false,
+      frameEnabled: true,
+      progressBarEnabled: false
+    })
+    expect(multi).toEqual({
+      bubbleEnabled: false,
+      frameEnabled: true,
+      progressBarEnabled: false
+    })
+  })
   it('validates practice catalog and OJ screenshot import contracts', () => {
     const now = new Date().toISOString()
     const exercise = {

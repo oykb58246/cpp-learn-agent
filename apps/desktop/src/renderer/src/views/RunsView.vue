@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Bot, Filter, RefreshCw } from 'lucide-vue-next'
+import { Filter, RefreshCw } from 'lucide-vue-next'
 import { useRoute } from 'vue-router'
 import type { AgentStartRequest } from '@cpp-pet/contracts'
 import { useAgentStore } from '../stores/agent'
@@ -11,6 +11,7 @@ import RunTimeline from '../components/RunTimeline.vue'
 import { summarizeAssistantRecord } from '../utils/assistant-record'
 import { isAgentRunBusy } from '../utils/agent-run-state'
 import { agentTourSuggestion, beginnerTourSteps } from '../utils/product-tour'
+import { renderMarkdown } from '../utils/markdown'
 
 const store = useAgentStore()
 const tour = useProductTourStore()
@@ -59,7 +60,13 @@ async function decide(decision: 'approved' | 'rejected') {
 
 <template>
   <div class="h3-view runs-view">
-    <section class="page-header"><div><p class="eyebrow">Assistant History</p><h1>助教记录</h1><p>集中查看历史报错与解决过程、助教给出的解释，以及下一步建议。</p></div><Bot :size="24" /></section>
+    <section class="page-header page-header-plain" data-page="runs">
+      <div>
+        <p class="eyebrow">Assistant History</p>
+        <h1>助教记录</h1>
+        <p>集中查看历史报错与解决过程、助教给出的解释，以及下一步建议。</p>
+      </div>
+    </section>
     <div v-if="store.error" class="h3-state error">{{ store.error.message }}</div>
     <div v-else-if="store.loading" class="h3-state">正在加载助教记录…</div>
     <div class="runs-toolbar">
@@ -78,10 +85,23 @@ async function decide(decision: 'approved' | 'rejected') {
           <header data-tour="assistant-progress"><div><strong>{{ summaryFor(store.currentRun).title }}</strong><span>{{ summaryFor(store.currentRun).status }}</span></div><small>{{ summaryFor(store.currentRun).summary }}</small></header>
           <ApprovalCard v-if="store.pendingApproval" data-tour="assistant-approval" :approval="store.pendingApproval" :busy="store.running" @decide="decide" />
           <section
-            v-if="store.currentRun.response"
+            v-if="store.currentRun.message || store.currentRun.response"
             class="agent-response"
             :data-tour="store.currentRun.status === 'completed' ? 'assistant-result' : undefined"
-          ><strong>助教解释与建议</strong><p>{{ store.currentRun.response }}</p></section>
+          >
+            <div v-if="store.currentRun.message" class="run-exchange user">
+              <div class="message-meta"><strong>你</strong></div>
+              <p class="run-user-message">{{ store.currentRun.message }}</p>
+            </div>
+            <div v-if="store.currentRun.response" class="run-exchange assistant">
+              <div class="message-meta"><strong>CppPilot</strong><span>{{ summaryFor(store.currentRun).status }}</span></div>
+              <div class="message-markdown" v-html="renderMarkdown(store.currentRun.response)" />
+            </div>
+            <div v-else-if="active" class="run-exchange assistant">
+              <div class="message-meta"><strong>CppPilot</strong><span>回答中</span></div>
+              <p class="message-thinking">正在组织回答…</p>
+            </div>
+          </section>
           <p class="assistant-next-action"><strong>下一步：</strong>{{ summaryFor(store.currentRun).nextAction }}</p>
           <details class="assistant-technical-details" :open="timelineOpen"><summary>查看处理过程与技术细节</summary><RunTimeline :events="timeline" /><section v-if="toolCalls.length" class="tool-call-list"><header><strong>工具调用</strong><span>{{ toolCalls.length }}</span></header><article v-for="call in toolCalls" :key="call.id"><div><strong>{{ call.toolName }}</strong><small>{{ call.serverName }} · {{ call.risk }} · {{ call.status }}</small></div><code>{{ JSON.stringify(call.parameterSummary) }}</code><span>{{ call.result?.summary ?? call.errorCode ?? '执行中' }}</span><time>{{ call.durationMs ?? 0 }} ms</time></article></section></details>
         </template>

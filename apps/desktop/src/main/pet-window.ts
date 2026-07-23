@@ -20,8 +20,9 @@ interface PetWindowOptionsInput {
   iconExists: boolean
 }
 
-const BASE_WIDTH = 180
-const BASE_HEIGHT = 220
+const BASE_WIDTH = 240
+const BASE_HEIGHT = 420
+const DOCK_SIZE = 78
 const DEFAULT_MARGIN = 28
 const EDGE_SNAP_DISTANCE = 24
 const PET_STAGE_XP_TARGETS: Record<PetGrowthStage, number> = {
@@ -57,6 +58,15 @@ function normalizePetGrowthStage(value: number): PetGrowthStage {
   return value === 1 || value === 2 || value === 3 || value === 4 ? value : 1
 }
 export function petWindowBoundsForSettings(settings: PetSettings, workArea: Rectangle): PetWindowBounds {
+  if (settings.docked && settings.edgeDockEnabled !== false) {
+    const width = Math.min(DOCK_SIZE, workArea.width)
+    const height = Math.min(DOCK_SIZE, workArea.height)
+    const fallbackX = workArea.x + workArea.width - width
+    const fallbackY = workArea.y + Math.round((workArea.height - height) / 2)
+    const x = Number.isFinite(settings.x) ? Math.round(settings.x as number) : fallbackX
+    const y = Number.isFinite(settings.y) ? Math.round(settings.y as number) : fallbackY
+    return clampPetWindowBounds({ x, y, width, height }, workArea)
+  }
   const scale = Math.min(Math.max(settings.scale, 0.5), 2)
   const width = Math.min(Math.round(BASE_WIDTH * scale), workArea.width)
   const height = Math.min(Math.round(BASE_HEIGHT * scale), workArea.height)
@@ -66,6 +76,54 @@ export function petWindowBoundsForSettings(settings: PetSettings, workArea: Rect
   const y = Number.isFinite(settings.y) ? Math.round(settings.y as number) : fallbackY
 
   return clampPetWindowBounds({ x, y, width, height }, workArea)
+}
+
+export type PetDockEdge = 'left' | 'right' | 'top' | 'bottom'
+
+export function detectPetDockEdge(bounds: PetWindowBounds, workArea: Rectangle): PetDockEdge | null {
+  const atLeft = bounds.x <= workArea.x + 2
+  const atRight = bounds.x + bounds.width >= workArea.x + workArea.width - 2
+  const atTop = bounds.y <= workArea.y + 2
+  const atBottom = bounds.y + bounds.height >= workArea.y + workArea.height - 2
+  if (atLeft) return 'left'
+  if (atRight) return 'right'
+  if (atTop) return 'top'
+  if (atBottom) return 'bottom'
+  return null
+}
+
+/**
+ * Shrink to the dock pill while keeping the previous window's visual center.
+ * Using top-left of the large window makes the pet jump up/left when docking.
+ */
+export function dockedPetBounds(
+  edge: PetDockEdge,
+  workArea: Rectangle,
+  fromBounds?: Pick<PetWindowBounds, 'x' | 'y' | 'width' | 'height'>,
+  preferY?: number,
+  preferX?: number
+): PetWindowBounds {
+  const width = Math.min(DOCK_SIZE, workArea.width)
+  const height = Math.min(DOCK_SIZE, workArea.height)
+
+  const centerX = fromBounds
+    ? fromBounds.x + fromBounds.width / 2
+    : Number.isFinite(preferX)
+      ? (preferX as number) + width / 2
+      : workArea.x + workArea.width / 2
+  const centerY = fromBounds
+    ? fromBounds.y + fromBounds.height / 2
+    : Number.isFinite(preferY)
+      ? (preferY as number) + height / 2
+      : workArea.y + workArea.height / 2
+
+  const anchoredX = Math.round(centerX - width / 2)
+  const anchoredY = Math.round(centerY - height / 2)
+
+  if (edge === 'left') return clampPetWindowBounds({ x: workArea.x, y: anchoredY, width, height }, workArea)
+  if (edge === 'right') return clampPetWindowBounds({ x: workArea.x + workArea.width - width, y: anchoredY, width, height }, workArea)
+  if (edge === 'top') return clampPetWindowBounds({ x: anchoredX, y: workArea.y, width, height }, workArea)
+  return clampPetWindowBounds({ x: anchoredX, y: workArea.y + workArea.height - height, width, height }, workArea)
 }
 
 export function workAreaForPetSettings(settings: PetSettings, workAreas: Rectangle[], fallback: Rectangle): Rectangle {
@@ -136,7 +194,7 @@ export function snapPetWindowBounds(bounds: PetWindowBounds, workArea: Rectangle
 }
 
 export function createPetWindowOptions(input: PetWindowOptionsInput): BrowserWindowConstructorOptions {
-  return {
+  const options: BrowserWindowConstructorOptions = {
     ...input.bounds,
     transparent: true,
     backgroundColor: '#00000000',
@@ -145,9 +203,14 @@ export function createPetWindowOptions(input: PetWindowOptionsInput): BrowserWin
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    hasShadow: false,
+    thickFrame: false,
+    focusable: true,
     show: false,
     autoHideMenuBar: true,
-    ...(input.iconExists ? { icon: input.iconPath } : {}),
     webPreferences: {
       preload: input.preloadPath,
       contextIsolation: true,
@@ -156,6 +219,8 @@ export function createPetWindowOptions(input: PetWindowOptionsInput): BrowserWin
       webSecurity: true
     }
   }
+  if (input.iconExists) options.icon = input.iconPath
+  return options
 }
 
 function clampPetWindowPosition(bounds: PetWindowBounds, workArea: Rectangle): PetWindowBounds {

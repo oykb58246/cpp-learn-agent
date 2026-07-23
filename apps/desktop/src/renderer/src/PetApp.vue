@@ -4,13 +4,26 @@ import type { PetDragWindowRequest, PetEvent, PetWindowState } from '@cpp-pet/co
 import DesktopPet from './components/DesktopPet.vue'
 
 const state = ref<PetWindowState>({
-  settings: { visible: true, assetMode: 'cpppilot-logo', scale: 1, ignoreMouseEvents: false, bubbleEnabled: true, focusModeEnabled: false, launchAtLogin: false, customAssets: [] },
+  settings: {
+    visible: true,
+    assetMode: 'cpppilot-logo',
+    scale: 1,
+    ignoreMouseEvents: false,
+    bubbleEnabled: true,
+    frameEnabled: true,
+    progressBarEnabled: true,
+    edgeDockEnabled: true,
+    docked: false,
+    focusModeEnabled: false,
+    launchAtLogin: false,
+    customAssets: []
+  },
   windowVisible: true,
   ignoreMouseEvents: false,
   growthStage: 1,
   progress: { stage: 1, totalStages: 4, percent: 25, label: '第 1 关 / 共 4 关 · 入门' }
 })
-const event = ref<PetEvent | null>({ eventId: crypto.randomUUID(), state: 'idle', message: 'CppPilot 待命' })
+const event = ref<PetEvent | null>({ eventId: crypto.randomUUID(), state: 'idle', message: '我在这儿陪你写 C++～' })
 const chatOpen = ref(false)
 const chatBusy = ref(false)
 const chatNotice = ref('')
@@ -18,12 +31,39 @@ let stopState: (() => void) | undefined
 let stopEvent: (() => void) | undefined
 let stopQuickChat: (() => void) | undefined
 
+function applyPetTheme(theme: 'system' | 'light' | 'dark' | undefined) {
+  const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
+  document.documentElement.classList.toggle('dark', dark)
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+}
+
+function applyPetState(next: PetWindowState) {
+  state.value = next
+  if (next.theme) applyPetTheme(next.theme)
+}
+
 onMounted(async () => {
-  const result = await window.cppPet.pet.getState()
-  if (result.ok) state.value = result.data
-  stopState = window.cppPet.pet.onStateChanged(next => { state.value = next })
+  const [petState, settings] = await Promise.all([
+    window.cppPet.pet.getState(),
+    window.cppPet.settings.get()
+  ])
+  if (settings.ok) applyPetTheme(settings.data.theme)
+  if (petState.ok) applyPetState(petState.data)
+  stopState = window.cppPet.pet.onStateChanged(next => { applyPetState(next) })
   stopEvent = window.cppPet.pet.onChanged(next => { event.value = next })
-  stopQuickChat = window.cppPet.pet.onQuickChat(() => quickChat())
+  stopQuickChat = window.cppPet.pet.onQuickChat(() => {
+    if (state.value.settings.docked) {
+      void window.cppPet.pet.undock().then(result => {
+        if (result.ok) applyPetState(result.data)
+        quickChat()
+      })
+      return
+    }
+    quickChat()
+  })
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    applyPetTheme(state.value.theme ?? 'system')
+  })
 })
 
 onBeforeUnmount(() => {
@@ -34,7 +74,17 @@ onBeforeUnmount(() => {
 
 async function drag(request: PetDragWindowRequest) {
   const result = await window.cppPet.pet.drag(request)
-  if (result.ok) state.value = result.data
+  if (result.ok) applyPetState(result.data)
+}
+
+async function dragEnd() {
+  const result = await window.cppPet.pet.dragEnd()
+  if (result.ok) applyPetState(result.data)
+}
+
+async function undock() {
+  const result = await window.cppPet.pet.undock()
+  if (result.ok) applyPetState(result.data)
 }
 
 function openMain() {
@@ -80,6 +130,8 @@ async function submitChat(message: string) {
       :chat-busy="chatBusy"
       :chat-notice="chatNotice"
       @drag="drag"
+      @drag-end="dragEnd"
+      @undock="undock"
       @open-main="openMain"
       @quick-chat="quickChat"
       @close-chat="closeChat"

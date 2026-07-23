@@ -167,6 +167,7 @@ export class AppDatabase {
       productTourStatus: 'pending',
       productTourStep: 0,
       productTourWelcomeSeen: false,
+      agentApprovalMode: 'on-risk',
       pet: petSettingsSchema.parse({})
     }
     const saved = JSON.parse(row.value_json) as Partial<AppSettings> & { customCursor?: boolean }
@@ -183,8 +184,41 @@ export class AppDatabase {
       ? Number(saved.productTourStep)
       : 0
     const productTourWelcomeSeen = saved.productTourWelcomeSeen === true
+    const agentApprovalMode = saved.agentApprovalMode === 'always' || saved.agentApprovalMode === 'full' || saved.agentApprovalMode === 'on-risk'
+      ? saved.agentApprovalMode
+      : 'on-risk'
     const cursorStyle = resolveCursorStyle(saved)
-    const pet = petSettingsSchema.safeParse(saved.pet).success ? petSettingsSchema.parse(saved.pet) : petSettingsSchema.parse({})
+    // 解析失败时保留已保存的关键字段，避免整包回退成默认 Logo
+    const pet = (() => {
+      const raw = saved.pet && typeof saved.pet === 'object' ? saved.pet as Record<string, unknown> : {}
+      const parsed = petSettingsSchema.safeParse(raw)
+      if (parsed.success) return parsed.data
+      try {
+        return petSettingsSchema.parse({
+          assetMode: raw.assetMode,
+          scale: raw.scale,
+          visible: raw.visible,
+          ignoreMouseEvents: raw.ignoreMouseEvents,
+          bubbleEnabled: raw.bubbleEnabled,
+          frameEnabled: raw.frameEnabled,
+          progressBarEnabled: raw.progressBarEnabled,
+          edgeDockEnabled: raw.edgeDockEnabled,
+          docked: raw.docked,
+          focusModeEnabled: raw.focusModeEnabled,
+          launchAtLogin: raw.launchAtLogin,
+          customAssets: raw.customAssets,
+          activeCustomAssetId: raw.activeCustomAssetId,
+          x: raw.x,
+          y: raw.y,
+          undockedX: raw.undockedX,
+          undockedY: raw.undockedY,
+          undockedScale: raw.undockedScale,
+          hiddenUntil: raw.hiddenUntil
+        })
+      } catch {
+        return petSettingsSchema.parse({})
+      }
+    })()
     return {
       theme: 'system',
       sidebarWidth: 260,
@@ -198,6 +232,7 @@ export class AppDatabase {
       productTourStatus,
       productTourStep,
       productTourWelcomeSeen,
+      agentApprovalMode,
       pet
     }
   }

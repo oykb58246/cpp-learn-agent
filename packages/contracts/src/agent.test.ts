@@ -14,6 +14,12 @@ import { ipc } from './ipc'
 const now = new Date().toISOString()
 
 describe('H3 agent contracts', () => {
+  it('treats empty projectId as omitted on start requests', () => {
+    const parsed = agentStartRequestSchema.parse({ source: 'main', mode: 'chat', message: 'hello', projectId: '' })
+    expect(parsed.projectId).toBeUndefined()
+    expect(agentStartRequestSchema.safeParse({ source: 'main', mode: 'chat', message: 'hello', projectId: 'not-a-uuid' }).success).toBe(false)
+  })
+
   it('exposes only fixed H3 IPC channels', () => {
     expect(ipc.agentStart).toBe('agent:start')
     expect(ipc.agentContinue).toBe('agent:continue')

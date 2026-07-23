@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { CheckCircle2, CircleAlert, ImagePlus, Loader2, RefreshCw, Send, UploadCloud, XCircle } from 'lucide-vue-next'
+import { CheckCircle2, CircleAlert, ImagePlus, Loader2, RefreshCw, Search, Send, UploadCloud, XCircle } from 'lucide-vue-next'
 import type { PracticeCatalog, PracticeExercise, PracticeOjScreenshotInput, PracticeProjectCompleteResult, PracticeSubmissionResult } from '@cpp-pet/contracts'
 import { useAppStore } from '../stores/app'
 
@@ -10,6 +10,7 @@ const loading = ref(false)
 const importBusy = ref(false)
 const importNotice = ref('')
 const selectedExerciseId = ref('')
+const searchQuery = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 const codeByExercise = ref<Record<string, string>>({})
 const submitting = ref(false)
@@ -18,9 +19,19 @@ const submitNotice = ref('')
 const projectBusyId = ref('')
 const projectNotice = ref<PracticeProjectCompleteResult | null>(null)
 
+const filteredExercises = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return catalog.value.exercises
+  return catalog.value.exercises.filter(item =>
+    item.title.toLowerCase().includes(q)
+    || item.knowledgePoint.toLowerCase().includes(q)
+    || (item.statement ?? '').toLowerCase().includes(q)
+  )
+})
+
 const groupedExercises = computed(() => {
   const groups = new Map<string, PracticeExercise[]>()
-  for (const exercise of catalog.value.exercises) {
+  for (const exercise of filteredExercises.value) {
     const list = groups.get(exercise.knowledgePoint) ?? []
     list.push(exercise)
     groups.set(exercise.knowledgePoint, list)
@@ -30,7 +41,10 @@ const groupedExercises = computed(() => {
     exercises: exercises.sort((a, b) => a.difficulty - b.difficulty || a.title.localeCompare(b.title, 'zh-Hans-CN'))
   }))
 })
-const selectedExercise = computed(() => catalog.value.exercises.find(item => item.id === selectedExerciseId.value) ?? catalog.value.exercises[0])
+const selectedExercise = computed(() => {
+  const found = filteredExercises.value.find(item => item.id === selectedExerciseId.value)
+  return found ?? filteredExercises.value[0] ?? catalog.value.exercises[0]
+})
 const selectedCode = computed({
   get() {
     const exercise = selectedExercise.value
@@ -168,13 +182,12 @@ function caseLabel(index: number) {
 
 <template>
   <div class="practice-view page-scroll">
-    <section class="page-header">
+    <section class="page-header page-header-plain">
       <div>
         <p class="eyebrow">Practice</p>
         <h1>OJ 练习场</h1>
         <p>按知识点组织 C++ 题目，提交后按 5 个判题用例给出 100 分评分。</p>
       </div>
-      <button class="secondary-command" :disabled="loading" @click="loadCatalog"><RefreshCw :size="15" />刷新</button>
     </section>
 
     <section class="practice-import-panel">
@@ -185,6 +198,7 @@ function caseLabel(index: number) {
           <small>AI 会整理题面、样例和 5 个判题用例；信息不足会拒绝添加。</small>
         </span>
       </div>
+      <button class="secondary-command" :disabled="loading" @click="loadCatalog"><RefreshCw :size="15" />刷新</button>
       <button class="primary-command" :disabled="importBusy" @click="chooseOjScreenshot"><ImagePlus :size="15" />{{ importBusy ? '整理中' : '导入截图' }}</button>
       <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden @change="importOjScreenshot" />
       <small v-if="importNotice">{{ importNotice }}</small>
@@ -193,6 +207,10 @@ function caseLabel(index: number) {
     <div v-if="loading" class="h3-state">正在加载练习题库…</div>
     <div v-else class="practice-workbench oj-workbench">
       <aside class="practice-groups">
+        <div class="practice-search">
+          <Search :size="15" />
+          <input v-model="searchQuery" type="search" placeholder="搜索题目 / 知识点" />
+        </div>
         <section v-for="group in groupedExercises" :key="group.knowledgePoint">
           <header><strong>{{ group.knowledgePoint }}</strong><span>{{ group.exercises.length }}</span></header>
           <button v-for="exercise in group.exercises" :key="exercise.id" :class="{ active: selectedExercise?.id === exercise.id }" @click="selectExercise(exercise.id)">
@@ -200,6 +218,7 @@ function caseLabel(index: number) {
             <small>难度 {{ exercise.difficulty }} · {{ exercise.source === 'user' ? '用户导入' : '内置' }}</small>
           </button>
         </section>
+        <div v-if="!groupedExercises.length" class="panel-empty">没有匹配的题目</div>
       </aside>
 
       <main class="practice-detail">

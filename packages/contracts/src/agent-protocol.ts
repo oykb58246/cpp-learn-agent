@@ -116,6 +116,7 @@ export const agentPlanRequestSchema = z.object({
     allowedProjectId: z.string().uuid().optional(),
     allowedPaths: z.array(z.string().min(1).max(1_024)).max(500),
     writesRequireApproval: z.boolean(),
+    approvalMode: z.enum(['always', 'on-risk', 'full']).default('on-risk'),
     maxSteps: z.number().int().positive().max(50),
     maxToolCalls: z.number().int().positive().max(100)
   })
