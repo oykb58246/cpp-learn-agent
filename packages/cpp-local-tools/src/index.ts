@@ -30,6 +30,7 @@ export interface ProcessOptions {
   input?: string
   timeoutMs?: number
   maxOutputBytes?: number
+  capturePeakMemory?: boolean
   signal?: AbortSignal
 }
 
@@ -110,6 +111,7 @@ export function runProcess(command: string, args: string[] = [], options: Proces
     let timedOut = false
     let cancelled = false
     let settled = false
+    let peakMemoryBytes: number | undefined
     let child: ReturnType<typeof spawn>
     try {
       child = spawn(command, args, {
@@ -133,6 +135,9 @@ export function runProcess(command: string, args: string[] = [], options: Proces
       return
     }
     child.stdin?.end(options.input ?? '')
+    const stopMemorySampling = options.capturePeakMemory
+      ? sampleWindowsPeakMemory(child.pid, value => { peakMemoryBytes = Math.max(peakMemoryBytes ?? 0, value) })
+      : () => undefined
 
     const append = (target: 'stdout' | 'stderr', chunk: Buffer) => {
       const remaining = Math.max(0, maxOutputBytes - outputBytes)
@@ -161,6 +166,7 @@ export function runProcess(command: string, args: string[] = [], options: Proces
       if (settled) return
       settled = true
       clearTimeout(timer)
+      stopMemorySampling()
       options.signal?.removeEventListener('abort', onAbort)
       resolve({
         command,
@@ -171,7 +177,8 @@ export function runProcess(command: string, args: string[] = [], options: Proces
         durationMs: Date.now() - startedAt,
         timedOut,
         cancelled,
-        outputTruncated
+        outputTruncated,
+        ...(peakMemoryBytes !== undefined ? { peakMemoryBytes } : {})
       })
     }
     const onAbort = () => {
@@ -190,6 +197,36 @@ export function runProcess(command: string, args: string[] = [], options: Proces
     })
     child.on('close', code => finish(code))
   })
+}
+
+function sampleWindowsPeakMemory(pid: number | undefined, onSample: (bytes: number) => void): () => void {
+  if (process.platform !== 'win32' || !pid) return () => undefined
+  let stopped = false
+  let sampling = false
+  let attempts = 0
+  const sample = () => {
+    if (stopped || sampling || attempts >= 3) return
+    sampling = true
+    attempts += 1
+    const probe = spawn('powershell.exe', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).PeakWorkingSet64`
+    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
+    let output = ''
+    probe.stdout?.on('data', chunk => { output += String(chunk) })
+    probe.once('close', () => {
+      sampling = false
+      const value = Number.parseInt(output.trim(), 10)
+      if (Number.isSafeInteger(value) && value >= 0) onSample(value)
+    })
+    probe.once('error', () => { sampling = false })
+  }
+  sample()
+  const timer = setInterval(sample, 250)
+  return () => {
+    stopped = true
+    clearInterval(timer)
+  }
 }
 
 const commonExecutables = {

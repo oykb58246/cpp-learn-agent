@@ -101,6 +101,7 @@ function createHarness(outputs: OpenAiResponseOutputItem[][], options: {
   totalTimeoutMs?: number
   maxSessionItems?: number
   maxSessionBytes?: number
+  approvalMode?: 'always' | 'on-risk' | 'full'
 } = {}) {
   const requests: Record<string, unknown>[][] = []
   const calls: Array<{ name: string; args: Record<string, unknown> }> = []
@@ -125,6 +126,10 @@ function createHarness(outputs: OpenAiResponseOutputItem[][], options: {
     async build(request, runId, turn) {
       const context = envelope(runId, request.message, turn)
       context.policy.allowedPaths = options.allowedPaths ?? context.policy.allowedPaths
+      if (options.approvalMode) {
+        context.policy.approvalMode = options.approvalMode
+        context.policy.writesRequireApproval = options.approvalMode !== 'full'
+      }
       return context
     }
   }
@@ -227,6 +232,83 @@ describe('OpenAiAgentRuntime', () => {
     ]))
     const observation = requests[1]?.find(item => item.type === 'function_call_output')
     expect(JSON.parse(String(observation?.output))).toMatchObject({ data: { content: 'int main() {}' } })
+  })
+
+  it('rejects a write narrative without tool calls and continues with tools', async () => {
+    const requestId = crypto.randomUUID()
+    const narrative: OpenAiResponseOutputItem = {
+      type: 'message', id: 'msg_story', role: 'assistant', status: 'completed',
+      content: [{
+        type: 'output_text', annotations: [],
+        text: JSON.stringify({
+          protocol: 'cpppilot.final.v1', taskId: requestId, status: 'completed',
+          intent: { primary: 'edit_code', secondary: [] },
+          messageMarkdown: '???????????????? main.cpp?',
+          clarificationQuestion: null, evidenceCallIds: [], claims: [], suggestedNextActions: []
+        })
+      }]
+    }
+    const { runtime, calls, requests } = createHarness([
+      [narrative],
+      [functionCall('call_write', 'workspace_apply_patch', {
+        projectId, relativePath: 'main.cpp', expectedHash: 'hash', content: 'int main(){return 0;}'
+      })],
+      [final(requestId, 'completed', ['call_write'], {
+        primary: 'edit_code',
+        claims: [{ type: 'file_changed', callId: 'call_write', target: 'main.cpp' }]
+      })]
+    ], {
+      approvalMode: 'full',
+      risks: { workspace_apply_patch: 'L0' },
+      toolName: 'workspace_apply_patch',
+      toolResult: success(['main.cpp']),
+      registeredToolNames: ['workspace_apply_patch']
+    })
+    const run = await runtime.start({
+      requestId, source: 'editor', mode: 'auto', message: '??????????', projectId, activeFile: 'main.cpp'
+    })
+    expect(run.status).toBe('completed')
+    expect(calls.length).toBeGreaterThan(0)
+    expect(requests.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('prefers a function call when the model also returns a message in the same turn', async () => {
+    const requestId = crypto.randomUUID()
+    const { runtime, calls } = createHarness([
+      [
+        functionCall('call_read', 'workspace_read_file', { projectId, relativePath: 'main.cpp' }),
+        final(requestId, 'completed')
+      ],
+      [final(requestId, 'completed', ['call_read'])]
+    ], { approvalMode: 'full' })
+    const run = await runtime.start({
+      requestId, source: 'main', mode: 'auto', message: '????????????', projectId, activeFile: 'main.cpp'
+    })
+    expect(run.status).toBe('completed')
+    expect(calls[0]?.name).toBe('workspace.read.file')
+  })
+
+  it('full approval mode still sends cppilot.context.v1 to the model', async () => {
+    const requestId = crypto.randomUUID()
+    const { runtime, requests } = createHarness([[final(requestId, 'completed')]], { approvalMode: 'full' })
+    const run = await runtime.start({ requestId, source: 'main', mode: 'chat', message: '?????' })
+    expect(run.status).toBe('completed')
+    expect(requests).toHaveLength(1)
+    const contextMessage = requests[0]?.find(item => item.role === 'user') as any
+    expect(contextMessage).toBeTruthy()
+    const payload = JSON.parse(String(contextMessage.content[0].text))
+    expect(payload).toMatchObject({ protocol: 'cpppilot.context.v1', taskId: requestId })
+    expect(payload.task.prompt).toBe('?????')
+  })
+
+  it('coerces a wrong final taskId to the current request id', async () => {
+    const requestId = crypto.randomUUID()
+    const wrongTaskId = crypto.randomUUID()
+    const { runtime } = createHarness([[final(wrongTaskId, 'completed')]])
+    const waiting = await runtime.start({ requestId, source: 'main', mode: 'chat', message: '你好' })
+    const run = await approveRemote(runtime, waiting)
+    expect(run.status).toBe('completed')
+    expect(run.response).toBeTruthy()
   })
 
   it('sends an approved screenshot as a native Responses input image', async () => {

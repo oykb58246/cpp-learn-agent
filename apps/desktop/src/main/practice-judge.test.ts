@@ -42,12 +42,16 @@ describe('practice judge', () => {
       toolchainService: {
         buildSingleFile: async () => ({ artifactPath: join(root, 'program.exe'), success: true, diagnostics: [], process: processResult('', 0) })
       },
-      runExecutable: async (_artifact, _args, options) => processResult(outputs.get(String(options.input ?? '').trim()) ?? '')
+      runExecutable: async (_artifact, _args, options) => ({
+        ...processResult(outputs.get(String(options.input ?? '').trim()) ?? ''),
+        peakMemoryBytes: 2 * 1_024 * 1_024
+      })
     })
 
     expect(result).toMatchObject({ status: 'wrong-answer', score: 80, totalScore: 100, passed: false })
     expect(result.cases).toHaveLength(5)
     expect(result.cases.map(item => item.score)).toEqual([20, 20, 20, 0, 20])
+    expect(result.cases.map(item => item.peakMemoryBytes)).toEqual(Array(5).fill(2 * 1_024 * 1_024))
   })
 
   it('returns a compile-error submission without running judge cases', async () => {
@@ -68,5 +72,23 @@ describe('practice judge', () => {
     expect(result).toMatchObject({ status: 'compile-error', score: 0, totalScore: 100, passed: false })
     expect(result.cases).toEqual([])
     expect(runCount).toBe(0)
+  })
+
+  it('reports TLE and MLE as dedicated OJ verdicts', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cpppilot-practice-judge-')); dirs.push(root)
+    const build = { artifactPath: join(root, 'program.exe'), success: true, diagnostics: [], process: processResult('', 0) }
+    const request = { exerciseId: exercise.id, code: 'int main(){}', standard: 'c++17' as const, userId: 'local-user' }
+
+    const timedOut = await judgePracticeSubmission(exercise, request, {
+      profile, workRoot: root, toolchainService: { buildSingleFile: async () => build },
+      runExecutable: async () => ({ ...processResult('', 0), exitCode: null, timedOut: true })
+    })
+    const memoryExceeded = await judgePracticeSubmission(exercise, request, {
+      profile, workRoot: root, toolchainService: { buildSingleFile: async () => build },
+      runExecutable: async () => ({ ...processResult('', 1), stderr: 'std::bad_alloc' })
+    })
+
+    expect(timedOut.status).toBe('time-limit-exceeded')
+    expect(memoryExceeded.status).toBe('memory-limit-exceeded')
   })
 })

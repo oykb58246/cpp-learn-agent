@@ -108,9 +108,10 @@ function submit() {
 }
 
 function onKeydown(event: KeyboardEvent) {
-  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault()
     submit()
+    return
   }
   if (event.key === 'Escape') menuOpen.value = false
 }
@@ -197,13 +198,14 @@ function onKeydown(event: KeyboardEvent) {
             v-else
             type="submit"
             class="composer-send"
-            title="发送 (Ctrl+Enter)"
+            title="发送 (Enter)"
             :disabled="!canSend"
           >
             <ArrowUp :size="16" />
           </button>
         </div>
       </div>
+      <small class="composer-keyboard-hint">Enter 发送 · Shift+Enter 换行</small>
     </div>
   </form>
 </template>

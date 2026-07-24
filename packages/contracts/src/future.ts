@@ -17,7 +17,8 @@ export const processResultSchema = z.object({
   durationMs: z.number().nonnegative(),
   timedOut: z.boolean(),
   cancelled: z.boolean(),
-  outputTruncated: z.boolean()
+  outputTruncated: z.boolean(),
+  peakMemoryBytes: z.number().int().nonnegative().optional()
 })
 export type ProcessResult = z.infer<typeof processResultSchema>
 
@@ -702,13 +703,21 @@ export const practiceJudgeCaseResultSchema = z.object({
   passed: z.boolean(),
   score: z.number().int().min(0).max(20),
   durationMs: z.number().nonnegative(),
+  peakMemoryBytes: z.number().int().nonnegative().optional(),
   exitCode: z.number().int().nullable(),
   timedOut: z.boolean(),
   errorMessage: z.string().max(2_000).optional()
 }).strict()
 export type PracticeJudgeCaseResult = z.infer<typeof practiceJudgeCaseResultSchema>
 
-export const practiceSubmissionStatusSchema = z.enum(['accepted', 'wrong-answer', 'compile-error', 'runtime-error'])
+export const practiceSubmissionStatusSchema = z.enum([
+  'accepted',
+  'wrong-answer',
+  'compile-error',
+  'runtime-error',
+  'time-limit-exceeded',
+  'memory-limit-exceeded'
+])
 export type PracticeSubmissionStatus = z.infer<typeof practiceSubmissionStatusSchema>
 export const practiceSubmissionResultSchema = z.object({
   submissionId: z.string().uuid(),

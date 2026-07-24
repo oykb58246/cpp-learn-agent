@@ -75,7 +75,7 @@ import {
   type ScreenshotCaptureSubmission,
   type ScreenshotPendingCapture
 } from '@cpp-pet/contracts'
-import { AchievementEngine, achievementDefinitions, builtInKnowledge, builtInPracticeExercises, builtInPracticeProjects, OpenAiAgentRuntime, OpenAiResponsesClient, transitionKnowledge, unlockKnowledgePath } from '@cpp-pet/agent-runtime'
+import { AchievementEngine, achievementDefinitions, builtInKnowledge, builtInPracticeExercises, builtInPracticeProjects, deepSeekChatCompletionsUrl, isDeepSeekApiBaseUrl, OpenAiAgentRuntime, OpenAiResponsesClient, transitionKnowledge, unlockKnowledgePath } from '@cpp-pet/agent-runtime'
 import { z } from 'zod'
 import { createWindowOptions } from './window-options'
 import { resolveTrayIconPath, resolveWindowIconPath } from './app-icons'
@@ -83,7 +83,7 @@ import { createPetWindowOptions, detectPetDockEdge, dockedPetBounds, dragPetWind
 import { createPetContextMenuTemplate, createPetTrayMenuTemplate } from './tray'
 import { registerCppPilotShortcuts } from './shortcuts'
 import { createScreenshotAgentRequest, createScreenshotRef } from './screenshot-flow'
-import { buildOjScreenshotImportRequest, parseOjImportModelOutput } from './practice-import'
+import { buildOjScreenshotChatCompletionsRequest, buildOjScreenshotImportRequest, parseOjImportModelOutput } from './practice-import'
 import { judgePracticeSubmission } from './practice-judge'
 import { AgentHost } from './agent-host'
 import { ModelSecretStore } from './model-secret-store'
@@ -979,6 +979,14 @@ function extractOjResponseText(raw: unknown): unknown {
   if (!raw || typeof raw !== 'object') return raw
   const record = raw as Record<string, unknown>
   if (typeof record.output_text === 'string') return record.output_text
+  const choices = Array.isArray(record.choices) ? record.choices : []
+  const firstChoice = choices[0]
+  if (firstChoice && typeof firstChoice === 'object') {
+    const message = (firstChoice as Record<string, unknown>).message
+    if (message && typeof message === 'object' && typeof (message as Record<string, unknown>).content === 'string') {
+      return (message as Record<string, unknown>).content
+    }
+  }
   const output = Array.isArray(record.output) ? record.output : []
   for (const item of output) {
     if (!item || typeof item !== 'object') continue
@@ -1001,19 +1009,24 @@ async function importOjScreenshot(input: PracticeOjScreenshotInput): Promise<Pra
   }
   let response: Response
   try {
-    response = await fetch(`${profile.baseUrl.replace(/\/$/, '')}/responses`, {
+    const deepSeek = isDeepSeekApiBaseUrl(profile.baseUrl)
+    response = await fetch(deepSeek
+      ? deepSeekChatCompletionsUrl(profile.baseUrl)
+      : `${profile.baseUrl.replace(/\/$/, '')}/responses`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${apiKey}`,
         'content-type': 'application/json'
       },
-      body: JSON.stringify(buildOjScreenshotImportRequest({
-        model: profile.model,
-        previewDataUrl: input.previewDataUrl,
-        mimeType: input.mimeType,
-        width: input.width,
-        height: input.height
-      }))
+      body: JSON.stringify((deepSeek
+        ? buildOjScreenshotChatCompletionsRequest
+        : buildOjScreenshotImportRequest)({
+          model: profile.model,
+          previewDataUrl: input.previewDataUrl,
+          mimeType: input.mimeType,
+          width: input.width,
+          height: input.height
+        }))
     })
   } catch (error) {
     throw new ToolExecutionError('MODEL_REQUEST_FAILED', 'OJ 截图导入请求模型失败。', error instanceof Error ? error.message : '检查网络与模型配置后重试。', true)
@@ -1973,13 +1986,13 @@ function registerIpc(): void {
       role: 'user',
       content: [{ type: 'input_text', text: JSON.stringify({
         protocol: 'cpppilot.context.v1', taskId, turn: 0,
-        task: { prompt: '验证 OpenAI Responses API 连接。不要调用工具。', source: 'system' },
+        task: { prompt: '验证模型连接。不要调用工具；请返回有效的 cpppilot.final.v1 JSON。', source: 'system' },
         workspace: { relatedFiles: [], diagnostics: [], environment: { cppStandard: 'c++17', cmakeAvailable: false } },
         memory: { recentConversation: [], learnerProfile: {}, knowledgeState: [], relevantErrors: [], dueReviews: [], recentEvidence: [] },
         policy: { allowedPaths: [], allowNewPaths: false, writesRequireApproval: true, maxModelTurns: 1, maxToolCalls: 1, remainingTimeMs: 30_000 }
       }) }]
     }], new AbortController().signal)
-    return { ok: true, latencyMs: Date.now() - started, detail: '模型返回了有效的 OpenAI Responses 响应。' }
+    return { ok: true, latencyMs: Date.now() - started, detail: '模型返回了有效响应。' }
   })
   handle(ipc.mockDashboard, empty, () => {
     const { database } = requiredServices()

@@ -8,6 +8,12 @@ const profile: ModelProfile = {
   enabled: true, timeoutMs: 5_000, apiKeyConfigured: true,
   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
 }
+const deepSeekProfile: ModelProfile = {
+  ...profile,
+  name: 'DeepSeek',
+  baseUrl: 'http://api.deepseek.com',
+  model: 'deepseek-v4-pro'
+}
 const tools: OpenAiFunctionTool[] = [{
   type: 'function', name: 'workspace_read_file', description: 'Read a file', strict: true,
   parameters: {
@@ -170,6 +176,115 @@ describe('OpenAI Responses client', () => {
     await expect(malformed.respond([], new AbortController().signal)).rejects.toMatchObject({ code: 'MODEL_PROTOCOL_INVALID' })
   })
 
+  it('adapts DeepSeek profiles to Chat Completions and maps final JSON to a Responses message', async () => {
+    let url = ''
+    let authorization = ''
+    let body: Record<string, any> = {}
+    const finalJson = JSON.stringify({
+      protocol: 'cpppilot.final.v1', taskId: crypto.randomUUID(), status: 'completed',
+      intent: { primary: 'answer', secondary: [] }, messageMarkdown: 'DeepSeek connected',
+      clarificationQuestion: null, evidenceCallIds: [], claims: [], suggestedNextActions: []
+    })
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      url = String(input)
+      authorization = new Headers(init?.headers).get('authorization') ?? ''
+      body = JSON.parse(String(init?.body))
+      return Response.json({
+        id: 'chatcmpl_deepseek_1', object: 'chat.completion',
+        choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: finalJson } }]
+      })
+    }) as typeof fetch
+    const client = new OpenAiResponsesClient({ profile: deepSeekProfile, apiKey: 'deepseek-key', tools, fetcher })
+
+    const result = await client.respond([{
+      role: 'user',
+      content: [{ type: 'input_text', text: '{"protocol":"cpppilot.context.v1"}' }]
+    }], new AbortController().signal)
+
+    expect(url).toBe('https://api.deepseek.com/chat/completions')
+    expect(authorization).toBe('Bearer deepseek-key')
+    expect(body).toMatchObject({
+      model: 'deepseek-v4-pro',
+      tool_choice: 'auto',
+      response_format: { type: 'json_object' },
+      stream: false,
+      messages: [
+        { role: 'system', content: expect.stringContaining('cpppilot.final.v1') },
+        { role: 'user', content: '{"protocol":"cpppilot.context.v1"}' }
+      ],
+      tools: [{
+        type: 'function',
+        function: { name: 'workspace_read_file', description: 'Read a file', parameters: tools[0]!.parameters }
+      }]
+    })
+    expect(body.tools[0]).not.toHaveProperty('name')
+    expect(result).toMatchObject({
+      id: 'chatcmpl_deepseek_1', status: 'completed',
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: finalJson }] }]
+    })
+  })
+
+  it('maps DeepSeek tool calls and converts Responses continuation history back to chat messages', async () => {
+    const bodies: Record<string, any>[] = []
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return Response.json({
+        id: `chatcmpl_${bodies.length}`,
+        choices: [{
+          finish_reason: 'tool_calls',
+          message: {
+            role: 'assistant', content: null, reasoning_content: 'Need to inspect the current file.',
+            tool_calls: [{
+              id: 'call_deepseek_1', type: 'function',
+              function: { name: 'workspace_read_file', arguments: '{"projectId":"p","relativePath":"main.cpp"}' }
+            }]
+          }
+        }]
+      })
+    }) as typeof fetch
+    const client = new OpenAiResponsesClient({ profile: deepSeekProfile, apiKey: 'key', tools, fetcher })
+    const signal = new AbortController().signal
+    const first = await client.respond([{ role: 'user', content: [{ type: 'input_text', text: 'context' }] }], signal)
+
+    expect(first.output[0]).toMatchObject({ type: 'reasoning' })
+    expect(first.output[1]).toMatchObject({
+      type: 'function_call', call_id: 'call_deepseek_1', name: 'workspace_read_file'
+    })
+    await client.respond([
+      { role: 'user', content: [{ type: 'input_text', text: 'context' }] },
+      ...first.output,
+      { type: 'function_call_output', call_id: 'call_deepseek_1', output: '{"ok":true}' }
+    ], signal)
+
+    expect(bodies[1]?.messages.slice(-2)).toEqual([
+      {
+        role: 'assistant', content: null, reasoning_content: 'Need to inspect the current file.',
+        tool_calls: [{
+          id: 'call_deepseek_1', type: 'function',
+          function: { name: 'workspace_read_file', arguments: '{"projectId":"p","relativePath":"main.cpp"}' }
+        }]
+      },
+      { role: 'tool', tool_call_id: 'call_deepseek_1', content: '{"ok":true}' }
+    ])
+  })
+
+  it('maps incomplete and malformed DeepSeek responses to explicit errors', async () => {
+    const incomplete = new OpenAiResponsesClient({
+      profile: deepSeekProfile, apiKey: 'key', tools,
+      fetcher: vi.fn(async () => Response.json({
+        id: 'chatcmpl_short',
+        choices: [{ finish_reason: 'length', message: { role: 'assistant', content: '{}' } }]
+      })) as typeof fetch
+    })
+    const malformed = new OpenAiResponsesClient({
+      profile: deepSeekProfile, apiKey: 'key', tools,
+      fetcher: vi.fn(async () => Response.json({ id: 'chatcmpl_bad', choices: [] })) as typeof fetch
+    })
+
+    await expect(incomplete.respond([], new AbortController().signal)).rejects.toMatchObject({ code: 'MODEL_INCOMPLETE' })
+    await expect(malformed.respond([], new AbortController().signal)).rejects.toMatchObject({ code: 'MODEL_PROTOCOL_INVALID' })
+  })
+
   it('instructs the model to own language understanding and use evidence', () => {
     expect(CPPPILOT_OPENAI_INSTRUCTIONS).toContain('original user prompt')
     expect(CPPPILOT_OPENAI_INSTRUCTIONS).toContain('incomplete quotes')
@@ -189,10 +304,10 @@ describe('OpenAI Responses client', () => {
       for (const phrase of requiredPhrases) expect(text, `global instruction rule ${number}`).toContain(phrase)
     }
 
-    it('declares a stable template version and exactly twelve normative rules', () => {
-      expect(CPPPILOT_OPENAI_INSTRUCTIONS).toMatch(/^Instruction version: cpppilot\.agent-instructions\.v1$/m)
+    it('declares a stable template version and exactly thirteen normative rules', () => {
+      expect(CPPPILOT_OPENAI_INSTRUCTIONS).toMatch(/^Instruction version: cpppilot\.agent-instructions\.v3$/m)
       expect([...CPPPILOT_OPENAI_INSTRUCTIONS.matchAll(/^(\d+)\. /gm)].map(match => Number(match[1])))
-        .toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+        .toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
     })
 
     it('makes the model the CppPilot learning and project Agent and preserves natural-language authority', () => {

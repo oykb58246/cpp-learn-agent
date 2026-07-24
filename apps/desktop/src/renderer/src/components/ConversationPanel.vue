@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { Archive, Bot, MessageSquarePlus, RotateCcw, Settings, X } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import type { AgentStartRequest, Diagnostic } from '@cpp-pet/contracts'
@@ -41,11 +41,22 @@ const cancellableTask = computed(() => Boolean(
   && agent.currentRun.status === 'waiting-input'
 ))
 
-watch(() => agent.messages.map(item => `${item.id}:${item.content.length}:${item.status}:${item.screenshot?.id ?? ''}`).join('|'), async () => {
+onMounted(async () => {
   await nextTick()
-  if (transcript.value) transcript.value.scrollTop = transcript.value.scrollHeight
+  scrollToLatestMessage()
 })
 
+watch(() => [
+  agent.currentConversationId,
+  agent.messages.map(item => `${item.id}:${item.content.length}:${item.status}:${item.screenshot?.id ?? ''}`).join('|')
+], async () => {
+  await nextTick()
+  scrollToLatestMessage()
+}, { immediate: true })
+
+function scrollToLatestMessage() {
+  if (transcript.value) transcript.value.scrollTop = transcript.value.scrollHeight
+}
 
 watch(() => props.focusMessageId, async id => {
   if (!id) return

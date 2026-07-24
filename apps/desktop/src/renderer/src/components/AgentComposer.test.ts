@@ -63,6 +63,7 @@ describe('AgentComposer', () => {
     expect(html).toContain('composer-shell')
     expect(html).toContain('<textarea')
     expect(html).toContain('composer-send stop')
+    expect(html).toContain('Enter 发送 · Shift+Enter 换行')
     expect(html).toContain('完全访问')
     expect(html).toContain('lucide-shield')
   })

@@ -61,6 +61,27 @@ export function buildOjScreenshotImportRequest(input: OjScreenshotImportRequestI
   }
 }
 
+export function buildOjScreenshotChatCompletionsRequest(input: OjScreenshotImportRequestInput) {
+  const responsesRequest = buildOjScreenshotImportRequest(input)
+  const text = responsesRequest.input[0]!.content
+    .filter(part => part.type === 'input_text')
+    .map(part => 'text' in part ? part.text : '')
+    .join('\n')
+
+  return {
+    model: input.model,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text },
+        { type: 'image_url', image_url: { url: input.previewDataUrl, detail: 'auto' } }
+      ]
+    }],
+    response_format: { type: 'json_object' },
+    stream: false
+  }
+}
+
 export function parseOjImportModelOutput(raw: unknown, now: string): PracticeOjImportResult {
   const value = typeof raw === 'string' ? parseJson(raw) : raw
   const parsed = ojModelOutputSchema.safeParse(value)

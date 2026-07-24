@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { CheckCircle2, CircleAlert, ImagePlus, Loader2, RefreshCw, Search, Send, UploadCloud, XCircle } from 'lucide-vue-next'
-import type { PracticeCatalog, PracticeExercise, PracticeOjScreenshotInput, PracticeProjectCompleteResult, PracticeSubmissionResult } from '@cpp-pet/contracts'
+import { computed, nextTick, onMounted, ref } from 'vue'
+import { CheckCircle2, CircleAlert, HardDrive, ImagePlus, Loader2, RefreshCw, Search, Send, Timer, UploadCloud, XCircle } from 'lucide-vue-next'
+import type { PracticeCatalog, PracticeExercise, PracticeJudgeCaseResult, PracticeOjScreenshotInput, PracticeProjectCompleteResult, PracticeSubmissionResult } from '@cpp-pet/contracts'
 import { useAppStore } from '../stores/app'
 
 const app = useAppStore()
 const catalog = ref<PracticeCatalog>({ exercises: [], projects: [] })
 const loading = ref(false)
 const importBusy = ref(false)
+const importStage = ref<'analyzing' | 'refreshing'>('analyzing')
 const importNotice = ref('')
 const selectedExerciseId = ref('')
 const searchQuery = ref('')
@@ -57,6 +58,15 @@ const selectedCode = computed({
   }
 })
 const failedCases = computed(() => submission.value?.cases.filter(item => !item.passed) ?? [])
+const submissionVerdict = computed(() => submission.value ? verdictFor(submission.value.status) : null)
+const totalDurationMs = computed(() => submission.value
+  ? submission.value.compile.process.durationMs + submission.value.cases.reduce((total, item) => total + item.durationMs, 0)
+  : 0)
+const slowestCaseMs = computed(() => Math.max(0, ...(submission.value?.cases.map(item => item.durationMs) ?? [])))
+const peakMemoryBytes = computed(() => {
+  const values = submission.value?.cases.flatMap(item => item.peakMemoryBytes === undefined ? [] : [item.peakMemoryBytes]) ?? []
+  return values.length ? Math.max(...values) : null
+})
 
 onMounted(loadCatalog)
 
@@ -125,7 +135,8 @@ async function importOjScreenshot(event: Event) {
     return
   }
   importBusy.value = true
-  importNotice.value = '正在交给 AI 整理题面'
+  importStage.value = 'analyzing'
+  importNotice.value = 'AI 正在分析题面、样例和判题用例…'
   try {
     const previewDataUrl = await readDataUrl(file)
     const size = await readImageSize(previewDataUrl)
@@ -145,9 +156,14 @@ async function importOjScreenshot(event: Event) {
       importNotice.value = result.data.reason
       return
     }
-    importNotice.value = `已添加：${result.data.exercise.title}`
+    importStage.value = 'refreshing'
+    importNotice.value = 'AI 分析完成，正在刷新题目列表…'
+    searchQuery.value = ''
     await loadCatalog()
     selectExercise(result.data.exercise.id)
+    await nextTick()
+    document.querySelector<HTMLElement>(`[data-exercise-id="${result.data.exercise.id}"]`)?.scrollIntoView({ block: 'nearest' })
+    importNotice.value = `已添加并打开：${result.data.exercise.title}`
   } finally {
     importBusy.value = false
   }
@@ -178,6 +194,35 @@ function readImageSize(src: string): Promise<{ width: number; height: number }> 
 function caseLabel(index: number) {
   return `#${index + 1}`
 }
+
+function verdictFor(status: PracticeSubmissionResult['status']) {
+  const labels: Record<PracticeSubmissionResult['status'], { code: string; label: string }> = {
+    accepted: { code: 'AC', label: '答案正确' },
+    'wrong-answer': { code: 'WA', label: '答案错误' },
+    'compile-error': { code: 'CE', label: '编译错误' },
+    'runtime-error': { code: 'RE', label: '运行错误' },
+    'time-limit-exceeded': { code: 'TLE', label: '超出时间限制' },
+    'memory-limit-exceeded': { code: 'MLE', label: '内存分配失败' }
+  }
+  return labels[status]
+}
+
+function caseVerdict(item: PracticeJudgeCaseResult) {
+  if (item.timedOut) return { code: 'TLE', label: '超时' }
+  if (/bad_alloc|out of memory|cannot allocate memory|not enough memory|memory allocation/i.test(`${item.stderr}\n${item.errorMessage ?? ''}`)) return { code: 'MLE', label: '内存分配失败' }
+  if (item.passed) return { code: 'AC', label: '通过' }
+  if (item.exitCode !== 0) return { code: 'RE', label: '运行错误' }
+  return { code: 'WA', label: '答案不一致' }
+}
+
+function formatDuration(durationMs: number) {
+  return durationMs < 1_000 ? `${durationMs} ms` : `${(durationMs / 1_000).toFixed(2)} s`
+}
+
+function formatMemory(bytes: number | null) {
+  if (bytes === null) return '未采样'
+  return bytes < 1_024 * 1_024 ? `${Math.ceil(bytes / 1_024)} KB` : `${(bytes / (1_024 * 1_024)).toFixed(1)} MB`
+}
 </script>
 
 <template>
@@ -201,6 +246,10 @@ function caseLabel(index: number) {
       <button class="secondary-command" :disabled="loading" @click="loadCatalog"><RefreshCw :size="15" />刷新</button>
       <button class="primary-command" :disabled="importBusy" @click="chooseOjScreenshot"><ImagePlus :size="15" />{{ importBusy ? '整理中' : '导入截图' }}</button>
       <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden @change="importOjScreenshot" />
+      <div v-if="importBusy" class="practice-import-progress" role="status">
+        <Loader2 :size="16" class="spin" />
+        <span><strong>{{ importStage === 'analyzing' ? 'AI 正在分析题面' : '正在刷新题目列表' }}</strong><small>{{ importStage === 'analyzing' ? '正在提取题意、样例与判题用例' : '导入完成后将自动打开新题目' }}</small></span>
+      </div>
       <small v-if="importNotice">{{ importNotice }}</small>
     </section>
 
@@ -213,7 +262,7 @@ function caseLabel(index: number) {
         </div>
         <section v-for="group in groupedExercises" :key="group.knowledgePoint">
           <header><strong>{{ group.knowledgePoint }}</strong><span>{{ group.exercises.length }}</span></header>
-          <button v-for="exercise in group.exercises" :key="exercise.id" :class="{ active: selectedExercise?.id === exercise.id }" @click="selectExercise(exercise.id)">
+          <button v-for="exercise in group.exercises" :key="exercise.id" :data-exercise-id="exercise.id" :class="{ active: selectedExercise?.id === exercise.id }" @click="selectExercise(exercise.id)">
             <span>{{ exercise.title }}</span>
             <small>难度 {{ exercise.difficulty }} · {{ exercise.source === 'user' ? '用户导入' : '内置' }}</small>
           </button>
@@ -266,13 +315,24 @@ function caseLabel(index: number) {
             <CheckCircle2 v-if="submission.passed" :size="18" />
             <XCircle v-else :size="18" />
             <strong>{{ submission.score }}/{{ submission.totalScore }}</strong>
-            <span>{{ submission.status }}</span>
+            <b>{{ submissionVerdict?.code }}</b>
+            <span>{{ submissionVerdict?.label }}</span>
+          </div>
+          <div class="judge-metrics">
+            <span><Timer :size="14" /><small>总耗时</small><strong>{{ formatDuration(totalDurationMs) }}</strong></span>
+            <span><Timer :size="14" /><small>最慢用例</small><strong>{{ formatDuration(slowestCaseMs) }} / 3.00 s</strong></span>
+            <span><HardDrive :size="14" /><small>峰值内存</small><strong>{{ submissionVerdict?.code === 'MLE' ? 'MLE：内存异常' : formatMemory(peakMemoryBytes) }}</strong></span>
           </div>
           <div class="judge-case-grid">
             <article v-for="(item, index) in submission.cases" :key="item.caseId" :class="{ passed: item.passed }">
               <header><b>{{ caseLabel(index) }}</b><span>{{ item.score }}/20</span></header>
-              <small>{{ item.passed ? '通过' : item.errorMessage || '答案不一致' }}</small>
+              <small>{{ caseVerdict(item).code }}：{{ item.errorMessage || caseVerdict(item).label }}</small>
+              <time>{{ formatDuration(item.durationMs) }}</time>
             </article>
+          </div>
+          <div v-if="submission.status === 'compile-error' && submission.compile.diagnostics.length" class="judge-compile-errors">
+            <strong>编译器输出</strong>
+            <pre v-for="(diagnostic, index) in submission.compile.diagnostics" :key="`${diagnostic.rawMessage}-${index}`">{{ diagnostic.normalizedMessage }}</pre>
           </div>
           <div v-if="failedCases.length" class="judge-diff-list">
             <article v-for="item in failedCases" :key="`${item.caseId}-diff`">

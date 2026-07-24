@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import type { PracticeExercise, PracticeSubmissionRequest, PracticeSubmissionResult, ProcessResult, ToolchainProfile } from '@cpp-pet/contracts'
 import { runProcess, runtimeDiagnostics, type SingleFileBuildOptions, type SingleFileBuildResult } from '@cpp-pet/cpp-local-tools'
 
-type RunExecutable = (command: string, args: string[], options: { cwd?: string; input?: string; timeoutMs?: number; maxOutputBytes?: number; signal?: AbortSignal }) => Promise<ProcessResult>
+type RunExecutable = (command: string, args: string[], options: { cwd?: string; input?: string; timeoutMs?: number; maxOutputBytes?: number; capturePeakMemory?: boolean; signal?: AbortSignal }) => Promise<ProcessResult>
+const PRACTICE_TIME_LIMIT_MS = 3_000
 
 export interface PracticeJudgeDependencies {
   profile: ToolchainProfile
@@ -66,8 +67,9 @@ export async function judgePracticeSubmission(
       const runOptions: Parameters<RunExecutable>[2] = {
         cwd: workingDirectory,
         input: item.input,
-        timeoutMs: 3_000,
-        maxOutputBytes: 20_000
+        timeoutMs: PRACTICE_TIME_LIMIT_MS,
+        maxOutputBytes: 20_000,
+        capturePeakMemory: true
       }
       if (dependencies.signal) runOptions.signal = dependencies.signal
       const process = await runExecutable(build.artifactPath, [], runOptions)
@@ -83,18 +85,19 @@ export async function judgePracticeSubmission(
         passed,
         score: passed ? 20 : 0,
         durationMs: process.durationMs,
+        ...(process.peakMemoryBytes !== undefined ? { peakMemoryBytes: process.peakMemoryBytes } : {}),
         exitCode: process.exitCode,
         timedOut: process.timedOut,
         ...(runtimeErrors[0]?.normalizedMessage ? { errorMessage: runtimeErrors[0].normalizedMessage } : {})
       })
     }
     const score = cases.reduce((total, item) => total + item.score, 0)
-    const hasRuntimeError = cases.some(item => item.timedOut || item.exitCode !== 0)
+    const status = practiceVerdict(cases)
     return {
       submissionId: uuid(),
       exerciseId: exercise.id,
       userId,
-      status: score === 100 ? 'accepted' : hasRuntimeError ? 'runtime-error' : 'wrong-answer',
+      status,
       score,
       totalScore: 100,
       passed: score === 100,
@@ -118,4 +121,16 @@ export function normalizeJudgeOutput(value: string): string {
 
 function truncateForContract(value: string): string {
   return value.length > 20_000 ? value.slice(0, 20_000) : value
+}
+
+function practiceVerdict(cases: PracticeSubmissionResult['cases']): PracticeSubmissionResult['status'] {
+  if (cases.every(item => item.passed)) return 'accepted'
+  if (cases.some(item => item.timedOut)) return 'time-limit-exceeded'
+  if (cases.some(item => isMemoryFailure(item.stderr, item.errorMessage))) return 'memory-limit-exceeded'
+  if (cases.some(item => item.exitCode !== 0)) return 'runtime-error'
+  return 'wrong-answer'
+}
+
+function isMemoryFailure(stderr: string, errorMessage?: string): boolean {
+  return /bad_alloc|out of memory|cannot allocate memory|not enough memory|memory allocation/i.test(`${stderr}\n${errorMessage ?? ''}`)
 }

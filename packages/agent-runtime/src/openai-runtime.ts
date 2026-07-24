@@ -257,6 +257,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
         await this.requestRemoteApproval(state)
       } else {
         state.remoteContextApproved = true
+        this.appendApprovedRemoteContext(state)
         await this.timeline(state, 'approval', 'completed', '审批策略：完全访问，跳过上下文审批', 'full')
         await this.drive(state)
       }
@@ -378,15 +379,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
             return
           }
           state.remoteContextApproved = true
-          const contextContent: Record<string, unknown>[] = [{
-            type: 'input_text', text: JSON.stringify(state.context)
-          }]
-          if (state.request.screenshot) {
-            contextContent.push({
-              type: 'input_image', image_url: state.request.screenshot.previewDataUrl, detail: 'auto'
-            })
-          }
-          state.input.push({ role: 'user', content: contextContent })
+          this.appendApprovedRemoteContext(state)
           await this.drive(state)
           return
         }
@@ -459,6 +452,29 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
     await Promise.all(cancellations)
   }
 
+
+  private appendApprovedRemoteContext(state: OpenAiExecutionState): void {
+    if (!state.context) throw new AgentLoopFailure('AGENT_STATE_INVALID', '模型上下文尚未准备。')
+    const already = state.input.some(item => {
+      if (item.role !== 'user' || !Array.isArray(item.content)) return false
+      return (item.content as Array<Record<string, unknown>>).some(part => (
+        part?.type === 'input_text'
+        && typeof part.text === 'string'
+        && part.text.includes('cpppilot.context.v1')
+      ))
+    })
+    if (already) return
+    const contextContent: Record<string, unknown>[] = [{
+      type: 'input_text', text: JSON.stringify(state.context)
+    }]
+    if (state.request.screenshot) {
+      contextContent.push({
+        type: 'input_image', image_url: state.request.screenshot.previewDataUrl, detail: 'auto'
+      })
+    }
+    state.input.push({ role: 'user', content: contextContent })
+  }
+
   private async requestRemoteApproval(state: OpenAiExecutionState): Promise<void> {
     if (!state.model || !state.context) throw new AgentLoopFailure('AGENT_STATE_INVALID', '模型上下文尚未准备。')
     const contextBytes = new TextEncoder().encode(JSON.stringify(state.context)).byteLength
@@ -510,6 +526,9 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
     if (!state.context || !state.remoteContextApproved) {
       throw new AgentLoopFailure('AGENT_STATE_INVALID', '模型循环尚未准备。')
     }
+    // Defensive: every entry into the model loop must carry cpppilot.context.v1
+    // (covers approve / full-skip / resume paths).
+    this.appendApprovedRemoteContext(state)
     while (!isTerminal(state.run.status)) {
       this.checkDeadline(state)
       this.checkSessionBudget(state)
@@ -541,17 +560,20 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
       state.input.push(...response.output.map(item => structuredClone(item) as OpenAiResponseInputItem))
       const calls = response.output.filter((item): item is Extract<OpenAiResponseOutputItem, { type: 'function_call' }> => item.type === 'function_call')
       const messages = response.output.filter((item): item is Extract<OpenAiResponseOutputItem, { type: 'message' }> => item.type === 'message')
-      if (calls.length > 1 || (calls.length && messages.length)) {
-        throw new AgentLoopFailure('MODEL_PROTOCOL_INVALID', '模型必须一次返回一个工具调用或一个最终响应。')
-      }
-      if (calls.length === 1) {
+      // Models occasionally return a function_call together with a text message (especially when
+      // json_schema text format is enabled). Prefer the tool call; ignore extra messages for this turn.
+      if (calls.length >= 1) {
         await this.acceptToolCall(state, calls[0]!)
         if (state.run.status === 'waiting-approval') return
         continue
       }
+      const finalMessages = messages.filter(message =>
+        message.content.some(part => part.type === 'output_text' || part.type === 'refusal')
+      )
       try {
-        await this.acceptFinal(state, messages)
-        return
+        const done = await this.acceptFinal(state, finalMessages.slice(0, 1))
+        if (done) return
+        continue
       } catch (error) {
         if (
           error instanceof AgentLoopFailure
@@ -563,7 +585,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
             role: 'user',
             content: [{
               type: 'input_text',
-              text: `Your previous final response was invalid: ${error.message}. Return exactly one valid cpppilot.final.v1 JSON object matching the required schema.`
+              text: `Your previous output was invalid: ${error.message}. Return either exactly one function call, or exactly one valid cpppilot.final.v1 JSON object (not both). taskId MUST be exactly "${state.request.requestId}".`
             }]
           })
           continue
@@ -752,7 +774,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
   private async acceptFinal(
     state: OpenAiExecutionState,
     messages: Array<Extract<OpenAiResponseOutputItem, { type: 'message' }>>
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (messages.length !== 1) throw new AgentLoopFailure('MODEL_PROTOCOL_INVALID', '模型未返回工具调用或最终响应。')
     const refusals = messages[0]!.content.filter(item => item.type === 'refusal')
     if (refusals.length) throw new AgentLoopFailure('MODEL_REFUSED', refusals.map(item => item.refusal).join('\n'))
@@ -762,10 +784,55 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
     try { raw = JSON.parse(texts[0]!.text) } catch {
       throw new AgentLoopFailure('MODEL_PROTOCOL_INVALID', '模型最终响应不是有效 JSON。')
     }
+    // Models often invent taskId. Coerce to the authoritative request id when the rest is valid.
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const candidate = raw as Record<string, unknown>
+      if (candidate.protocol === 'cpppilot.final.v1') candidate.taskId = state.request.requestId
+    }
     const parsed = cppPilotFinalResponseSchema.safeParse(raw)
     if (!parsed.success) throw new AgentLoopFailure('MODEL_PROTOCOL_INVALID', parsed.error.issues.map(issue => issue.message).join('；'))
-    const final = parsed.data
-    if (final.taskId !== state.request.requestId) throw new AgentLoopFailure('MODEL_PROTOCOL_INVALID', '最终响应 taskId 与当前任务不一致。')
+        let final = this.enrichFinalFromEvidence(state, parsed.data)
+
+    // Model must actually call tools for write/build/create work. Reject "I am writing main.cpp" finals.
+    if (
+      final.status !== 'needs_input'
+      && !hasSuccessfulEvidence(state)
+      && claimsToolActionWithoutEvidence(final)
+      && state.finalRepairAttempts < 2
+    ) {
+      state.finalRepairAttempts += 1
+      state.input.push({
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: [
+            'You returned a final response that claims file/code work without successful tool evidence in this run.',
+            'Do NOT narrate tool use. Call the real functions now (read current file hash if needed, then workspace_apply_patch / workspace_create_file, then compiler_build / program_run when appropriate).',
+            'After tools succeed, return one completed cpppilot.final.v1 using only local outcomes in claims.',
+            `taskId MUST be exactly "${state.request.requestId}".`
+          ].join(' ')
+        }]
+      })
+      return false
+    }
+
+    // Mid-task "failed" messages are often premature; if tools already succeeded, keep going via repair once.
+    if (
+      final.status === 'failed'
+      && state.finalRepairAttempts < 2
+      && looksLikePrematureFailure(final.messageMarkdown)
+      && hasSuccessfulEvidence(state)
+    ) {
+      state.finalRepairAttempts += 1
+      state.input.push({
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: `Do not mark the task failed while tools can still finish it. Successful tool evidence already exists in this run. Continue with any remaining function calls (build/run if needed), then return one completed cpppilot.final.v1 with claims taken only from tool outcomes. taskId MUST be "${state.request.requestId}".`
+        }]
+      })
+      return false
+    }
     this.validateEvidence(state, final)
     state.run.intent = final.intent.primary
     state.run.response = final.messageMarkdown
@@ -774,7 +841,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
       state.run.pendingClarification = { question: final.clarificationQuestion!, requestedAt: new Date().toISOString() }
       await this.setStatus(state, 'waiting-input')
       await this.timeline(state, 'response', 'waiting', '等待用户补充信息', final.clarificationQuestion!)
-      return
+      return true
     }
     if (final.status === 'failed') {
       state.run.errorCode = 'MODEL_REPORTED_FAILURE'
@@ -784,7 +851,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
       await this.persist(state)
       await this.timeline(state, 'response', 'failed', '模型报告任务失败', final.messageMarkdown)
       this.executions.delete(state.run.id)
-      return
+      return true
     }
     await this.setStatus(state, 'completed')
     state.run.completedAt = state.run.updatedAt
@@ -792,6 +859,7 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
     await this.persist(state)
     await this.timeline(state, 'response', 'completed', '完成回答', final.messageMarkdown)
     this.executions.delete(state.run.id)
+  return true
   }
 
   private validateEvidence(state: OpenAiExecutionState, final: CppPilotFinalResponse): void {
@@ -812,15 +880,34 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
       }
     }
     if (final.status !== 'completed') return
-    const requiredClaims: Partial<Record<CppPilotFinalResponse['intent']['primary'], CppPilotToolOutcome['type'][]>> = {
-      edit_code: ['file_changed', 'build_succeeded'],
-      create_project: ['project_created', 'build_succeeded'],
-      environment_setup: ['environment_configured']
-    }
-    for (const required of requiredClaims[final.intent.primary] ?? []) {
-      if (!final.claims.some(claim => claim.type === required)) {
-        throw new AgentLoopFailure('MODEL_EVIDENCE_INVALID', `完成状态缺少本地结构化声明：${required}`)
+    const required = requiredClaimsFor(final.intent.primary, state)
+    for (const claimType of required) {
+      if (!final.claims.some(claim => claim.type === claimType)) {
+        throw new AgentLoopFailure('MODEL_EVIDENCE_INVALID', `完成状态缺少本地结构化声明：${claimType}`)
       }
+    }
+  }
+
+  private enrichFinalFromEvidence(state: OpenAiExecutionState, final: CppPilotFinalResponse): CppPilotFinalResponse {
+    if (final.status !== 'completed' && final.status !== 'failed') return final
+    const claims = [...final.claims]
+    const evidenceCallIds = new Set(final.evidenceCallIds)
+    for (const [callId, evidence] of state.evidence) {
+      if (!evidence.ok) continue
+      evidenceCallIds.add(callId)
+      for (const outcome of evidence.outcomes) {
+        const exists = claims.some(claim =>
+          claim.type === outcome.type
+          && claim.callId === callId
+          && claim.target === outcome.target
+        )
+        if (!exists) claims.push({ type: outcome.type, callId, target: outcome.target })
+      }
+    }
+    return {
+      ...final,
+      evidenceCallIds: [...evidenceCallIds].slice(0, 100),
+      claims: claims.slice(0, 100)
     }
   }
 
@@ -1220,6 +1307,77 @@ export class OpenAiAgentRuntime implements AgentRuntimeController {
   }
 }
 
+
+function hasSuccessfulEvidence(state: OpenAiExecutionState): boolean {
+  for (const evidence of state.evidence.values()) {
+    if (evidence.ok && evidence.outcomes.length) return true
+  }
+  return false
+}
+
+
+function claimsToolActionWithoutEvidence(final: CppPilotFinalResponse): boolean {
+  if (final.status === 'needs_input') return false
+  const actionIntents = new Set(['edit_code', 'create_project', 'environment_setup'])
+  if (actionIntents.has(final.intent.primary)) return true
+  const text = final.messageMarkdown
+  const markers = [
+    'apply_patch',
+    'writeFile',
+    'compiler.build',
+    'program.run',
+    '写入',
+    '正在生成',
+    '生成经典',
+    '创建文件',
+    '修改了',
+    '已写入',
+    '编译并运行',
+    '正在编译',
+    '正在运行'
+  ]
+  return markers.some(marker => text.includes(marker))
+}
+
+function looksLikePrematureFailure(message: string): boolean {
+  const text = message.toLowerCase()
+  return (
+    text.includes('请再发')
+    || text.includes('本轮还没有')
+    || text.includes('正在编译')
+    || text.includes('正在运行')
+    || text.includes('会继续')
+    || text.includes('not finished')
+    || text.includes('still need')
+    || text.includes('please send')
+  )
+}
+
+function requiredClaimsFor(
+  intent: CppPilotFinalResponse['intent']['primary'],
+  state: OpenAiExecutionState
+): CppPilotToolOutcome['type'][] {
+  const outcomes = [...state.evidence.values()].flatMap(item => item.ok ? item.outcomes : [])
+  const has = (type: CppPilotToolOutcome['type']) => outcomes.some(item => item.type === type)
+  if (intent === 'edit_code') {
+    const required: CppPilotToolOutcome['type'][] = []
+    if (has('file_changed')) required.push('file_changed')
+    // Only require build when a successful build outcome exists or a build was attempted and claimed needed
+    if (has('build_succeeded')) required.push('build_succeeded')
+    // If model claims edit_code but nothing succeeded, still require a file change to avoid empty "completed"
+    if (!required.length) required.push('file_changed')
+    return required
+  }
+  if (intent === 'create_project') {
+    const required: CppPilotToolOutcome['type'][] = []
+    if (has('project_created') || true) required.push('project_created')
+    if (has('build_succeeded')) required.push('build_succeeded')
+    return required
+  }
+  if (intent === 'environment_setup') return ['environment_configured']
+  return []
+}
+
 function toolOutputFor(state: OpenAiExecutionState, pending: PendingToolCall, result: ToolResult): CppPilotToolOutput {
   const changedFiles = result.sideEffects
     .filter(item => ['write-file', 'create-file', 'delete-file'].includes(item.kind) && isRelativePath(item.target))
@@ -1262,6 +1420,9 @@ function toolOutcomesFor(
   }
 
   if (alias === 'workspace_read_file') add('file_read')
+  if ((alias === 'workspace_apply_patch' || alias === 'workspace_create_file' || alias === 'workspace_write_file') && relativePath) {
+    add('file_changed', relativePath)
+  }
   if ((alias === 'compiler_build' || alias === 'cmake_build') && result.exitCode === 0) add('build_succeeded')
   if ((alias === 'tests_run_cases' || alias === 'ctest_run') && result.exitCode === 0) add('tests_succeeded')
   if (alias === 'program_run' && result.exitCode === 0) add('program_succeeded')
