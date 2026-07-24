@@ -19,6 +19,8 @@ const projectId = crypto.randomUUID()
 const workspaceId = crypto.randomUUID()
 const profile: ModelProfile = {
   id: crypto.randomUUID(), name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5',
+  provider: 'openai', protocol: 'openai-responses',
+  capabilities: { text: true, vision: true, toolCalling: true, structuredOutput: true },
   enabled: true, timeoutMs: 5_000, apiKeyConfigured: true,
   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
 }

@@ -4,11 +4,25 @@ import { describe, expect, it } from 'vitest'
 import DesktopPet from './DesktopPet.vue'
 
 const state = {
-  settings: { visible: true, assetMode: 'salary-cat' as const, scale: 1, ignoreMouseEvents: false, bubbleEnabled: true, focusModeEnabled: false, launchAtLogin: false, customAssets: [] },
+  settings: {
+    visible: true,
+    assetMode: 'salary-cat' as const,
+    scale: 1,
+    ignoreMouseEvents: false,
+    bubbleEnabled: true,
+    frameEnabled: true,
+    progressBarEnabled: true,
+    edgeDockEnabled: true,
+    docked: false,
+    focusModeEnabled: false,
+    launchAtLogin: false,
+    customAssets: []
+  },
   windowVisible: true,
   ignoreMouseEvents: false,
   growthStage: 1 as const,
-  progress: { stage: 1 as const, totalStages: 4 as const, percent: 25, label: '第 1 关 / 共 4 关 · 入门' }
+  progress: { stage: 1 as const, totalStages: 4 as const, percent: 25, label: '第 1 关 / 共 4 关 · 入门' },
+  theme: 'system' as const
 }
 
 describe('DesktopPet', () => {

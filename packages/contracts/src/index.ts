@@ -46,7 +46,7 @@ import type {
   ModelProfile,
   ModelProfileInput
 } from './agent'
-import type { AppNavigationEvent, PetChatRequest, PetChatResult, PetCustomAssetCreateInput, PetCustomAssetMutation, PetCustomAssetRename, PetDragWindowRequest, PetEvent, PetSettings, PetWindowState, PracticeCatalog, PracticeOjImportResult, PracticeOjScreenshotInput, PracticeProjectCompleteRequest, PracticeProjectCompleteResult, PracticeSubmissionRequest, PracticeSubmissionResult, ScreenshotCaptureRequest, ScreenshotCaptureSubmission, ScreenshotPendingCapture, ScreenshotSubmittedEvent } from './future'
+import type { AppNavigationEvent, PetChatRequest, PetChatResult, PetCustomAssetCreateInput, PetCustomAssetMutation, PetCustomAssetRename, PetDragWindowRequest, PetEvent, PetSettings, PetWindowState, PracticeCatalog, PracticeOjImportInput, PracticeOjImportResult, PracticeProjectCompleteRequest, PracticeProjectCompleteResult, PracticeSubmissionRequest, PracticeSubmissionResult, ScreenshotCaptureRequest, ScreenshotCaptureSubmission, ScreenshotPendingCapture, ScreenshotSubmittedEvent } from './future'
 import type {
   BackgroundProfile,
   BackgroundProfileInput,
@@ -234,6 +234,7 @@ export interface CppPetApi {
   app: {
     getBootstrap(): Promise<ApiResult<AppBootstrap>>
     getVersion(): Promise<ApiResult<string>>
+    copyText(input: { text: string }): Promise<ApiResult<void>>
     onNavigate(listener: (event: AppNavigationEvent) => void): () => void
   }
   settings: { get(): Promise<ApiResult<AppSettings>>; update(input: Partial<AppSettings>): Promise<ApiResult<AppSettings>> }
@@ -355,14 +356,26 @@ export interface CppPetApi {
     practiceCatalog(): Promise<ApiResult<PracticeCatalog>>
     submitPractice(input: PracticeSubmissionRequest): Promise<ApiResult<PracticeSubmissionResult>>
     completePracticeProject(input: PracticeProjectCompleteRequest): Promise<ApiResult<PracticeProjectCompleteResult>>
-    importOjScreenshot(input: PracticeOjScreenshotInput): Promise<ApiResult<PracticeOjImportResult>>
+    importOjScreenshot(input: PracticeOjImportInput): Promise<ApiResult<PracticeOjImportResult>>
   }
   model: {
     list(): Promise<ApiResult<ModelProfile[]>>
     save(input: ModelProfileInput): Promise<ApiResult<ModelProfile>>
     remove(input: { profileId: string }): Promise<ApiResult<void>>
     clearKey(input: { profileId: string }): Promise<ApiResult<ModelProfile>>
-    test(input: { profileId: string }): Promise<ApiResult<{ ok: boolean; latencyMs: number; detail: string }>>
+    test(input: { profileId: string }): Promise<ApiResult<{
+      ok: boolean
+      latencyMs: number
+      detail: string
+      protocol: Exclude<ModelProfile['protocol'], 'auto'>
+      capabilities: ModelProfile['capabilities']
+    }>>
+    testVision(input: { profileId: string }): Promise<ApiResult<{
+      supported: boolean
+      latencyMs: number
+      detail: string
+      protocol: Exclude<ModelProfile['protocol'], 'auto'>
+    }>>
   }
   screenshot: {
     capture(input: ScreenshotCaptureRequest): Promise<ApiResult<void>>

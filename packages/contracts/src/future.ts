@@ -768,13 +768,31 @@ export const practiceCatalogSchema = z.object({
 }).strict()
 export type PracticeCatalog = z.infer<typeof practiceCatalogSchema>
 
-export const practiceOjScreenshotInputSchema = z.object({
+export const practiceOjImageInputSchema = z.object({
   previewDataUrl: z.string().startsWith('data:image/').max(5_000_000),
   mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
   width: z.number().int().positive(),
   height: z.number().int().positive()
 }).strict()
-export type PracticeOjScreenshotInput = z.infer<typeof practiceOjScreenshotInputSchema>
+export type PracticeOjImageInput = z.infer<typeof practiceOjImageInputSchema>
+
+export const practiceOjTextInputSchema = z.object({
+  kind: z.literal('text'),
+  fileName: z.string().min(1).max(255),
+  mimeType: z.enum(['text/markdown', 'text/plain', 'application/json']),
+  content: z.string().min(1).max(1_000_000)
+}).strict()
+export type PracticeOjTextInput = z.infer<typeof practiceOjTextInputSchema>
+
+export const practiceOjImportInputSchema = z.union([
+  practiceOjImageInputSchema,
+  practiceOjTextInputSchema
+])
+export type PracticeOjImportInput = z.infer<typeof practiceOjImportInputSchema>
+
+// Kept as an alias so older renderer/preload call sites remain source-compatible.
+export const practiceOjScreenshotInputSchema = practiceOjImportInputSchema
+export type PracticeOjScreenshotInput = PracticeOjImportInput
 
 export const practiceOjImportResultSchema = z.discriminatedUnion('status', [
   z.object({

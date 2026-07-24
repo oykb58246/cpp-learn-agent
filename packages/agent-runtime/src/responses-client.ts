@@ -91,6 +91,14 @@ export function isDeepSeekApiBaseUrl(baseUrl: string): boolean {
 export function deepSeekChatCompletionsUrl(baseUrl: string): string {
   const url = new URL(baseUrl)
   url.protocol = 'https:'
+  return chatCompletionsUrl(url)
+}
+
+export function openAiChatCompletionsUrl(baseUrl: string): string {
+  return chatCompletionsUrl(new URL(baseUrl))
+}
+
+function chatCompletionsUrl(url: URL): string {
   const pathname = url.pathname.replace(/\/$/, '')
   if (!pathname.endsWith('/chat/completions')) {
     url.pathname = `${pathname}/chat/completions`
@@ -98,6 +106,13 @@ export function deepSeekChatCompletionsUrl(baseUrl: string): string {
     url.pathname = pathname
   }
   return url.toString().replace(/\/$/, '')
+}
+
+export function resolveModelProtocol(profile: Pick<ModelProfile, 'provider' | 'protocol' | 'baseUrl'>): Exclude<ModelProfile['protocol'], 'auto'> {
+  if (profile.protocol !== 'auto') return profile.protocol
+  return profile.provider === 'deepseek' || isDeepSeekApiBaseUrl(profile.baseUrl)
+    ? 'openai-chat-completions'
+    : 'openai-responses'
 }
 
 function chatUserContent(content: unknown): unknown {
@@ -218,9 +233,13 @@ export class OpenAiResponsesClient {
     this.fetcher = options.fetcher ?? fetch
   }
 
+  private requestSignal(signal: AbortSignal): AbortSignal {
+    return AbortSignal.any([signal, AbortSignal.timeout(this.options.profile.timeoutMs)])
+  }
+
   async respond(input: OpenAiResponseInputItem[], signal: AbortSignal): Promise<OpenAiResponsesResult> {
-    if (isDeepSeekApiBaseUrl(this.options.profile.baseUrl)) {
-      return this.respondWithDeepSeek(input, signal)
+    if (resolveModelProtocol(this.options.profile) === 'openai-chat-completions') {
+      return this.respondWithChatCompletions(input, signal)
     }
 
     let response: Response
@@ -235,20 +254,22 @@ export class OpenAiResponsesClient {
           model: this.options.profile.model,
           instructions: CPPPILOT_OPENAI_INSTRUCTIONS,
           input,
-          tools: this.options.tools,
-          tool_choice: 'auto',
-          parallel_tool_calls: false,
+          ...(this.options.profile.capabilities.toolCalling ? {
+            tools: this.options.tools,
+            tool_choice: 'auto',
+            parallel_tool_calls: false
+          } : {}),
           store: false,
-          text: {
+          ...(this.options.profile.capabilities.structuredOutput ? { text: {
             format: {
               type: 'json_schema',
               name: 'cpppilot_final_response',
               strict: true,
               schema: finalResponseJsonSchema
             }
-          }
+          } } : {})
         }),
-        signal
+        signal: this.requestSignal(signal)
       })
     } catch (error) {
       throw new OpenAiResponsesError('MODEL_REQUEST_FAILED', 'OpenAI Responses request failed', error)
@@ -294,13 +315,17 @@ export class OpenAiResponsesClient {
     return { id: envelope.data.id, status: 'completed', output: output.data }
   }
 
-  private async respondWithDeepSeek(
+  private async respondWithChatCompletions(
     input: OpenAiResponseInputItem[],
     signal: AbortSignal
   ): Promise<OpenAiResponsesResult> {
+    const providerLabel = this.options.profile.provider === 'deepseek' ? 'DeepSeek' : 'OpenAI-compatible'
+    const endpoint = this.options.profile.provider === 'deepseek' || isDeepSeekApiBaseUrl(this.options.profile.baseUrl)
+      ? deepSeekChatCompletionsUrl(this.options.profile.baseUrl)
+      : openAiChatCompletionsUrl(this.options.profile.baseUrl)
     let response: Response
     try {
-      response = await this.fetcher(deepSeekChatCompletionsUrl(this.options.profile.baseUrl), {
+      response = await this.fetcher(endpoint, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${this.options.apiKey}`,
@@ -309,21 +334,25 @@ export class OpenAiResponsesClient {
         body: JSON.stringify({
           model: this.options.profile.model,
           messages: toDeepSeekMessages(input),
-          tools: deepSeekTools(this.options.tools),
-          tool_choice: 'auto',
-          response_format: { type: 'json_object' },
+          ...(this.options.profile.capabilities.toolCalling ? {
+            tools: deepSeekTools(this.options.tools),
+            tool_choice: 'auto'
+          } : {}),
+          ...(this.options.profile.capabilities.structuredOutput ? {
+            response_format: { type: 'json_object' }
+          } : {}),
           stream: false
         }),
-        signal
+        signal: this.requestSignal(signal)
       })
     } catch (error) {
-      throw new OpenAiResponsesError('MODEL_REQUEST_FAILED', 'DeepSeek Chat Completions request failed', error)
+      throw new OpenAiResponsesError('MODEL_REQUEST_FAILED', `${providerLabel} Chat Completions request failed`, error)
     }
 
     if (!response.ok) {
       throw new OpenAiResponsesError(
         'MODEL_REQUEST_FAILED',
-        `DeepSeek Chat Completions request failed with HTTP ${response.status}`
+        `${providerLabel} Chat Completions request failed with HTTP ${response.status}`
       )
     }
 
@@ -331,20 +360,20 @@ export class OpenAiResponsesClient {
     try {
       raw = await response.json()
     } catch (error) {
-      throw new OpenAiResponsesError('MODEL_PROTOCOL_INVALID', 'DeepSeek response was not valid JSON', error)
+      throw new OpenAiResponsesError('MODEL_PROTOCOL_INVALID', `${providerLabel} response was not valid JSON`, error)
     }
 
     const envelope = chatCompletionEnvelopeSchema.safeParse(raw)
     if (!envelope.success) {
       throw new OpenAiResponsesError(
         'MODEL_PROTOCOL_INVALID',
-        `DeepSeek response envelope was invalid${invalidFields(envelope.error)}`,
+        `${providerLabel} response envelope was invalid${invalidFields(envelope.error)}`,
         envelope.error
       )
     }
     const choice = envelope.data.choices[0]!
     if (choice.finish_reason === 'length' || choice.finish_reason === 'content_filter') {
-      throw new OpenAiResponsesError('MODEL_INCOMPLETE', `DeepSeek response was incomplete: ${choice.finish_reason}`)
+      throw new OpenAiResponsesError('MODEL_INCOMPLETE', `${providerLabel} response was incomplete: ${choice.finish_reason}`)
     }
 
     const output: OpenAiResponseOutputItem[] = []
@@ -382,7 +411,7 @@ export class OpenAiResponsesClient {
         content: [{ type: 'output_text', text: choice.message.content, annotations: [] }]
       })
     } else {
-      throw new OpenAiResponsesError('MODEL_PROTOCOL_INVALID', 'DeepSeek returned neither content nor a tool call')
+      throw new OpenAiResponsesError('MODEL_PROTOCOL_INVALID', `${providerLabel} returned neither content nor a tool call`)
     }
 
     return { id: envelope.data.id, status: 'completed', output }

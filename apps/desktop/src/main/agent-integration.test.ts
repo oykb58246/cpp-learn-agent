@@ -183,6 +183,8 @@ describe('desktop H3 integration', () => {
     const now = new Date().toISOString()
     const profile = db.saveModelProfile({
       id: crypto.randomUUID(), name: 'Responses', baseUrl: 'https://example.test/v1', model: 'gpt-5', enabled: true,
+      provider: 'custom', protocol: 'openai-responses',
+      capabilities: { text: true, vision: false, toolCalling: true, structuredOutput: true },
       timeoutMs: 10_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
     })
     const bodies: Record<string, any>[] = []

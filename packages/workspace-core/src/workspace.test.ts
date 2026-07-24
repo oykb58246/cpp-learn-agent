@@ -68,4 +68,22 @@ describe('WorkspaceService', () => {
     expect(service.listSnapshots(project.id).some(item => item.reason === 'before-delete')).toBe(true)
     db.close()
   })
+  it('lists directories before files with natural name ordering', () => {
+    const { root, db, service } = setup(); const ws = service.registerWorkspace(root); service.setTrust(ws.id, true)
+    const project = service.commitDraft(service.previewProject({ mode: 'manual', workspaceId: ws.id, name: 'tree', type: 'single-file' }).draftId)
+    service.createEntry(project.id, 'folder10', 'directory')
+    service.createEntry(project.id, 'folder2', 'directory')
+    service.createEntry(project.id, 'file10.cpp', 'file')
+    service.createEntry(project.id, 'file2.cpp', 'file')
+
+    expect(service.listTree(project.id).map(item => item.name)).toEqual([
+      'folder2',
+      'folder10',
+      'file2.cpp',
+      'file10.cpp',
+      'main.cpp',
+      'README.md'
+    ])
+    db.close()
+  })
 })

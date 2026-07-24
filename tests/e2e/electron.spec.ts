@@ -3,7 +3,7 @@ import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createElectronEnvironment } from './electron-env'
+import { createElectronEnvironment, findMainApplicationWindow, setWorkspaceAgentOpen } from './electron-env'
 
 const repo = resolve(import.meta.dirname, '../..')
 let temp = ''
@@ -23,7 +23,7 @@ test('explains how to resume after skipping first-run setup', async () => {
     env: createElectronEnvironment({ CPP_PET_USER_DATA: join(temp, 'user-data'), CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace'), CPP_PET_E2E_INSTALLER: 'mock' })
   })
   try {
-    const page = await electronApp.firstWindow()
+    const page = await findMainApplicationWindow(electronApp)
     await page.waitForLoadState('domcontentloaded')
     await expect(page.getByRole('heading', { name: '把 C++ 环境准备好' })).toBeVisible()
     const installerStatus = await page.evaluate(() => window.cppPet.environment.installerStatus())
@@ -32,7 +32,7 @@ test('explains how to resume after skipping first-run setup', async () => {
     await expect(page.getByRole('heading', { name: '暂时跳过环境配置？' })).toBeVisible()
     await expect(page.getByText('左侧活动栏 → 设置 → C++ 工具链 → 环境向导', { exact: false })).toBeVisible()
     await page.getByRole('button', { name: '确认稍后配置' }).click()
-    await expect(page.getByText('先了解一下你的 C++ 背景', { exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '让 CppPilot 助教先了解一下你的情况' })).toBeVisible()
     await page.getByRole('button', { name: '开始使用' }).click()
     await expect(page.getByRole('heading', { name: '开始处理你的 C++ 问题' })).toBeVisible()
     await expect(page.locator('.environment-reminder')).toContainText('环境初始化尚未完成')
@@ -72,7 +72,7 @@ test('launches securely and renders the real project workflow', async () => {
     env: createElectronEnvironment({ CPP_PET_USER_DATA: join(temp, 'user-data'), CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace') })
   })
   try {
-    const page = await electronApp.firstWindow()
+    const page = await findMainApplicationWindow(electronApp)
     await page.waitForLoadState('domcontentloaded')
     const mainState = await electronApp.evaluate(({ app }) => ({ userData: app.getPath('userData'), seedRoot: process.env.CPP_PET_E2E_SEED_ROOT ?? null }))
     expect(mainState.seedRoot).toBe(join(temp, 'workspace'))
@@ -109,7 +109,7 @@ test('launches securely and renders the real project workflow', async () => {
     await expect(page.getByRole('heading', { name: '可以开始写 C++ 了' })).toBeVisible()
     await captureWindow(electronApp, page, join(repo, 'test-results', 'visual', 'onboarding-complete-1440x900.png'))
     await page.getByRole('button', { name: '进入首页' }).click()
-    await expect(page.getByText('先了解一下你的 C++ 背景', { exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '让 CppPilot 助教先了解一下你的情况' })).toBeVisible()
     await page.getByRole('button', { name: '开始使用' }).click()
     await expect(page.getByRole('heading', { name: '开始处理你的 C++ 问题' })).toBeVisible()
     await expect(page.getByText('边界练习', { exact: true })).toBeVisible()
@@ -125,7 +125,7 @@ test('launches securely and renders the real project workflow', async () => {
     await captureWindow(electronApp, page, join(repo, 'test-results', 'visual', 'home-1440x900.png'))
     await page.getByText('边界练习', { exact: true }).click()
     await expect(page.locator('.workspace-view')).toBeVisible()
-    await page.getByRole('button', { name: /Agent/ }).click()
+    await setWorkspaceAgentOpen(page, true)
     await expect(page.locator('.workspace-agent-inspector')).toBeVisible()
     const dragSeparator = async (name: string, deltaX: number, deltaY: number) => {
       const separator = page.getByRole('separator', { name })
@@ -214,7 +214,7 @@ test('launches securely and renders the real project workflow', async () => {
     await page.reload()
     await page.waitForLoadState('domcontentloaded')
     await expect(page.locator('.workspace-view')).toBeVisible()
-    await page.getByRole('button', { name: /Agent/ }).click()
+    await setWorkspaceAgentOpen(page, true)
     await expect(page.locator('.workspace-agent-inspector')).toBeVisible()
     expect(Math.round(await page.locator('.workspace-sidebar').evaluate(element => element.getBoundingClientRect().width))).toBe(savedLayout!.sidebarWidth)
     expect(Math.round(await page.locator('.workspace-agent-inspector').evaluate(element => element.getBoundingClientRect().width))).toBe(savedLayout!.inspectorWidth)

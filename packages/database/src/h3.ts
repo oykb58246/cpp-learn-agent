@@ -227,6 +227,19 @@ CREATE UNIQUE INDEX idx_model_profiles_single_enabled
   ON model_profiles(enabled) WHERE enabled = 1;
 `
 
+const modelProfileCapabilitiesSql = `
+ALTER TABLE model_profiles ADD COLUMN provider TEXT NOT NULL DEFAULT 'custom';
+ALTER TABLE model_profiles ADD COLUMN protocol TEXT NOT NULL DEFAULT 'auto';
+ALTER TABLE model_profiles ADD COLUMN capabilities_json TEXT NOT NULL
+  DEFAULT '{"text":true,"vision":false,"toolCalling":true,"structuredOutput":true}';
+UPDATE model_profiles
+SET provider = CASE
+  WHEN lower(base_url) LIKE '%api.openai.com%' THEN 'openai'
+  WHEN lower(base_url) LIKE '%api.deepseek.com%' THEN 'deepseek'
+  ELSE 'custom'
+END;
+`
+
 export const h3Migrations: Migration[] = [
   { version: 4, name: 'h3-agent-runs', sql: agentSql },
   { version: 5, name: 'h3-learning-state', sql: learningSql },
@@ -240,5 +253,6 @@ export const h3Migrations: Migration[] = [
   { version: 13, name: 'single-enabled-model-profile', sql: singleEnabledModelProfileSql },
   { version: 14, name: 'h4-screenshot-conversation-messages', sql: screenshotConversationMessagesSql },
   { version: 15, name: 'h4-practice-exercises', sql: practiceExercisesSql },
-  { version: 16, name: 'h4-practice-oj-submissions', sql: practiceOjSql }
+  { version: 16, name: 'h4-practice-oj-submissions', sql: practiceOjSql },
+  { version: 17, name: 'model-profile-protocol-and-capabilities', sql: modelProfileCapabilitiesSql }
 ]

@@ -35,6 +35,10 @@ function seedSettings(mode: AppSettings['agentApprovalMode'] = 'on-risk') {
         scale: 1,
         ignoreMouseEvents: false,
         bubbleEnabled: true,
+        frameEnabled: true,
+        progressBarEnabled: true,
+        edgeDockEnabled: true,
+        docked: false,
         focusModeEnabled: false,
         launchAtLogin: false,
         customAssets: []
@@ -63,6 +67,7 @@ describe('AgentComposer', () => {
     expect(html).toContain('composer-shell')
     expect(html).toContain('<textarea')
     expect(html).toContain('composer-send stop')
+    expect(html).toContain('type="submit"')
     expect(html).toContain('Enter 发送 · Shift+Enter 换行')
     expect(html).toContain('完全访问')
     expect(html).toContain('lucide-shield')

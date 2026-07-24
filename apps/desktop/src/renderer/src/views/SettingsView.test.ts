@@ -19,13 +19,17 @@ const settings: AppSettings = {
   productTourStatus: 'completed',
   productTourStep: 5,
   productTourWelcomeSeen: true,
-    agentApprovalMode: 'on-risk',
+  agentApprovalMode: 'on-risk',
   pet: {
     visible: true,
     assetMode: 'custom',
     scale: 1,
     ignoreMouseEvents: false,
     bubbleEnabled: true,
+    frameEnabled: true,
+    progressBarEnabled: true,
+    edgeDockEnabled: true,
+    docked: false,
     focusModeEnabled: true,
     launchAtLogin: true,
     customAssets: [
@@ -75,6 +79,11 @@ describe('SettingsView pet settings', () => {
     expect(html).toContain('完全访问权限')
     expect(html).toContain('专注模式')
     expect(html).toContain('开机启动')
+    expect(html).toContain('settings-module-nav')
+    expect(html).toContain('服务商')
+    expect(html).toContain('OpenAI Responses')
+    expect(html).toContain('图片理解')
+    expect(html).toContain('测试图片输入')
   })
 })
 

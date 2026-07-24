@@ -7,6 +7,7 @@ const api: CppPetApi = {
   app: {
     getBootstrap: () => invoke(ipc.appBootstrap),
     getVersion: () => invoke(ipc.appVersion),
+    copyText: input => invoke(ipc.appCopyText, input),
     onNavigate: listener => {
       const wrapped = (_: unknown, event: Parameters<typeof listener>[0]) => listener(event)
       ipcRenderer.on(ipc.appNavigate, wrapped)
@@ -132,7 +133,8 @@ const api: CppPetApi = {
     save: input => invoke(ipc.modelSave, input),
     remove: input => invoke(ipc.modelRemove, input),
     clearKey: input => invoke(ipc.modelClearKey, input),
-    test: input => invoke(ipc.modelTest, input)
+    test: input => invoke(ipc.modelTest, input),
+    testVision: input => invoke(ipc.modelTestVision, input)
   },
   screenshot: {
     capture: input => invoke(ipc.screenshotCapture, input),

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, protocol, safeStorage, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { basename, join } from 'node:path'
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
@@ -66,7 +66,7 @@ import {
   type PetSettings,
   type PetWindowState,
   type PracticeOjImportResult,
-  type PracticeOjScreenshotInput,
+  type PracticeOjImportInput,
   type PracticeSubmissionRequest,
   type PracticeSubmissionResult,
   type PracticeProjectCompleteRequest,
@@ -75,7 +75,7 @@ import {
   type ScreenshotCaptureSubmission,
   type ScreenshotPendingCapture
 } from '@cpp-pet/contracts'
-import { AchievementEngine, achievementDefinitions, builtInKnowledge, builtInPracticeExercises, builtInPracticeProjects, deepSeekChatCompletionsUrl, isDeepSeekApiBaseUrl, OpenAiAgentRuntime, OpenAiResponsesClient, transitionKnowledge, unlockKnowledgePath } from '@cpp-pet/agent-runtime'
+import { AchievementEngine, achievementDefinitions, builtInKnowledge, builtInPracticeExercises, builtInPracticeProjects, deepSeekChatCompletionsUrl, isDeepSeekApiBaseUrl, openAiChatCompletionsUrl, OpenAiAgentRuntime, OpenAiResponsesClient, resolveModelProtocol, transitionKnowledge, unlockKnowledgePath } from '@cpp-pet/agent-runtime'
 import { z } from 'zod'
 import { createWindowOptions } from './window-options'
 import { resolveTrayIconPath, resolveWindowIconPath } from './app-icons'
@@ -83,16 +83,17 @@ import { createPetWindowOptions, detectPetDockEdge, dockedPetBounds, dragPetWind
 import { createPetContextMenuTemplate, createPetTrayMenuTemplate } from './tray'
 import { registerCppPilotShortcuts } from './shortcuts'
 import { createScreenshotAgentRequest, createScreenshotRef } from './screenshot-flow'
-import { buildOjScreenshotChatCompletionsRequest, buildOjScreenshotImportRequest, parseOjImportModelOutput } from './practice-import'
+import { buildOjScreenshotChatCompletionsRequest, buildOjScreenshotImportRequest, buildOjTextChatCompletionsRequest, buildOjTextImportRequest, modelSupportsOjScreenshot, parseOjImportModelOutput } from './practice-import'
 import { judgePracticeSubmission } from './practice-judge'
 import { AgentHost } from './agent-host'
 import { ModelSecretStore } from './model-secret-store'
 import { createMcpWorkerParameters } from './mcp-worker-config'
 import { petEventForRun } from './pet-events'
 import { PET_ASSET_PROTOCOL, petActiveCustomAsset, petAssetFilePathFromUrl, petCustomAssetUrl, removeManagedPetAsset, validateCustomPetAssetImport } from './pet-assets'
-import { installationVerificationFailure, visiblePowerShellTerminalArguments } from './environment-install'
+import { installationVerificationFailure, visiblePowerShellTerminalArguments, wingetInstallCommand } from './environment-install'
 import { DiagnosticIncidentService } from './diagnostic-incident-service'
 import { ConversationService } from './conversation-service'
+import { testModelVisionCapability } from './model-capability-test'
 import { configureSingleInstance } from './single-instance'
 import { codeEditLearningEvent } from './learning-growth'
 import {
@@ -446,6 +447,10 @@ function refreshTrayMenu(): void {
     launchAtLogin: state.settings.launchAtLogin,
     ...(state.settings.hiddenUntil ? { hiddenUntil: state.settings.hiddenUntil } : {}),
     onOpenMain: focusMainWindow,
+    onOpenWorkspace: () => sendAppNavigation('/workspace'),
+    onOpenPractice: () => sendAppNavigation('/practice'),
+    onOpenKnowledge: () => sendAppNavigation('/knowledge'),
+    onOpenRuns: () => sendAppNavigation('/runs'),
     onOpenSettings: openSettingsWindow,
     onTogglePet: () => { void Promise.resolve(togglePetVisibility()).catch(error => console.error('[CppPilot] Toggle pet failed', error)) },
     onCaptureScreenshot: () => startScreenshotCapture(),
@@ -469,6 +474,10 @@ function showPetContextMenu(): void {
     launchAtLogin: state.settings.launchAtLogin,
     ...(state.settings.hiddenUntil ? { hiddenUntil: state.settings.hiddenUntil } : {}),
     onOpenMain: focusMainWindow,
+    onOpenWorkspace: () => sendAppNavigation('/workspace'),
+    onOpenPractice: () => sendAppNavigation('/practice'),
+    onOpenKnowledge: () => sendAppNavigation('/knowledge'),
+    onOpenRuns: () => sendAppNavigation('/runs'),
     onOpenSettings: openSettingsWindow,
     onTogglePet: () => { void Promise.resolve(togglePetVisibility()).catch(error => console.error('[CppPilot] Toggle pet failed', error)) },
     onCaptureScreenshot: () => startScreenshotCapture(),
@@ -477,7 +486,8 @@ function showPetContextMenu(): void {
     onCancelHidden: () => { void Promise.resolve(cancelTimedPetHide()).catch(error => console.error('[CppPilot] Cancel pet hide failed', error)) },
     onToggleFocusMode: enabled => { void Promise.resolve(setPetFocusMode(enabled)).catch(error => console.error('[CppPilot] Toggle focus mode failed', error)) },
     onToggleLaunchAtLogin: enabled => { void Promise.resolve(setPetLaunchAtLogin(enabled)).catch(error => console.error('[CppPilot] Toggle launch-at-login failed', error)) },
-    onToggleMouseEvents: enabled => { void Promise.resolve(setPetMouseEvents(enabled)).catch(error => console.error('[CppPilot] Toggle pet mouse events failed', error)) }
+    onToggleMouseEvents: enabled => { void Promise.resolve(setPetMouseEvents(enabled)).catch(error => console.error('[CppPilot] Toggle pet mouse events failed', error)) },
+    onQuit: () => app.quit()
   })).popup({ ...(window ? { window } : {}) })
 }
 function createAppTray(): void {
@@ -1000,44 +1010,66 @@ function extractOjResponseText(raw: unknown): unknown {
   return raw
 }
 
-async function importOjScreenshot(input: PracticeOjScreenshotInput): Promise<PracticeOjImportResult> {
+async function importOjScreenshot(input: PracticeOjImportInput): Promise<PracticeOjImportResult> {
   const { database, modelSecrets } = requiredAgentServices()
   const profile = database.listModelProfiles().find(item => item.enabled)
   const apiKey = profile ? modelSecrets.get(profile.id) : undefined
+  const textImport = 'kind' in input && input.kind === 'text'
   if (!profile || !apiKey) {
-    throw new ToolExecutionError('MODEL_NOT_CONFIGURED', '尚未配置可用的 OpenAI Responses 模型。', '在设置页保存并启用模型配置与 API Key 后再导入 OJ 截图。')
+    throw new ToolExecutionError('MODEL_NOT_CONFIGURED', '尚未配置可用的模型。', '在设置页保存并启用模型配置与 API Key 后再导入 OJ 题面。')
+  }
+  if (textImport && !profile.capabilities.text) {
+    throw new ToolExecutionError('MODEL_TEXT_UNSUPPORTED', `当前模型“${profile.name}”未启用文本输入能力。`, '在模型设置中启用文本能力，或切换到文本模型。')
+  }
+  if (!textImport && !modelSupportsOjScreenshot(profile)) {
+    throw new ToolExecutionError(
+      'MODEL_VISION_UNSUPPORTED',
+      `当前模型“${profile.name}”未启用图片输入能力。`,
+      '前往设置 > 模型服务，确认模型支持视觉输入并开启“图片理解”，或切换到多模态模型。'
+    )
   }
   let response: Response
   try {
-    const deepSeek = isDeepSeekApiBaseUrl(profile.baseUrl)
-    response = await fetch(deepSeek
-      ? deepSeekChatCompletionsUrl(profile.baseUrl)
-      : `${profile.baseUrl.replace(/\/$/, '')}/responses`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify((deepSeek
-        ? buildOjScreenshotChatCompletionsRequest
-        : buildOjScreenshotImportRequest)({
+    const protocol = resolveModelProtocol(profile)
+    const chatCompletions = protocol === 'openai-chat-completions'
+    const endpoint = chatCompletions
+      ? profile.provider === 'deepseek' || isDeepSeekApiBaseUrl(profile.baseUrl)
+        ? deepSeekChatCompletionsUrl(profile.baseUrl)
+        : openAiChatCompletionsUrl(profile.baseUrl)
+      : `${profile.baseUrl.replace(/\/$/, '')}/responses`
+    const requestBody = 'kind' in input
+      ? (chatCompletions ? buildOjTextChatCompletionsRequest : buildOjTextImportRequest)({
+          model: profile.model,
+          fileName: input.fileName,
+          mimeType: input.mimeType,
+          content: input.content
+        })
+      : (chatCompletions ? buildOjScreenshotChatCompletionsRequest : buildOjScreenshotImportRequest)({
           model: profile.model,
           previewDataUrl: input.previewDataUrl,
           mimeType: input.mimeType,
           width: input.width,
           height: input.height
-        }))
+        })
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(profile.timeoutMs)
     })
   } catch (error) {
-    throw new ToolExecutionError('MODEL_REQUEST_FAILED', 'OJ 截图导入请求模型失败。', error instanceof Error ? error.message : '检查网络与模型配置后重试。', true)
+    throw new ToolExecutionError('MODEL_REQUEST_FAILED', 'OJ 题面导入请求模型失败。', error instanceof Error ? error.message : '检查网络与模型配置后重试。', true)
   }
   if (!response.ok) {
-    throw new ToolExecutionError('MODEL_REQUEST_FAILED', `OJ 截图导入请求模型失败：HTTP ${response.status}。`, '检查模型 Base URL、模型名和 API Key。', true)
+    throw new ToolExecutionError('MODEL_REQUEST_FAILED', `OJ 题面导入请求模型失败：HTTP ${response.status}。`, '检查模型 Base URL、模型名和 API Key。', true)
   }
   let raw: unknown
   try { raw = await response.json() }
   catch (error) {
-    throw new ToolExecutionError('MODEL_PROTOCOL_INVALID', '模型返回的 OJ 导入结果不是有效 JSON。', '重新上传清晰截图；若持续失败，请检查模型兼容性。', true)
+    throw new ToolExecutionError('MODEL_PROTOCOL_INVALID', '模型返回的 OJ 导入结果不是有效 JSON。', '重新上传完整题面；若持续失败，请检查模型兼容性。', true)
   }
   const result = parseOjImportModelOutput(extractOjResponseText(raw), new Date().toISOString())
   if (result.status === 'added') database.savePracticeExercise(result.exercise)
@@ -1242,6 +1274,9 @@ function registerIpc(): void {
   handleUtility(ipc.screenshotCancel, empty, () => { closeScreenshotWindow() })
   handle(ipc.appBootstrap, empty, () => { const { database } = requiredServices(); return { version: app.getVersion(), platform: process.platform, recoveryMode: database.recoveryMode, settings: database.getSettings(), recentProjects: database.listProjects().slice(0, 8), workspaces: database.listWorkspaces(), recentEvents: database.listEvents(12) } })
   handle(ipc.appVersion, empty, () => app.getVersion())
+  handle(ipc.appCopyText, z.object({ text: z.string().max(4_096) }), input => {
+    clipboard.writeText(input.text)
+  })
   handle(ipc.settingsGet, empty, () => requiredServices().database.getSettings())
   handle(ipc.settingsUpdate, z.object({
     theme: z.enum(['system', 'light', 'dark']).optional(),
@@ -1610,15 +1645,7 @@ function registerIpc(): void {
       const oldest = [...environmentInstallTasks.values()].sort((a, b) => a.startedAt.localeCompare(b.startedAt))[0]
       if (oldest && oldest.status !== 'running') environmentInstallTasks.delete(oldest.taskId)
     }
-    const command = [
-      `Write-Host 'CppPilot 正在启动 ${target.label} 安装...' -ForegroundColor Cyan`,
-      `$exitCode = 1`,
-      `try { winget install --id '${target.packageId}' --exact --source winget --interactive --accept-source-agreements --accept-package-agreements; $exitCode = $LASTEXITCODE } catch { Write-Error $_; $exitCode = 1 }`,
-      `if ($exitCode -eq 0) { Write-Host '安装完成，CppPilot 将自动重新检测环境。' -ForegroundColor Green } else { Write-Host \"安装未成功，退出码: $exitCode\" -ForegroundColor Red }`,
-      `if ($exitCode -ne 0) { Read-Host 'Installation failed. Press Enter to close.' }`,
-      `Start-Sleep -Seconds 3`,
-      `exit $exitCode`
-    ].join('; ')
+    const command = wingetInstallCommand(target.label, target.packageId)
     const child = spawn(process.env.ComSpec ?? 'cmd.exe', visiblePowerShellTerminalArguments(`CppPilot install ${target.label}`, command), {
       detached: true,
       stdio: 'ignore',
@@ -1952,8 +1979,11 @@ function registerIpc(): void {
     const profile = {
       id,
       name: input.name,
+      provider: input.provider,
+      protocol: input.protocol,
       baseUrl: input.baseUrl,
       model: input.model,
+      capabilities: input.capabilities,
       enabled: input.enabled,
       timeoutMs: input.timeoutMs,
       apiKeyConfigured: modelSecrets.has(id),
@@ -1992,7 +2022,37 @@ function registerIpc(): void {
         policy: { allowedPaths: [], allowNewPaths: false, writesRequireApproval: true, maxModelTurns: 1, maxToolCalls: 1, remainingTimeMs: 30_000 }
       }) }]
     }], new AbortController().signal)
-    return { ok: true, latencyMs: Date.now() - started, detail: '模型返回了有效响应。' }
+    return {
+      ok: true,
+      latencyMs: Date.now() - started,
+      detail: '模型返回了有效响应。',
+      protocol: resolveModelProtocol(profile),
+      capabilities: profile.capabilities
+    }
+  })
+  handle(ipc.modelTestVision, z.object({ profileId: z.string().uuid() }), async input => {
+    const { database, modelSecrets } = requiredAgentServices()
+    const profile = database.getModelProfile(input.profileId)
+    const apiKey = modelSecrets.get(input.profileId)
+    if (!profile || !apiKey) throw new ToolExecutionError('MODEL_NOT_CONFIGURED', '模型配置或 API Key 不完整。', '先保存模型配置和 API Key。')
+    try {
+      const result = await testModelVisionCapability({ profile, apiKey })
+      if (profile.capabilities.vision !== result.supported) {
+        database.saveModelProfile({
+          ...profile,
+          capabilities: { ...profile.capabilities, vision: result.supported },
+          updatedAt: new Date().toISOString()
+        })
+      }
+      return result
+    } catch (error) {
+      throw new ToolExecutionError(
+        'MODEL_REQUEST_FAILED',
+        '图片输入能力测试失败。',
+        error instanceof Error ? error.message : '检查网络、模型名称、接口协议和 API Key。',
+        true
+      )
+    }
   })
   handle(ipc.mockDashboard, empty, () => {
     const { database } = requiredServices()

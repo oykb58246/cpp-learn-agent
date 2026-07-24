@@ -1,15 +1,58 @@
+# Dependencies and package-manager caches
 node_modules/
+.pnpm-store/
+
+# Local agent workflow files
 .superpowers/
+
+# Build and test output
 dist/
 out/
 release/
 coverage/
 test-results/
 playwright-report/
+.vite/
+.electron-vite/
+*.tsbuildinfo
+
+# Local runtime data
 *.log
-.DS_Store
-Thumbs.db
+*.pid
+*.dmp
+*.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+.local/
+.local-data/
+user-data/
+cpppet-user-data/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+electron-builder.env
+*.p12
+*.pfx
+*.pem
+*.key
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+*.swo
+*.bak
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+
+# Application temporary files
 .cpppet-*.tmp

@@ -1,5 +1,5 @@
 export const ipc = {
-  appBootstrap: 'app:get-bootstrap', appVersion: 'app:get-version', appNavigate: 'app:navigate', settingsGet: 'settings:get', settingsUpdate: 'settings:update',
+  appBootstrap: 'app:get-bootstrap', appVersion: 'app:get-version', appNavigate: 'app:navigate', appCopyText: 'app:copy-text', settingsGet: 'settings:get', settingsUpdate: 'settings:update',
   workspaceSelect: 'workspace:select-root', workspaceList: 'workspace:list', workspaceOpen: 'workspace:open',
   workspaceTrust: 'workspace:set-trust', workspaceRemove: 'workspace:remove', workspaceChanged: 'workspace:changed',
   projectPreview: 'project:preview', projectCreate: 'project:create', projectImportPreview: 'project:preview-import',
@@ -51,6 +51,6 @@ export const ipc = {
   learningPracticeCatalog: 'learning:practice-catalog', learningPracticeSubmit: 'learning:practice-submit',
   learningPracticeCompleteProject: 'learning:practice-complete-project', learningPracticeImportOjScreenshot: 'learning:practice-import-oj-screenshot',
   modelList: 'model:list', modelSave: 'model:save', modelRemove: 'model:remove',
-  modelClearKey: 'model:clear-key', modelTest: 'model:test',
+  modelClearKey: 'model:clear-key', modelTest: 'model:test', modelTestVision: 'model:test-vision',
   mockDashboard: 'mocks:get-dashboard'
 } as const

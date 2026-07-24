@@ -16,8 +16,21 @@ const baseSettings = (): AppSettings => ({
   productTourStatus: 'pending',
   productTourStep: 0,
   productTourWelcomeSeen: false,
-    agentApprovalMode: 'on-risk',
-  pet: { visible: true, assetMode: 'cpppilot-logo', scale: 1, ignoreMouseEvents: false, bubbleEnabled: true, focusModeEnabled: false, launchAtLogin: false, customAssets: [] }
+  agentApprovalMode: 'on-risk',
+  pet: {
+    visible: true,
+    assetMode: 'cpppilot-logo',
+    scale: 1,
+    ignoreMouseEvents: false,
+    bubbleEnabled: true,
+    frameEnabled: true,
+    progressBarEnabled: true,
+    edgeDockEnabled: true,
+    docked: false,
+    focusModeEnabled: false,
+    launchAtLogin: false,
+    customAssets: []
+  }
 })
 
 function prepareApp(settingsUpdate?: (patch: Partial<AppSettings>, current: AppSettings) => Promise<any>) {

@@ -3,7 +3,7 @@ import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createElectronEnvironment, startStreamingModelFixture, type StreamingModelFixture } from './electron-env'
+import { createElectronEnvironment, findMainApplicationWindow, setWorkspaceAgentOpen, startStreamingModelFixture, type StreamingModelFixture } from './electron-env'
 
 const repo = resolve(import.meta.dirname, '../..')
 let temp = ''
@@ -89,15 +89,16 @@ async function capture(electronApp: ElectronApplication, page: Page, name: strin
 test('places Agent in the right sidebar and opens snapshots on demand', async () => {
   const electronApp = await launch(join(temp, 'workspace-layout-user-data'))
   try {
-    const page = await electronApp.firstWindow()
+    const page = await findMainApplicationWindow(electronApp)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page)
     expect(prepared).toHaveProperty('projectId')
     const projectId = (prepared as { projectId: string }).projectId
     await openProject(page, projectId)
 
+    await setWorkspaceAgentOpen(page, false)
     await expect(page.locator('.workspace-inspector')).toHaveCount(0)
-    await page.getByRole('button', { name: /Agent/ }).click()
+    await setWorkspaceAgentOpen(page, true)
     await expect(page.locator('.workspace-agent-inspector .conversation-panel')).toBeVisible()
     await expect(page.locator('.editor-area > .conversation-panel')).toHaveCount(0)
 
@@ -164,13 +165,13 @@ test('places Agent in the right sidebar and opens snapshots on demand', async ()
     await browserWindow.evaluate(win => win.setSize(1440, 900))
     await openProject(page, projectId)
     await expect(page.locator('html')).toHaveClass(/dark/)
-    await page.getByRole('button', { name: /Agent/ }).click()
+    await setWorkspaceAgentOpen(page, true)
     await history.click()
     await expect(page.getByRole('dialog', { name: '项目快照' })).toBeVisible()
     await capture(electronApp, page, 'workspace-agent-sidebar-dark-1440x900.png')
 
     await page.getByRole('button', { name: '关闭快照' }).click()
-    await page.locator('.agent-toggle').click()
+    await setWorkspaceAgentOpen(page, false)
     await expect(page.locator('.workspace-inspector')).toHaveCount(0)
   } finally {
     await electronApp.close()
@@ -180,7 +181,7 @@ test('places Agent in the right sidebar and opens snapshots on demand', async ()
 test('keeps the Agent trigger reachable and independent from the diagnostic inbox on narrow windows', async () => {
   const electronApp = await launch(join(temp, 'agent-trigger-user-data'))
   try {
-    const page = await electronApp.firstWindow()
+    const page = await findMainApplicationWindow(electronApp)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page)
     expect(prepared).toHaveProperty('projectId')
@@ -188,6 +189,7 @@ test('keeps the Agent trigger reachable and independent from the diagnostic inbo
     const browserWindow = await electronApp.browserWindow(page)
     await browserWindow.evaluate(win => win.setSize(1024, 720))
     await page.waitForTimeout(250)
+    await setWorkspaceAgentOpen(page, false)
 
     const agentTrigger = page.getByRole('button', { name: 'Agent', exact: true })
     await expect(agentTrigger).toBeVisible()
@@ -197,18 +199,18 @@ test('keeps the Agent trigger reachable and independent from the diagnostic inbo
       return box.left >= 0 && box.right <= window.innerWidth && target instanceof Node && element.contains(target)
     })).toBe(true)
 
-    await agentTrigger.click()
+    await setWorkspaceAgentOpen(page, true)
     await expect(page.locator('.workspace-agent-inspector')).toBeVisible()
     await capture(electronApp, page, 'agent-trigger-narrow-1024x720.png')
-    await agentTrigger.click()
+    await setWorkspaceAgentOpen(page, false)
     await expect(page.locator('.workspace-agent-inspector')).toHaveCount(0)
 
     await page.getByRole('button', { name: '编译', exact: true }).click()
     await expect(page.locator('.agent-inbox-badge')).toHaveText('1', { timeout: 30_000 })
-    await agentTrigger.click()
+    await setWorkspaceAgentOpen(page, true)
     await expect(page.locator('.workspace-agent-inspector')).toBeVisible()
     await expect(page.getByRole('dialog', { name: '错误收件箱' })).toHaveCount(0)
-    await agentTrigger.click()
+    await setWorkspaceAgentOpen(page, false)
     await page.getByRole('button', { name: '错误收件箱', exact: true }).click()
     await expect(page.getByRole('dialog', { name: '错误收件箱' })).toBeVisible()
   } finally {
@@ -219,7 +221,7 @@ test('keeps the Agent trigger reachable and independent from the diagnostic inbo
 test('persists a grouped diagnostic inbox and explains it in a streamed project conversation', async () => {
   test.setTimeout(180_000)
   let electronApp = await launch()
-  let page = await electronApp.firstWindow()
+  let page = await findMainApplicationWindow(electronApp)
   await page.waitForLoadState('domcontentloaded')
   const prepared = await prepare(page)
   expect(prepared).toHaveProperty('projectId')
@@ -237,7 +239,7 @@ test('persists a grouped diagnostic inbox and explains it in a streamed project 
 
   await electronApp.close()
   electronApp = await launch()
-  page = await electronApp.firstWindow()
+  page = await findMainApplicationWindow(electronApp)
   await page.waitForLoadState('domcontentloaded')
   await openProject(page, projectId)
   await expect(page.locator('.agent-inbox-badge')).toHaveText('1')
@@ -269,7 +271,7 @@ test('persists a grouped diagnostic inbox and explains it in a streamed project 
 test('renders assistant Markdown and removes unsafe HTML', async () => {
   const electronApp = await launch(join(temp, 'markdown-user-data'))
   try {
-    const page = await electronApp.firstWindow()
+    const page = await findMainApplicationWindow(electronApp)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page)
     expect(prepared).toHaveProperty('projectId')
@@ -277,9 +279,9 @@ test('renders assistant Markdown and removes unsafe HTML', async () => {
     await openProject(page, (prepared as { projectId: string }).projectId)
     await expect(page.locator('html')).toHaveClass(/dark/)
 
-    await page.getByRole('button', { name: /Agent/ }).click()
-    await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('Markdown 渲染测试')
-    await page.getByRole('button', { name: '发送', exact: true }).click()
+    await setWorkspaceAgentOpen(page, true)
+    await page.getByPlaceholder('随心输入').fill('Markdown 渲染测试')
+    await page.locator('.workspace-agent-panel .agent-composer button[type="submit"]').click()
     await approveModelContext(page)
 
     const reply = page.locator('.conversation-message.assistant').last()
@@ -311,18 +313,19 @@ test('keeps conversations isolated by project and supports stopping then retryin
   test.setTimeout(120_000)
   const electronApp = await launch(join(temp, 'isolation-user-data'))
   try {
-    const page = await electronApp.firstWindow()
+    const page = await findMainApplicationWindow(electronApp)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page)
     expect(prepared).toHaveProperty('projectId')
     const firstProjectId = (prepared as { projectId: string }).projectId
     await openProject(page, firstProjectId)
-    await page.getByRole('button', { name: /Agent/ }).click()
-    await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('停止测试')
-    await page.getByRole('button', { name: '发送', exact: true }).click()
+    await setWorkspaceAgentOpen(page, true)
+    await page.getByPlaceholder('随心输入').fill('停止测试')
+    await page.locator('.workspace-agent-panel .agent-composer button[type="submit"]').click()
     await approveModelContext(page)
-    await expect(page.getByTitle('停止 Agent')).toBeVisible({ timeout: 30_000 })
-    await page.getByTitle('停止 Agent').click()
+    const stopAgent = page.locator('.workspace-agent-panel .agent-composer .composer-send.stop')
+    await expect(stopAgent).toBeVisible({ timeout: 30_000 })
+    await stopAgent.click()
     await expect(page.locator('.conversation-message.stopped')).toBeVisible()
     await page.locator('.conversation-message.stopped').getByRole('button', { name: '重试' }).click()
     await approveModelContext(page)
@@ -338,10 +341,10 @@ test('keeps conversations isolated by project and supports stopping then retryin
     })
     expect(second).not.toBeNull()
     await openProject(page, second!.id)
-    await page.getByRole('button', { name: /Agent/ }).click()
+    await setWorkspaceAgentOpen(page, true)
     await expect(page.locator('.conversation-transcript')).not.toContainText('停止测试')
     await openProject(page, firstProjectId)
-    await page.getByRole('button', { name: /Agent/ }).click()
+    await setWorkspaceAgentOpen(page, true)
     await expect(page.locator('.conversation-transcript')).toContainText('停止测试')
   } finally {
     await electronApp.close()

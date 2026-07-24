@@ -265,11 +265,28 @@ export const agentContinueRequestSchema = z.object({
 }).strict()
 export type AgentContinueRequest = z.input<typeof agentContinueRequestSchema>
 
+export const modelProviderSchema = z.enum(['openai', 'deepseek', 'custom'])
+export type ModelProvider = z.infer<typeof modelProviderSchema>
+
+export const modelProtocolSchema = z.enum(['auto', 'openai-responses', 'openai-chat-completions'])
+export type ModelProtocol = z.infer<typeof modelProtocolSchema>
+
+export const modelCapabilitiesSchema = z.object({
+  text: z.boolean().default(true),
+  vision: z.boolean().default(false),
+  toolCalling: z.boolean().default(true),
+  structuredOutput: z.boolean().default(true)
+}).strict()
+export type ModelCapabilities = z.infer<typeof modelCapabilitiesSchema>
+
 export const modelProfileSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(100),
+  provider: modelProviderSchema,
+  protocol: modelProtocolSchema,
   baseUrl: z.string().url().max(2_048),
   model: z.string().min(1).max(200),
+  capabilities: modelCapabilitiesSchema,
   enabled: z.boolean(),
   timeoutMs: z.number().int().min(1_000).max(120_000),
   apiKeyConfigured: z.boolean(),
@@ -281,8 +298,16 @@ export type ModelProfile = z.infer<typeof modelProfileSchema>
 export const modelProfileInputSchema = z.object({
   id: z.string().uuid().optional(),
   name: z.string().min(1).max(100),
+  provider: modelProviderSchema.default('custom'),
+  protocol: modelProtocolSchema.default('auto'),
   baseUrl: z.string().url().max(2_048),
   model: z.string().min(1).max(200),
+  capabilities: modelCapabilitiesSchema.default({
+    text: true,
+    vision: false,
+    toolCalling: true,
+    structuredOutput: true
+  }),
   enabled: z.boolean().default(true),
   timeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
   apiKey: z.string().min(1).max(10_000).optional()

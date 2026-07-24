@@ -21,7 +21,8 @@ const state = ref<PetWindowState>({
   windowVisible: true,
   ignoreMouseEvents: false,
   growthStage: 1,
-  progress: { stage: 1, totalStages: 4, percent: 25, label: '第 1 关 / 共 4 关 · 入门' }
+  progress: { stage: 1, totalStages: 4, percent: 25, label: '第 1 关 / 共 4 关 · 入门' },
+  theme: 'system'
 })
 const event = ref<PetEvent | null>({ eventId: crypto.randomUUID(), state: 'idle', message: '我在这儿陪你写 C++～' })
 const chatOpen = ref(false)

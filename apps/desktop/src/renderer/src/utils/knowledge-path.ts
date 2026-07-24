@@ -196,7 +196,8 @@ export function filterKnowledgeLanes(lanes: KnowledgePathLane[], query: string):
 function primaryParentId(entry: KnowledgePathNode, byId: Map<string, KnowledgePathNode>): string | null {
   const sameCategoryParents = entry.node.prerequisites
     .map(id => byId.get(id))
-    .filter((item): item is KnowledgePathNode => Boolean(item) && item.node.category === entry.node.category)
+    .filter((item): item is KnowledgePathNode => item !== undefined)
+    .filter(item => item.node.category === entry.node.category)
   if (!sameCategoryParents.length) return null
   sameCategoryParents.sort((left, right) => right.depth - left.depth || left.node.id.localeCompare(right.node.id))
   return sameCategoryParents[0]!.node.id

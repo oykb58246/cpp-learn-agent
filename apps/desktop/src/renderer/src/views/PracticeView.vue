@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { CheckCircle2, CircleAlert, HardDrive, ImagePlus, Loader2, RefreshCw, Search, Send, Timer, UploadCloud, XCircle } from 'lucide-vue-next'
-import type { PracticeCatalog, PracticeExercise, PracticeJudgeCaseResult, PracticeOjScreenshotInput, PracticeProjectCompleteResult, PracticeSubmissionResult } from '@cpp-pet/contracts'
+import type { PracticeCatalog, PracticeExercise, PracticeJudgeCaseResult, PracticeOjImportInput, PracticeProjectCompleteResult, PracticeSubmissionResult } from '@cpp-pet/contracts'
 import { useAppStore } from '../stores/app'
+import { useAgentStore } from '../stores/agent'
 
 const app = useAppStore()
+const agent = useAgentStore()
+const router = useRouter()
 const catalog = ref<PracticeCatalog>({ exercises: [], projects: [] })
 const loading = ref(false)
 const importBusy = ref(false)
@@ -19,6 +23,17 @@ const submission = ref<PracticeSubmissionResult | null>(null)
 const submitNotice = ref('')
 const projectBusyId = ref('')
 const projectNotice = ref<PracticeProjectCompleteResult | null>(null)
+const activeImportModel = computed(() => agent.models.find(item => item.enabled && item.apiKeyConfigured))
+const imageImportReady = computed(() => Boolean(activeImportModel.value?.capabilities.vision))
+const textImportReady = computed(() => Boolean(activeImportModel.value?.capabilities.text))
+const importReady = computed(() => Boolean(activeImportModel.value && textImportReady.value))
+const imageModelStatus = computed(() => {
+  const profile = activeImportModel.value
+  if (!profile) return '尚未启用带 API Key 的模型配置'
+  return profile.capabilities.vision
+    ? `${profile.name} · 图片、Markdown、纯文本和 JSON 均可导入`
+    : `${profile.name} · Markdown、纯文本和 JSON 可用；图片理解未启用`
+})
 
 const filteredExercises = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
@@ -68,7 +83,9 @@ const peakMemoryBytes = computed(() => {
   return values.length ? Math.max(...values) : null
 })
 
-onMounted(loadCatalog)
+onMounted(() => {
+  void Promise.all([loadCatalog(), agent.refreshModels()])
+})
 
 async function loadCatalog() {
   loading.value = true
@@ -122,7 +139,15 @@ async function completeProjectTask(taskId: string) {
 }
 
 function chooseOjScreenshot() {
+  if (!importReady.value) {
+    importNotice.value = '请先启用带 API Key 的文本模型。'
+    return
+  }
   fileInput.value?.click()
+}
+
+function openModelSettings() {
+  void router.push({ path: '/settings', query: { section: 'models' } })
 }
 
 async function importOjScreenshot(event: Event) {
@@ -130,21 +155,41 @@ async function importOjScreenshot(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file) return
-  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-    importNotice.value = '只支持 PNG、JPG 或 WEBP 题面截图。'
+  const imageType = ['image/png', 'image/jpeg', 'image/webp'].includes(file.type)
+  const textMimeType = resolveTextMimeType(file)
+  if (!imageType && !textMimeType) {
+    importNotice.value = '支持 PNG、JPG、WEBP、Markdown、TXT 和 JSON 题面文件。'
+    return
+  }
+  if (imageType && !imageImportReady.value) {
+    importNotice.value = '当前模型没有通过图片输入能力测试。可以改用 Markdown/TXT/JSON，或前往模型设置测试图片输入。'
+    return
+  }
+  if (!imageType && file.size > 1_000_000) {
+    importNotice.value = '文本题面文件不能超过 1 MB。'
     return
   }
   importBusy.value = true
   importStage.value = 'analyzing'
-  importNotice.value = 'AI 正在分析题面、样例和判题用例…'
+  importNotice.value = `AI 正在分析 ${file.name} 中的题面、样例和判题用例…`
   try {
-    const previewDataUrl = await readDataUrl(file)
-    const size = await readImageSize(previewDataUrl)
-    const request: PracticeOjScreenshotInput = {
-      previewDataUrl,
-      mimeType: file.type as PracticeOjScreenshotInput['mimeType'],
-      width: size.width,
-      height: size.height
+    let request: PracticeOjImportInput
+    if (imageType) {
+      const previewDataUrl = await readDataUrl(file)
+      const size = await readImageSize(previewDataUrl)
+      request = {
+        previewDataUrl,
+        mimeType: file.type as 'image/png' | 'image/jpeg' | 'image/webp',
+        width: size.width,
+        height: size.height
+      }
+    } else {
+      request = {
+        kind: 'text',
+        fileName: file.name,
+        mimeType: textMimeType!,
+        content: await file.text()
+      }
     }
     const result = await window.cppPet.learning.importOjScreenshot(request)
     if (!result.ok) {
@@ -164,9 +209,19 @@ async function importOjScreenshot(event: Event) {
     await nextTick()
     document.querySelector<HTMLElement>(`[data-exercise-id="${result.data.exercise.id}"]`)?.scrollIntoView({ block: 'nearest' })
     importNotice.value = `已添加并打开：${result.data.exercise.title}`
+  } catch (error) {
+    importNotice.value = error instanceof Error ? error.message : '读取题面文件失败，请检查文件后重试。'
   } finally {
     importBusy.value = false
   }
+}
+
+function resolveTextMimeType(file: File): 'text/markdown' | 'text/plain' | 'application/json' | null {
+  const name = file.name.toLowerCase()
+  if (file.type === 'text/markdown' || name.endsWith('.md') || name.endsWith('.markdown')) return 'text/markdown'
+  if (file.type === 'application/json' || name.endsWith('.json')) return 'application/json'
+  if (file.type === 'text/plain' || name.endsWith('.txt')) return 'text/plain'
+  return null
 }
 
 function defaultStarterCode(exercise: PracticeExercise): string {
@@ -239,13 +294,18 @@ function formatMemory(bytes: number | null) {
       <div>
         <UploadCloud :size="18" />
         <span>
-          <strong>上传 OJ 题面截图</strong>
-          <small>AI 会整理题面、样例和 5 个判题用例；信息不足会拒绝添加。</small>
+          <strong>导入 OJ 题面</strong>
+          <small>支持图片、Markdown、TXT 和 JSON；AI 会整理题面、样例和 5 个判题用例。</small>
         </span>
       </div>
       <button class="secondary-command" :disabled="loading" @click="loadCatalog"><RefreshCw :size="15" />刷新</button>
-      <button class="primary-command" :disabled="importBusy" @click="chooseOjScreenshot"><ImagePlus :size="15" />{{ importBusy ? '整理中' : '导入截图' }}</button>
-      <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden @change="importOjScreenshot" />
+      <button v-if="!imageImportReady" class="secondary-command" @click="openModelSettings"><CircleAlert :size="15" />配置图片模型</button>
+      <button class="primary-command" :disabled="importBusy || !importReady" @click="chooseOjScreenshot"><ImagePlus :size="15" />{{ importBusy ? '整理中' : '导入题面' }}</button>
+      <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp,.md,.markdown,.txt,.json,text/markdown,text/plain,application/json" hidden @change="importOjScreenshot" />
+      <div :class="['practice-model-status', { ready: importReady }]">
+        <component :is="importReady ? CheckCircle2 : CircleAlert" :size="14" />
+        <span>{{ imageModelStatus }}</span>
+      </div>
       <div v-if="importBusy" class="practice-import-progress" role="status">
         <Loader2 :size="16" class="spin" />
         <span><strong>{{ importStage === 'analyzing' ? 'AI 正在分析题面' : '正在刷新题目列表' }}</strong><small>{{ importStage === 'analyzing' ? '正在提取题意、样例与判题用例' : '导入完成后将自动打开新题目' }}</small></span>

@@ -195,7 +195,7 @@ function onKeydown(event: KeyboardEvent) {
             <Square :size="13" />
           </button>
           <button
-            v-else
+            v-if="!busy"
             type="submit"
             class="composer-send"
             title="发送 (Enter)"

@@ -3,7 +3,7 @@ import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createElectronEnvironment, startStreamingModelFixture, type StreamingModelFixture } from './electron-env'
+import { createElectronEnvironment, findMainApplicationWindow, startStreamingModelFixture, type StreamingModelFixture } from './electron-env'
 
 const repo = resolve(import.meta.dirname, '../..')
 let temp = ''
@@ -68,7 +68,7 @@ test('guides a beginner through a real Responses Agent experience', async () => 
     })
   })
   try {
-    const page = await electronApp.firstWindow()
+    const page = await findMainApplicationWindow(electronApp)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await page.evaluate(async baseUrl => {
       const settings = await window.cppPet.settings.update({
@@ -123,10 +123,10 @@ test('guides a beginner through a real Responses Agent experience', async () => 
     await setWindowSize(electronApp, page, 1024, 720)
     await page.getByRole('button', { name: '试着解释这段循环' }).click()
     await expect(page.getByLabel('Agent 模式')).toHaveCount(0)
-    await expect(page.getByPlaceholder('向 CppPilot 提交学习任务')).toHaveValue(/for \(int i = 0; i < 3; \+\+i\)/)
+    await expect(page.getByPlaceholder('随心输入')).toHaveValue(/for \(int i = 0; i < 3; \+\+i\)/)
     await captureWindow(electronApp, page, 'beginner-tour-agent-input-1024x720.png')
     await expectTourInsideViewport(page)
-    await page.getByRole('button', { name: '发送', exact: true }).click()
+    await page.locator('.runs-composer .agent-composer button[type="submit"]').click()
     await expect(page.locator('.approval-card')).toContainText('发送上下文到 OpenAI 模型', { timeout: 30_000 })
     await page.getByRole('button', { name: '批准', exact: true }).click()
     await expect(page.locator('[data-tour="assistant-result"]')).toContainText('循环', { timeout: 30_000 })
@@ -170,7 +170,7 @@ test('keeps the approval card interactive during the assistant tour step', async
     })
   })
   try {
-    const page = await electronApp.firstWindow()
+    const page = await findMainApplicationWindow(electronApp)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await page.evaluate(async baseUrl => {
       const settings = await window.cppPet.settings.update({
@@ -206,7 +206,7 @@ test('keeps the approval card interactive during the assistant tour step', async
     await page.getByRole('button', { name: '下一步' }).click()
     await page.getByRole('button', { name: '去问助教' }).click()
     await page.getByRole('button', { name: '试着解释这段循环' }).click()
-    await page.getByRole('button', { name: '发送', exact: true }).click()
+    await page.locator('.runs-composer .agent-composer button[type="submit"]').click()
 
     await expect(page.locator('.approval-card')).toContainText('发送上下文到 OpenAI 模型', { timeout: 30_000 })
     await expect(page.locator('[data-tour="assistant-approval"]')).toBeVisible()

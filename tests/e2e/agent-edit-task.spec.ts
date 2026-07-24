@@ -3,7 +3,7 @@ import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createElectronEnvironment, startStreamingModelFixture } from './electron-env'
+import { createElectronEnvironment, findMainApplicationWindow, setWorkspaceAgentOpen, startStreamingModelFixture } from './electron-env'
 
 const repo = resolve(import.meta.dirname, '../..')
 const request = '帮我把 main.cpp 中的"Hello, C++Pilot!"改成"Hello, world!，编译成功后再解释 main、cout 和 endl 的作用。'
@@ -24,7 +24,7 @@ test('修改代码、编译验证并解释指定概念', async () => {
   })
 
   try {
-    const page = await electronApp.firstWindow()
+    const page = await findMainApplicationWindow(electronApp)
     await page.waitForLoadState('domcontentloaded')
     const setup = await page.evaluate(async baseUrl => {
       await window.cppPet.settings.update({ onboardingStatus: 'completed' })
@@ -59,9 +59,9 @@ test('修改代码、编译验证并解释指定概念', async () => {
     await expect(page.locator('.workspace-view')).toBeVisible()
     await page.getByText('main.cpp', { exact: true }).click()
     await expect(page.locator('.monaco-editor-host')).toContainText('Hello, C++Pilot!')
-    await page.getByRole('button', { name: 'Agent', exact: true }).click()
-    await page.getByPlaceholder('向 CppPilot 提交学习任务').fill(request)
-    await page.getByRole('button', { name: '发送', exact: true }).click()
+    await setWorkspaceAgentOpen(page, true)
+    await page.getByPlaceholder('随心输入').fill(request)
+    await page.locator('.workspace-agent-panel .agent-composer button[type="submit"]').click()
 
     await expect(page.locator('.approval-card')).toContainText('发送上下文到 OpenAI 模型', { timeout: 30_000 })
     await page.getByRole('button', { name: '批准', exact: true }).click()

@@ -9,6 +9,10 @@ import {
   Boxes,
   Bug,
   CheckCheck,
+  ChevronDown,
+  ChevronRight,
+  Clipboard,
+  CircleHelp,
   CornerDownRight,
   Copy,
   ExternalLink,
@@ -33,7 +37,7 @@ import {
   ZoomIn,
   ZoomOut
 } from 'lucide-vue-next'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type {
   BuildResult,
   CmakeBuildResult,
@@ -56,6 +60,7 @@ import ApprovalCard from '../components/ApprovalCard.vue'
 import ConversationPanel from '../components/ConversationPanel.vue'
 import DiagnosticInboxPopover from '../components/DiagnosticInboxPopover.vue'
 import SnapshotPopover from '../components/SnapshotPopover.vue'
+import FeatureHelpDialog from '../components/FeatureHelpDialog.vue'
 import { useAppStore } from '../stores/app'
 import { useAgentStore } from '../stores/agent'
 import { useWorkspaceStore } from '../stores/workspace'
@@ -64,6 +69,7 @@ import { isUuid } from '../utils/ids'
 import type { AgentEditorSelection } from '../utils/editor-selection'
 import { isAgentRunBusy } from '../utils/agent-run-state'
 import { diagnosticBadgeLabel } from '../utils/diagnostic-inbox'
+import { featureHelpTopic, type FeatureHelpId } from '../utils/feature-help'
 
 const app = useAppStore()
 const store = useWorkspaceStore()
@@ -75,8 +81,23 @@ const dialog = ref(false)
 const search = ref('')
 const snapshotOpen = ref(false)
 const contextNode = ref<FileTreeNode | null>(null)
+const contextMenuOpen = ref(false)
 const contextPos = ref({ x: 0, y: 0 })
+const helpDialogOpen = ref(false)
+const helpTopicId = ref<FeatureHelpId>('workspace-files')
+const helpMenuOpen = ref(false)
+const helpMenuPos = ref({ x: 0, y: 0 })
+const helpMenuTopic = ref<FeatureHelpId>('workspace-files')
+const rootExpanded = ref(true)
 const active = computed(() => store.activeTab)
+const currentWorkspace = computed(() => app.workspaces.find(item => item.id === store.currentProject?.workspaceId))
+const projectRootPath = computed(() => {
+  const root = currentWorkspace.value?.rootPath?.replace(/[\\/]+$/, '')
+  const relativeRoot = store.currentProject?.relativeRoot?.replace(/^[\\/]+/, '').replaceAll('/', '\\')
+  if (!root) return relativeRoot ?? ''
+  return relativeRoot ? `${root}\\${relativeRoot}` : root
+})
+watch(() => store.currentProject?.id, () => { rootExpanded.value = true })
 const editorHost = ref<InstanceType<typeof EditorHost> | null>(null)
 const editorFontSize = ref(13)
 const agentOpen = ref(true)
@@ -472,13 +493,68 @@ async function decideAgent(decision: 'approved' | 'rejected') {
   if (agent.pendingApproval) await agent.decide(agent.pendingApproval.id, decision)
 }
 async function runSearch() { await store.search(search.value) }
-function create(kind: 'file' | 'directory') { Object.assign(entryDialog, { visible: true, mode: 'create', kind, source: '', value: '' }) }
+function create(kind: 'file' | 'directory', parentPath = '') {
+  const prefix = parentPath ? `${parentPath.replaceAll('\\', '/')}/` : ''
+  Object.assign(entryDialog, { visible: true, mode: 'create', kind, source: '', value: prefix })
+  closeMenu()
+}
 function menu(event: MouseEvent, node: FileTreeNode) {
   contextNode.value = node
-  contextPos.value = { x: event.clientX, y: event.clientY }
+  openContextMenu(event)
+}
+function rootMenu(event: MouseEvent) {
+  contextNode.value = null
+  openContextMenu(event)
+}
+function openContextMenu(event: MouseEvent) {
+  helpMenuOpen.value = false
+  contextMenuOpen.value = true
+  contextPos.value = {
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - 218)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - 390))
+  }
   void nextTick(() => document.addEventListener('click', closeMenu, { once: true }))
 }
-function closeMenu() { contextNode.value = null }
+function openFeatureHelp(topic: FeatureHelpId) {
+  helpTopicId.value = topic
+  helpDialogOpen.value = true
+  helpMenuOpen.value = false
+  closeMenu()
+}
+function openHelpMenu(event: MouseEvent, topic: FeatureHelpId) {
+  closeMenu()
+  helpMenuTopic.value = topic
+  helpMenuOpen.value = true
+  helpMenuPos.value = {
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - 218)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - 78))
+  }
+  void nextTick(() => document.addEventListener('click', () => { helpMenuOpen.value = false }, { once: true }))
+}
+function closeMenu() {
+  contextNode.value = null
+  contextMenuOpen.value = false
+}
+function contextDirectory(): string {
+  const node = contextNode.value
+  if (!node) return ''
+  if (node.kind === 'directory') return node.relativePath.replaceAll('\\', '/')
+  const segments = node.relativePath.replaceAll('\\', '/').split('/')
+  segments.pop()
+  return segments.join('/')
+}
+async function copyPath(absolute: boolean) {
+  const node = contextNode.value
+  const relativePath = node?.relativePath.replaceAll('\\', '/') ?? ''
+  const value = absolute
+    ? relativePath ? `${projectRootPath.value}\\${relativePath.replaceAll('/', '\\')}` : projectRootPath.value
+    : relativePath || '.'
+  if (!value) return
+  const result = await window.cppPet.app.copyText({ text: value })
+  if (result.ok) ElMessage.success(absolute ? '绝对路径已复制' : '相对路径已复制')
+  else app.setError(result.error)
+  closeMenu()
+}
 function beginEntryAction(mode: 'rename' | 'copy' | 'move') {
   if (!contextNode.value) return
   Object.assign(entryDialog, {
@@ -780,13 +856,39 @@ async function overwriteDisk() {
           <strong>{{ item.relativePath }}:{{ item.line }}</strong><span>{{ item.excerpt }}</span>
         </button>
       </div>
-      <div class="sidebar-toolbar">
-        <span>文件</span>
-        <button title="新建文件" @click="create('file')"><FilePlus2 :size="15" /></button>
-        <button title="新建目录" @click="create('directory')"><FolderPlus :size="15" /></button>
-        <button title="刷新" @click="store.refreshTree"><RotateCcw :size="15" /></button>
+      <div class="sidebar-toolbar explorer-toolbar" @contextmenu.prevent="rootMenu">
+        <span>资源管理器</span>
+        <button class="explorer-quick-action" title="新建文件" @click="create('file')"><FilePlus2 :size="14" /></button>
+        <button class="explorer-quick-action" title="新建目录" @click="create('directory')"><FolderPlus :size="14" /></button>
+        <button class="explorer-quick-action" title="刷新" @click="store.refreshTree"><RotateCcw :size="14" /></button>
+        <button v-if="store.currentProject" class="explorer-more-action" title="更多资源管理器操作" @click="rootMenu"><MoreHorizontal :size="15" /></button>
       </div>
-      <FileTree :nodes="store.tree" :active-path="store.activePath" @open="store.openFile" @menu="menu" />
+      <div v-if="store.currentProject" class="workspace-explorer">
+        <div class="workspace-root-row" :title="projectRootPath" @contextmenu.prevent="rootMenu">
+          <button
+            class="workspace-root-toggle"
+            type="button"
+            :aria-expanded="rootExpanded"
+            @click="rootExpanded = !rootExpanded"
+          >
+            <ChevronDown v-if="rootExpanded" :size="14" />
+            <ChevronRight v-else :size="14" />
+            <span class="workspace-root-label">
+              <strong>{{ store.currentProject.name }}</strong>
+              <small v-if="projectRootPath">[{{ projectRootPath }}]</small>
+            </span>
+          </button>
+        </div>
+        <FileTree
+          v-show="rootExpanded"
+          :key="store.currentProject.id"
+          :nodes="store.tree"
+          :active-path="store.activePath"
+          :depth="1"
+          @open="store.openFile"
+          @menu="menu"
+        />
+      </div>
       <div v-if="!store.currentProject" class="sidebar-empty">选择或新建项目</div>
     </aside>
     <div
@@ -828,6 +930,7 @@ async function overwriteDisk() {
           aria-controls="workspace-snapshot-popover"
           :aria-expanded="snapshotOpen"
           @click.stop="snapshotOpen = !snapshotOpen"
+          @contextmenu.prevent.stop="openHelpMenu($event, 'snapshots')"
         ><History :size="16" /></button>
         <button
           v-if="inboxCount"
@@ -852,17 +955,17 @@ async function overwriteDisk() {
       />
 
       <div class="editor-toolbar">
-        <button class="tool-command" :disabled="!canBuild" title="编译当前 C++ 文件" @click="build(false)"><Hammer :size="15" />编译</button>
-        <button class="tool-command run" :disabled="!canBuild" title="编译并运行当前 C++ 文件" @click="build(true)"><Play :size="15" />运行</button>
+        <button class="tool-command" :disabled="!canBuild" title="编译当前 C++ 文件；右键查看帮助" @click="build(false)" @contextmenu.prevent="openHelpMenu($event, 'compile')"><Hammer :size="15" />编译</button>
+        <button class="tool-command run" :disabled="!canBuild" title="编译并运行当前 C++ 文件；右键查看帮助" @click="build(true)" @contextmenu.prevent="openHelpMenu($event, 'run')"><Play :size="15" />运行</button>
         <button class="tool-command stop" :disabled="!executing" title="停止当前任务" @click="stop"><Square :size="14" />停止</button>
         <span class="toolbar-separator" />
-        <button class="tool-command" :disabled="!canCmake" title="配置并构建 CMake 项目" @click="buildCmake"><Boxes :size="15" />工程构建</button>
-        <button class="tool-command" :disabled="!canTest" title="运行最近一次 CMake 构建中的 CTest" @click="runTests"><CheckCheck :size="15" />测试</button>
-        <button class="tool-command" :disabled="!canAnalyze" title="使用 clang-tidy 分析当前文件" @click="analyze"><ScanSearch :size="15" />分析</button>
+        <button class="tool-command" :disabled="!canCmake" title="配置并构建 CMake 项目；右键查看帮助" @click="buildCmake" @contextmenu.prevent="openHelpMenu($event, 'cmake')"><Boxes :size="15" />工程构建</button>
+        <button class="tool-command" :disabled="!canTest" title="运行最近一次 CMake 构建中的 CTest；右键查看帮助" @click="runTests" @contextmenu.prevent="openHelpMenu($event, 'ctest')"><CheckCheck :size="15" />测试</button>
+        <button class="tool-command" :disabled="!canAnalyze" title="使用 clang-tidy 分析当前文件；右键查看帮助" @click="analyze" @contextmenu.prevent="openHelpMenu($event, 'analysis')"><ScanSearch :size="15" />分析</button>
         <button v-if="agentSelection" class="tool-command" title="选中代码问 AI" @click="askSelectedCode"><Bot :size="15" />问 AI</button>
-        <button class="icon-command external-editor-command" :disabled="!store.currentProject" title="在新的 VS Code 窗口中打开当前文件和光标位置" @click="openVsCode"><ExternalLink :size="15" /></button>
+        <button class="icon-command external-editor-command" :disabled="!store.currentProject" title="在新的 VS Code 窗口中打开；右键查看帮助" @click="openVsCode" @contextmenu.prevent="openHelpMenu($event, 'vscode')"><ExternalLink :size="15" /></button>
         <span class="toolbar-separator" />
-        <button v-if="!debugState || ['exited', 'error'].includes(debugState.status)" class="tool-command debug" :disabled="!canDebug" title="使用 GDB 调试当前 C++ 文件" @click="startDebug"><Bug :size="15" />调试</button>
+        <button v-if="!debugState || ['exited', 'error'].includes(debugState.status)" class="tool-command debug" :disabled="!canDebug" title="使用 GDB 调试当前 C++ 文件；右键查看帮助" @click="startDebug" @contextmenu.prevent="openHelpMenu($event, 'debug')"><Bug :size="15" />调试</button>
         <template v-else>
           <button class="tool-command debug" :disabled="!canControlDebug" title="继续运行到下一个断点" @click="debugCommand('continue')"><Play :size="14" />继续</button>
           <button class="tool-command" :disabled="!canControlDebug" title="单步跨过" @click="debugCommand('next')"><StepForward :size="14" />跨过</button>
@@ -882,6 +985,7 @@ async function overwriteDisk() {
           <button class="icon-command" type="button" title="放大" :disabled="!active || editorFontSize >= 28" @click="editorHost?.zoomIn()"><ZoomIn :size="15" /></button>
         </div>
         <span class="toolbar-status" :title="languageStatusText">{{ debuggerBusy ? '调试器正在执行…' : debugState?.status === 'stopped' ? `调试暂停：${debugState.reason ?? '断点'}` : executing === 'build' ? '正在编译…' : executing === 'run' ? '程序正在运行…' : executing === 'cmake' ? '正在构建工程…' : executing === 'ctest' ? '正在运行测试…' : executing === 'analysis' ? '正在静态分析…' : active?.dirty ? '等待自动保存' : active ? `${languageAvailable ? 'clangd 已连接' : '基础编辑模式'} · 已保存` : '' }}</span>
+        <button class="icon-command feature-help-command" title="功能帮助" aria-label="功能帮助" @click="openFeatureHelp('workspace-files')"><CircleHelp :size="15" /></button>
         <button class="panel-toggle" @click="panelOpen = !panelOpen"><Terminal :size="15" />{{ panelOpen ? '隐藏面板' : '显示面板' }}</button>
       </div>
 
@@ -1039,11 +1143,24 @@ async function overwriteDisk() {
       </ConversationPanel>
     </aside>
 
-    <div v-if="contextNode" class="context-menu" :style="{ left: `${contextPos.x}px`, top: `${contextPos.y}px` }">
-      <button @click="beginEntryAction('rename')"><Pencil :size="14" />重命名</button>
-      <button @click="beginEntryAction('copy')"><Copy :size="14" />复制到</button>
-      <button @click="beginEntryAction('move')"><Move :size="14" />移动到</button>
-      <button class="danger" @click="remove"><Trash2 :size="14" />删除</button>
+    <div v-if="contextMenuOpen" class="context-menu workspace-tree-menu" :style="{ left: `${contextPos.x}px`, top: `${contextPos.y}px` }">
+      <button @click="create('file', contextDirectory())"><FilePlus2 :size="14" />新建文件</button>
+      <button @click="create('directory', contextDirectory())"><FolderPlus :size="14" />新建文件夹</button>
+      <button @click="store.refreshTree(); closeMenu()"><RotateCcw :size="14" />刷新资源管理器</button>
+      <span class="context-menu-separator" />
+      <button v-if="contextNode" @click="copyPath(false)"><Clipboard :size="14" />复制相对路径</button>
+      <button @click="copyPath(true)"><Clipboard :size="14" />复制绝对路径</button>
+      <button @click="openFeatureHelp('workspace-files')"><CircleHelp :size="14" />文件管理帮助</button>
+      <template v-if="contextNode">
+        <span class="context-menu-separator" />
+        <button @click="beginEntryAction('rename')"><Pencil :size="14" />重命名</button>
+        <button @click="beginEntryAction('copy')"><Copy :size="14" />复制到</button>
+        <button @click="beginEntryAction('move')"><Move :size="14" />移动到</button>
+        <button class="danger" @click="remove"><Trash2 :size="14" />删除</button>
+      </template>
+    </div>
+    <div v-if="helpMenuOpen" class="context-menu feature-help-menu" :style="{ left: `${helpMenuPos.x}px`, top: `${helpMenuPos.y}px` }">
+      <button @click="openFeatureHelp(helpMenuTopic)"><CircleHelp :size="14" />查看“{{ featureHelpTopic(helpMenuTopic).title }}”帮助</button>
     </div>
     <el-dialog v-model="entryDialog.visible" width="430" :title="entryDialog.mode === 'create' ? (entryDialog.kind === 'file' ? '新建文件' : '新建目录') : entryDialog.mode === 'rename' ? '重命名' : entryDialog.mode === 'copy' ? '复制到' : '移动到'" @closed="entryDialog.value = ''">
       <label class="dialog-field-label">{{ entryDialog.mode === 'rename' ? '新名称' : '项目内相对路径' }}</label>
@@ -1051,5 +1168,6 @@ async function overwriteDisk() {
       <template #footer><el-button @click="entryDialog.visible = false">取消</el-button><el-button type="primary" :disabled="!entryDialog.value.trim()" @click="submitEntryAction">确认</el-button></template>
     </el-dialog>
     <ProjectDialog v-model="dialog" @created="project => switchProject(project.id)" />
+    <FeatureHelpDialog v-model="helpDialogOpen" :topic-id="helpTopicId" />
   </div>
 </template>

@@ -3,7 +3,7 @@ import electronPath from 'electron'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createElectronEnvironment, startStreamingModelFixture } from './electron-env'
+import { createElectronEnvironment, findMainApplicationWindow, setWorkspaceAgentOpen, startStreamingModelFixture } from './electron-env'
 
 const repo = resolve(import.meta.dirname, '../..')
 let temp = ''
@@ -51,7 +51,7 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
     env: createElectronEnvironment({ CPP_PET_USER_DATA: join(temp, 'user-data'), CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace') })
   })
   try {
-    const page = await electronApp.firstWindow()
+    const page = await findMainApplicationWindow(electronApp)
     await page.waitForLoadState('domcontentloaded')
     const setup = await page.evaluate(async baseUrl => {
       await window.cppPet.settings.update({ onboardingStatus: 'completed' })
@@ -89,11 +89,11 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
     await page.reload()
     await expect(page.locator('.workspace-view')).toBeVisible()
     await page.getByText('main.cpp', { exact: true }).click()
-    await page.getByRole('button', { name: 'Agent', exact: true }).click()
+    await setWorkspaceAgentOpen(page, true)
     await expect(page.locator('.workspace-agent-panel')).toBeVisible()
     await expect(page.getByLabel('Agent 模式')).toHaveCount(0)
-    await page.getByPlaceholder('向 CppPilot 提交学习任务').fill('修复当前编译错误并解释根因')
-    await page.getByRole('button', { name: '发送', exact: true }).click()
+    await page.getByPlaceholder('随心输入').fill('修复当前编译错误并解释根因')
+    await page.locator('.workspace-agent-panel .agent-composer button[type="submit"]').click()
     await expect(page.locator('.approval-card')).toContainText('发送上下文到 OpenAI 模型', { timeout: 30_000 })
     await page.getByRole('button', { name: '批准', exact: true }).click()
     await expect(page.locator('.approval-card')).toContainText('应用文件修改', { timeout: 30_000 })
@@ -119,17 +119,20 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
 
     await page.getByRole('link', { name: '知识树' }).click()
     await expect(page.getByRole('heading', { name: '知识树' })).toBeVisible()
-    await expect(page.locator('.knowledge-path')).toBeVisible()
-    await expect(page.locator('.knowledge-path-lane')).toHaveCount(15)
+    await expect(page.locator('.knowledge-board')).toBeVisible()
+    await expect(page.locator('.knowledge-stage')).toHaveCount(17)
     await expect(page.getByRole('button', { name: '编辑背景' })).toHaveCount(0)
     await expect(page.getByText('待复习', { exact: true })).toHaveCount(0)
 
     const blockedArrays = page.locator('[data-concept-id="data.arrays"]')
-    await expect(blockedArrays.getByRole('button', { name: /数组 学习中/ })).toBeDisabled()
+    await expect(blockedArrays).toHaveClass(/blocked/)
+    await expect(blockedArrays.getByRole('button', { name: /数组 切换掌握状态，当前未学习/ })).toBeEnabled()
     await expect(blockedArrays.locator('.knowledge-prerequisites')).toContainText('循环')
 
     const ioCard = page.locator('[data-concept-id="basics.io"]')
-    await ioCard.getByRole('button', { name: /标准输入输出 已掌握/ }).click()
+    await ioCard.getByRole('button', { name: /标准输入输出 切换掌握状态，当前未学习/ }).click()
+    await expect(ioCard.getByRole('button', { name: /标准输入输出 切换掌握状态，当前学习中/ })).toBeVisible()
+    await ioCard.getByRole('button', { name: /标准输入输出 切换掌握状态，当前学习中/ }).click()
     await expect(ioCard).toContainText('已掌握')
     await captureWindow(electronApp, page, 'h3-knowledge-path-1440x900.png')
     await setWindowSize(electronApp, page, 1024, 720)
@@ -138,22 +141,14 @@ test('completes the verified H3 diagnose and learning workflow', async () => {
     await setWindowSize(electronApp, page, 1440, 900)
 
     await page.getByRole('link', { name: '设置' }).click()
+    await page.getByRole('button', { name: /模型服务 BYOK 与离线/ }).click()
+    await expect(page).toHaveURL(/#\/settings\?section=models$/)
     await expect(page.getByRole('heading', { name: '模型服务' })).toBeVisible()
-    await expect(page.locator('.model-mode-line')).toContainText('OpenAI Responses 模型可用')
+    await expect(page.locator('.model-mode-line')).toContainText('OpenAI Responses API 可用')
     await setWindowSize(electronApp, page, 1024, 720)
-    await page.getByTitle('跳转到模型服务').click()
-    await expect.poll(() => page.evaluate(() => {
-      const jumpbar = document.querySelector<HTMLElement>('.settings-jumpbar')
-      const modelSection = document.querySelector<HTMLElement>('#models')
-      const root = document.querySelector<HTMLElement>('.settings-view')
-      if (!jumpbar || !modelSection || !root) return 'missing'
-      const jumpbarBottom = jumpbar.getBoundingClientRect().bottom
-      const modelTop = modelSection.getBoundingClientRect().top
-      const gap = modelTop - jumpbarBottom
-      return gap >= 8 && gap <= 40
-        ? 'aligned'
-        : JSON.stringify({ gap, jumpbarBottom, modelTop, scrollTop: root.scrollTop })
-    })).toBe('aligned')
+    await expect(page.locator('.settings-module-nav')).toBeVisible()
+    await expect(page.locator('.settings-section:visible')).toHaveCount(1)
+    await expect(page.locator('#models')).toBeVisible()
     await expectNoHorizontalOverflow(page)
     await captureWindow(electronApp, page, 'h3-settings-1024x720.png')
   } finally {

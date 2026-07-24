@@ -26,8 +26,10 @@ import {
   petWindowStateSchema,
   practiceCatalogSchema,
   practiceExerciseSchema,
+  practiceOjImportInputSchema,
   practiceOjImportResultSchema,
   practiceOjScreenshotInputSchema,
+  practiceOjTextInputSchema,
   programRunRequestSchema,
   projectDraftInputSchema,
   screenshotCaptureRequestSchema,
@@ -218,6 +220,16 @@ describe('contracts', () => {
     expect(practiceExerciseSchema.safeParse({ ...exercise, conceptIds: [] }).success).toBe(false)
     expect(practiceOjScreenshotInputSchema.safeParse({ previewDataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png', width: 320, height: 200 }).success).toBe(true)
     expect(practiceOjScreenshotInputSchema.safeParse({ previewDataUrl: 'hello', mimeType: 'image/png', width: 320, height: 200 }).success).toBe(false)
+    const markdownInput = {
+      kind: 'text' as const,
+      fileName: 'two-sum.md',
+      mimeType: 'text/markdown' as const,
+      content: '# 两数之和\n\n输入两个整数，输出它们的和。'
+    }
+    expect(practiceOjTextInputSchema.safeParse(markdownInput).success).toBe(true)
+    expect(practiceOjImportInputSchema.safeParse(markdownInput).success).toBe(true)
+    expect(practiceOjImportInputSchema.safeParse({ ...markdownInput, mimeType: 'text/html' }).success).toBe(false)
+    expect(practiceOjTextInputSchema.safeParse({ ...markdownInput, content: 'x'.repeat(1_000_001) }).success).toBe(false)
     expect(practiceOjImportResultSchema.safeParse({ status: 'added', exercise }).success).toBe(true)
     expect(practiceOjImportResultSchema.safeParse({ status: 'refused', reason: '截图缺少完整题面和样例。' }).success).toBe(true)
     expect(practiceOjImportResultSchema.safeParse({ status: 'added' }).success).toBe(false)

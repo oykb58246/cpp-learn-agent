@@ -829,12 +829,14 @@ export class AppDatabase {
       if (profile.enabled) {
         this.db.prepare('UPDATE model_profiles SET enabled = 0 WHERE id <> ?').run(profile.id)
       }
-      this.db.prepare(`INSERT INTO model_profiles(id,name,base_url,model,enabled,timeout_ms,api_key_configured,created_at,updated_at)
-        VALUES(@id,@name,@baseUrl,@model,@enabled,@timeoutMs,@apiKeyConfigured,@createdAt,@updatedAt)
-        ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,model=excluded.model,
+      this.db.prepare(`INSERT INTO model_profiles(id,name,provider,protocol,base_url,model,capabilities_json,enabled,timeout_ms,api_key_configured,created_at,updated_at)
+        VALUES(@id,@name,@provider,@protocol,@baseUrl,@model,@capabilitiesJson,@enabled,@timeoutMs,@apiKeyConfigured,@createdAt,@updatedAt)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,provider=excluded.provider,protocol=excluded.protocol,base_url=excluded.base_url,model=excluded.model,
+        capabilities_json=excluded.capabilities_json,
         enabled=excluded.enabled,timeout_ms=excluded.timeout_ms,api_key_configured=excluded.api_key_configured,
         updated_at=excluded.updated_at`).run({
         ...profile,
+        capabilitiesJson: JSON.stringify(profile.capabilities),
         enabled: profile.enabled ? 1 : 0,
         apiKeyConfigured: profile.apiKeyConfigured ? 1 : 0
       })
@@ -1268,8 +1270,13 @@ const mapLearnerAchievement = (r: any): LearnerAchievement => ({
 const mapModelProfile = (r: any): ModelProfile => ({
   id: r.id,
   name: r.name,
+  provider: r.provider ?? 'custom',
+  protocol: r.protocol ?? 'auto',
   baseUrl: r.base_url,
   model: r.model,
+  capabilities: r.capabilities_json
+    ? JSON.parse(r.capabilities_json)
+    : { text: true, vision: false, toolCalling: true, structuredOutput: true },
   enabled: Boolean(r.enabled),
   timeoutMs: r.timeout_ms,
   apiKeyConfigured: Boolean(r.api_key_configured),

@@ -5,6 +5,7 @@ import {
   approvalDecisionSchema,
   approvalSchema,
   contextPacketSchema,
+  modelProfileInputSchema,
   timelineEventSchema,
   toolCallSchema,
   toolResultSchema
@@ -14,6 +15,25 @@ import { ipc } from './ipc'
 const now = new Date().toISOString()
 
 describe('H3 agent contracts', () => {
+  it('defaults legacy-compatible model profiles to safe declared capabilities', () => {
+    const parsed = modelProfileInputSchema.parse({
+      name: 'Custom model',
+      baseUrl: 'https://models.example/v1',
+      model: 'teacher'
+    })
+
+    expect(parsed).toMatchObject({
+      provider: 'custom',
+      protocol: 'auto',
+      capabilities: {
+        text: true,
+        vision: false,
+        toolCalling: true,
+        structuredOutput: true
+      }
+    })
+  })
+
   it('treats empty projectId as omitted on start requests', () => {
     const parsed = agentStartRequestSchema.parse({ source: 'main', mode: 'chat', message: 'hello', projectId: '' })
     expect(parsed.projectId).toBeUndefined()
@@ -55,6 +75,8 @@ describe('H3 agent contracts', () => {
     expect(ipc.petChat).toBe('pet:chat')
     expect(ipc.petQuickChat).toBe('pet:quick-chat')
     expect(ipc.appNavigate).toBe('app:navigate')
+    expect(ipc.appCopyText).toBe('app:copy-text')
+    expect(ipc.modelTestVision).toBe('model:test-vision')
     expect(Object.values(ipc)).not.toContain('mcp:call-tool')
   })
 

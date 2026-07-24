@@ -1,10 +1,39 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import type { ElectronApplication, Page } from '@playwright/test'
 
 export function createElectronEnvironment(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const environment = { ...process.env, ...overrides }
   delete environment.ELECTRON_RUN_AS_NODE
   return environment
+}
+
+export async function findMainApplicationWindow(
+  electronApp: ElectronApplication,
+  timeoutMs = 10_000
+): Promise<Page> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    for (const candidate of electronApp.windows()) {
+      try {
+        await candidate.waitForLoadState('domcontentloaded', { timeout: 250 })
+        if (await candidate.locator('.app-shell').count()) return candidate
+      } catch {
+        // A window may close or still be loading while the desktop pet and main window start.
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error('CppPilot main application window was not found.')
+}
+
+export async function setWorkspaceAgentOpen(page: Page, open: boolean): Promise<void> {
+  const inspector = page.locator('.workspace-agent-inspector')
+  const currentlyOpen = await inspector.count() > 0
+  if (currentlyOpen !== open) {
+    await page.getByRole('button', { name: 'Agent', exact: true }).click()
+  }
+  await inspector.waitFor({ state: open ? 'visible' : 'detached' })
 }
 
 type ResponseInputItem = Record<string, any>

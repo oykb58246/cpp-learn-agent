@@ -46,6 +46,15 @@ describe('preload pet API', () => {
     expect(mock.removeListener).toHaveBeenCalledWith(ipc.appNavigate, expect.any(Function))
   })
 
+  it('copies text through the fixed app clipboard channel', async () => {
+    const mock = setupPreloadMock()
+
+    await import('./index')
+
+    await mock.exposedApi.app.copyText({ text: 'src/main.cpp' })
+    expect(mock.invoke).toHaveBeenLastCalledWith(ipc.appCopyText, { text: 'src/main.cpp' })
+  })
+
   it('exposes onChanged and keeps onEvent as a compatibility alias', async () => {
     const mock = setupPreloadMock()
 
@@ -153,6 +162,25 @@ describe('preload pet API', () => {
     const input = { previewDataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png', width: 320, height: 180 }
     await mock.exposedApi.learning.importOjScreenshot(input)
     expect(mock.invoke).toHaveBeenLastCalledWith(ipc.learningPracticeImportOjScreenshot, input)
+
+    const textInput = {
+      kind: 'text',
+      fileName: 'problem.md',
+      mimeType: 'text/markdown',
+      content: '# A + B'
+    }
+    await mock.exposedApi.learning.importOjScreenshot(textInput)
+    expect(mock.invoke).toHaveBeenLastCalledWith(ipc.learningPracticeImportOjScreenshot, textInput)
+  })
+
+  it('exposes the real image capability test channel', async () => {
+    const mock = setupPreloadMock()
+
+    await import('./index')
+
+    const input = { profileId: crypto.randomUUID() }
+    await mock.exposedApi.model.testVision(input)
+    expect(mock.invoke).toHaveBeenLastCalledWith(ipc.modelTestVision, input)
   })
   it('exposes screenshot capture, submit, cancel and submitted events', async () => {
     const mock = setupPreloadMock()

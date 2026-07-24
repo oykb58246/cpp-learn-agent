@@ -247,6 +247,8 @@ const commonExecutables = {
   'ctest.exe': ['C:\\Program Files\\CMake\\bin\\ctest.exe']
 } as const
 
+const llvmExecutableNames = new Set(['clang++.exe', 'clangd.exe', 'clang-tidy.exe', 'lldb.exe'])
+
 const toolNames: Array<{ kind: DevelopmentTool['kind']; names: string[] }> = [
   { kind: 'vscode', names: ['code.cmd', 'code.exe'] },
   { kind: 'cmake', names: ['cmake.exe'] },
@@ -307,6 +309,44 @@ async function refreshWindowsPathEnvironment(baseEnvironment: NodeJS.ProcessEnv)
   } catch {
     return baseEnvironment
   }
+}
+
+export function parseWindowsInstallRoots(output: string): string[] {
+  try {
+    const parsed = JSON.parse(output.replace(/^\uFEFF/, '').trim()) as unknown
+    if (!Array.isArray(parsed)) return []
+    return [...new Set(parsed.filter((value): value is string => typeof value === 'string')
+      .map(value => value.trim())
+      .filter(value => value && isAbsolute(value)))]
+  } catch {
+    return []
+  }
+}
+
+export async function windowsLlvmInstallRoots(baseEnvironment: NodeJS.ProcessEnv): Promise<string[]> {
+  if (process.platform !== 'win32') return []
+  const windowsDirectory = baseEnvironment.SystemRoot ?? baseEnvironment.windir ?? 'C:\\Windows'
+  const powershellPath = join(windowsDirectory, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  if (!existsSync(powershellPath)) return []
+  const command = [
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    "$keys = @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\LLVM', 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\LLVM', 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\LLVM')",
+    '$roots = foreach ($key in $keys) {',
+    '  $item = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue',
+    '  if ($null -eq $item) { continue }',
+    '  $location = [string]$item.InstallLocation',
+    '  if ($location) { $location; continue }',
+    '  $uninstall = ([string]$item.UninstallString).Trim()',
+    "  if ($uninstall) { Split-Path -Parent $uninstall.Trim('\"') }",
+    '}',
+    'ConvertTo-Json -Compress -InputObject @($roots | Sort-Object -Unique)'
+  ].join('; ')
+  const result = await runProcess(powershellPath, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], {
+    env: baseEnvironment,
+    timeoutMs: 5_000,
+    maxOutputBytes: 64 * 1024
+  })
+  return result.exitCode === 0 ? parseWindowsInstallRoots(result.stdout) : []
 }
 
 function stageProjectSource(source: string, destination: string): void {
@@ -575,9 +615,11 @@ async function visualStudioCandidates(): Promise<Array<{ compilerPath: string; e
 export class ToolchainService {
   private candidates = new Map<string, ToolchainCandidate>()
   private detectionEnvironment: NodeJS.ProcessEnv = process.env
+  private llvmInstallRoots: string[] = []
 
   async detect(): Promise<ToolchainDetectionResult> {
     this.detectionEnvironment = await refreshWindowsPathEnvironment(process.env)
+    this.llvmInstallRoots = await windowsLlvmInstallRoots(this.detectionEnvironment)
     const tools = await this.detectTools(this.detectionEnvironment)
     const toolPath = (kind: DevelopmentTool['kind']) => tools.find(tool => tool.kind === kind)?.path
     const candidates: ToolchainCandidate[] = []
@@ -601,7 +643,7 @@ export class ToolchainService {
       })
     }
 
-    const clangPaths = findExecutables(['clang++.exe'], this.detectionEnvironment, [...commonExecutables['clang++.exe']])
+    const clangPaths = findExecutables(['clang++.exe'], this.detectionEnvironment, this.executableExtras('clang++.exe'))
     for (const compilerPath of clangPaths) {
       const result = await executableVersion(compilerPath)
       const output = `${result.stdout}\n${result.stderr}`
@@ -723,7 +765,7 @@ export class ToolchainService {
   resolveToolPath(kind: DevelopmentTool['kind']): string | undefined {
     const item = toolNames.find(tool => tool.kind === kind)
     if (!item) return undefined
-    const extras = item.names.flatMap(name => commonExecutables[name as keyof typeof commonExecutables] ?? [])
+    const extras = item.names.flatMap(name => this.executableExtras(name))
     return findExecutables(item.names, this.detectionEnvironment, extras)[0]
   }
 
@@ -920,7 +962,7 @@ export class ToolchainService {
   private async detectTools(environment: NodeJS.ProcessEnv): Promise<DevelopmentTool[]> {
     const tools: DevelopmentTool[] = []
     for (const item of toolNames) {
-      const extras = item.names.flatMap(name => commonExecutables[name as keyof typeof commonExecutables] ?? [])
+      const extras = item.names.flatMap(name => this.executableExtras(name))
       const path = findExecutables(item.names, environment, extras)[0]
       if (!path) continue
       const result = await executableVersion(path)
@@ -928,6 +970,13 @@ export class ToolchainService {
       tools.push({ kind: item.kind, path, ...(firstLine(output) ? { version: firstLine(output) } : {}) })
     }
     return tools
+  }
+
+  private executableExtras(name: string): string[] {
+    return [
+      ...(commonExecutables[name as keyof typeof commonExecutables] ?? []),
+      ...(llvmExecutableNames.has(name) ? this.llvmInstallRoots.map(root => join(root, 'bin', name)) : [])
+    ]
   }
 }
 

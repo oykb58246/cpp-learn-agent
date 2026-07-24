@@ -216,5 +216,20 @@ function projectFiles(type: Project['type'], mode: Project['creationMode'], stat
   if (mode === 'problem') files.push({ relativePath: 'problem.md', content: statement ?? '# 题目\n' }, { relativePath: 'tests/cases.json', content: JSON.stringify(samples, null, 2) })
   return files
 }
-function tree(root: string, directory: string): FileTreeNode[] { return readdirSync(directory, { withFileTypes: true }).filter(x => !ignored.has(x.name) && !x.name.startsWith('.cpppet-')).map(entry => { const path = join(directory, entry.name); const rel = relative(root, path); const stat = statSync(path); return entry.isDirectory() ? { name: entry.name, relativePath: rel, kind: 'directory' as const, editable: false, modifiedAt: stat.mtime.toISOString(), children: tree(root, path) } : { name: entry.name, relativePath: rel, kind: 'file' as const, editable: editable(entry.name), size: stat.size, modifiedAt: stat.mtime.toISOString() } }) }
+function tree(root: string, directory: string): FileTreeNode[] {
+  return readdirSync(directory, { withFileTypes: true })
+    .filter(entry => !ignored.has(entry.name) && !entry.name.startsWith('.cpppet-'))
+    .sort((left, right) => {
+      if (left.isDirectory() !== right.isDirectory()) return left.isDirectory() ? -1 : 1
+      return left.name.localeCompare(right.name, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+    })
+    .map(entry => {
+      const path = join(directory, entry.name)
+      const rel = relative(root, path)
+      const stat = statSync(path)
+      return entry.isDirectory()
+        ? { name: entry.name, relativePath: rel, kind: 'directory' as const, editable: false, modifiedAt: stat.mtime.toISOString(), children: tree(root, path) }
+        : { name: entry.name, relativePath: rel, kind: 'file' as const, editable: editable(entry.name), size: stat.size, modifiedAt: stat.mtime.toISOString() }
+    })
+}
 function listFiles(root: string): string[] { const out: string[] = []; for (const entry of readdirSync(root, { withFileTypes: true })) { if (ignored.has(entry.name) || entry.name.startsWith('.cpppet-')) continue; const path = join(root, entry.name); entry.isDirectory() ? out.push(...listFiles(path)) : entry.isFile() && out.push(path) } return out }

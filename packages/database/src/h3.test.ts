@@ -20,6 +20,11 @@ import { AppDatabase } from './index'
 
 const dirs: string[] = []
 const now = new Date().toISOString()
+const modelProfileDefaults = {
+  provider: 'custom' as const,
+  protocol: 'auto' as const,
+  capabilities: { text: true, vision: false, toolCalling: true, structuredOutput: true }
+}
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'cpppilot-h3-db-'))
@@ -317,6 +322,7 @@ describe('H3 persistence', () => {
   it('persists model profiles without storing an API key', () => {
     const { db } = setup()
     const profile: ModelProfile = {
+      ...modelProfileDefaults,
       id: crypto.randomUUID(), name: 'OpenAI compatible', baseUrl: 'https://models.example/v1', model: 'teacher',
       enabled: true, timeoutMs: 30_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
     }
@@ -332,10 +338,12 @@ describe('H3 persistence', () => {
   it('keeps only the most recently enabled model profile active', () => {
     const { db } = setup()
     const first: ModelProfile = {
+      ...modelProfileDefaults,
       id: crypto.randomUUID(), name: 'First', baseUrl: 'https://first.example/v1', model: 'model-a',
       enabled: true, timeoutMs: 30_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
     }
     const second: ModelProfile = {
+      ...modelProfileDefaults,
       id: crypto.randomUUID(), name: 'Second', baseUrl: 'https://second.example/v1', model: 'model-b',
       enabled: true, timeoutMs: 30_000, apiKeyConfigured: true,
       createdAt: new Date(Date.parse(now) + 1_000).toISOString(),
@@ -354,11 +362,13 @@ describe('H3 persistence', () => {
   it('normalizes multiple enabled profiles when upgrading an existing database', () => {
     const { file, db } = setup()
     const first: ModelProfile = {
+      ...modelProfileDefaults,
       id: crypto.randomUUID(), name: 'Old', baseUrl: 'https://old.example/v1', model: 'old-model',
       enabled: true, timeoutMs: 30_000, apiKeyConfigured: true,
       createdAt: '2026-07-18T00:00:00.000Z', updatedAt: '2026-07-18T00:00:00.000Z'
     }
     const latest: ModelProfile = {
+      ...modelProfileDefaults,
       id: crypto.randomUUID(), name: 'Latest', baseUrl: 'https://latest.example/v1', model: 'latest-model',
       enabled: true, timeoutMs: 30_000, apiKeyConfigured: true,
       createdAt: '2026-07-19T00:00:00.000Z', updatedAt: '2026-07-19T00:00:00.000Z'

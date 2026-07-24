@@ -331,6 +331,19 @@ export const useAgentStore = defineStore('agent', {
       if (!result.ok) { this.error = result.error; return null }
       return result.data
     },
+    async testModelVision(profileId: string) {
+      const result = await window.cppPet.model.testVision({ profileId })
+      if (!result.ok) { this.error = result.error; return null }
+      const index = this.models.findIndex(item => item.id === profileId)
+      if (index >= 0) {
+        const profile = this.models[index]!
+        this.models[index] = {
+          ...profile,
+          capabilities: { ...profile.capabilities, vision: result.data.supported }
+        }
+      }
+      return result.data
+    },
     async refreshModels() {
       const result = await window.cppPet.model.list()
       if (!result.ok) { this.error = result.error; return }

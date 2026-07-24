@@ -16,6 +16,10 @@ const settings = {
   scale: 1,
   ignoreMouseEvents: false,
   bubbleEnabled: true,
+  frameEnabled: true,
+  progressBarEnabled: true,
+  edgeDockEnabled: true,
+  docked: false,
   focusModeEnabled: false,
   launchAtLogin: false,
   customAssets: []

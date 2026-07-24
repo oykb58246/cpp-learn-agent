@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlertTriangle, Bot, CheckCircle2, Database, FolderRoot, Hand, ImagePlus, KeyRound, MonitorCog, Moon, MousePointer2, Play, Plus, RefreshCw, Save, Shield, Sparkles, Sun, Trash2, Wifi, WifiOff, Wrench } from 'lucide-vue-next'
 import type {
@@ -30,9 +30,6 @@ const modelAction = ref('')
 const modelNotice = ref('')
 const newCustomPetAssetName = ref('')
 const activeSection = ref('appearance')
-const scrollRoot = ref<HTMLElement | null>(null)
-let observer: IntersectionObserver | null = null
-let ignoreObserverUntil = 0
 
 const sections = [
   { id: 'appearance', label: '外观', hint: '主题与光标', icon: Sun },
@@ -45,11 +42,36 @@ const sections = [
 ] as const
 
 const sectionIds = new Set(sections.map(item => item.id))
+type SectionId = typeof sections[number]['id']
 const activeProfile = computed(() => bindings.value.profiles.find(item => item.id === bindings.value.activeProfileId))
-const modelForm = reactive({ id: '', name: 'OpenAI Compatible', baseUrl: 'https://api.openai.com/v1', model: '', timeoutMs: 30_000, enabled: true, apiKey: '' })
+const defaultCapabilities = () => ({ text: true, vision: false, toolCalling: true, structuredOutput: true })
+const modelForm = reactive({
+  id: '',
+  name: 'OpenAI',
+  provider: 'openai' as 'openai' | 'deepseek' | 'custom',
+  protocol: 'openai-responses' as 'auto' | 'openai-responses' | 'openai-chat-completions',
+  baseUrl: 'https://api.openai.com/v1',
+  model: '',
+  capabilities: defaultCapabilities(),
+  timeoutMs: 30_000,
+  enabled: true,
+  apiKey: ''
+})
 const selectedModelId = ref('')
 const selectedModel = computed(() => agent.models.find(item => item.id === selectedModelId.value))
 const offlineMode = computed(() => !agent.models.some(item => item.enabled && item.apiKeyConfigured))
+const effectiveProtocol = computed(() => modelForm.protocol === 'auto'
+  ? modelForm.provider === 'deepseek' ? 'openai-chat-completions' : 'openai-responses'
+  : modelForm.protocol)
+const modelEndpointPreview = computed(() => {
+  const base = modelForm.baseUrl.trim().replace(/\/$/, '')
+  if (!base) return '请先填写 Base URL'
+  if (effectiveProtocol.value === 'openai-responses') return `${base}/responses`
+  return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`
+})
+const modelProtocolLabel = computed(() => effectiveProtocol.value === 'openai-responses'
+  ? 'OpenAI Responses API'
+  : 'OpenAI Chat Completions')
 const petTimedHideActive = computed(() => {
   const value = app.settings.pet.hiddenUntil
   if (!value) return false
@@ -91,57 +113,25 @@ onMounted(async () => {
   stopPetState = window.cppPet.pet.onStateChanged(state => applyPetState(state))
   const petState = await window.cppPet.pet.getState()
   if (petState.ok) applyPetState(petState.data)
-  await nextTick()
-  setupSectionObserver()
   const target = resolveTargetSection()
-  if (target) await jumpToSection(target, false)
+  if (target) activeSection.value = target
 })
 
 onBeforeUnmount(() => {
   stopPetState?.()
-  observer?.disconnect()
-  observer = null
 })
 
 watch(
   () => [route.query.section, route.hash] as const,
   async () => {
     const target = resolveTargetSection()
-    if (target && target !== activeSection.value) await jumpToSection(target, false)
+    if (target && target !== activeSection.value) activeSection.value = target
   }
 )
 
-function setupSectionObserver() {
-  observer?.disconnect()
-  const root = scrollRoot.value
-  if (!root) return
-  observer = new IntersectionObserver(entries => {
-    if (Date.now() < ignoreObserverUntil) return
-    const visible = entries
-      .filter(item => item.isIntersecting)
-      .sort((a, b) => b.intersectionRatio - a.intersectionRatio)
-    const top = visible[0]?.target
-    if (top?.id) activeSection.value = top.id
-  }, { root, rootMargin: '-18% 0px -62% 0px', threshold: [0.12, 0.3, 0.55] })
-  for (const section of sections) {
-    const el = root.querySelector(`#${section.id}`)
-    if (el) observer.observe(el)
-  }
-}
-
 async function jumpToSection(id: string, updateUrl = true) {
-  if (!sectionIds.has(id as typeof sections[number]['id'])) return
-  const root = scrollRoot.value
-  const target = root?.querySelector<HTMLElement>(`#${id}`)
-  if (!target || !root) return
+  if (!sectionIds.has(id as SectionId)) return
   activeSection.value = id
-  // 程序化滚动期间暂时忽略 IntersectionObserver，避免顶部目录被“外观”抢回
-  ignoreObserverUntil = Date.now() + 700
-  await nextTick()
-  const rootPaddingTop = Number.parseFloat(getComputedStyle(root).paddingTop) || 0
-  const stickyOffset = rootPaddingTop + (root.querySelector<HTMLElement>('.settings-jumpbar')?.getBoundingClientRect().height ?? 60) + 12
-  const top = root.scrollTop + (target.getBoundingClientRect().top - root.getBoundingClientRect().top) - stickyOffset
-  root.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
   if (updateUrl) {
     await router.replace({ path: '/settings', query: { section: id } })
   }
@@ -165,8 +155,11 @@ function selectModel(profileId: string) {
   Object.assign(modelForm, {
     id: profile.id,
     name: profile.name,
+    provider: profile.provider,
+    protocol: profile.protocol,
     baseUrl: profile.baseUrl,
     model: profile.model,
+    capabilities: { ...profile.capabilities },
     timeoutMs: profile.timeoutMs,
     enabled: profile.enabled,
     apiKey: ''
@@ -176,8 +169,36 @@ function selectModel(profileId: string) {
 
 function newModel() {
   selectedModelId.value = ''
-  Object.assign(modelForm, { id: '', name: 'OpenAI Compatible', baseUrl: 'https://api.openai.com/v1', model: '', timeoutMs: 30_000, enabled: true, apiKey: '' })
+  Object.assign(modelForm, {
+    id: '',
+    name: 'OpenAI',
+    provider: 'openai',
+    protocol: 'openai-responses',
+    baseUrl: 'https://api.openai.com/v1',
+    model: '',
+    capabilities: defaultCapabilities(),
+    timeoutMs: 30_000,
+    enabled: true,
+    apiKey: ''
+  })
   modelNotice.value = ''
+}
+
+function applyProviderPreset() {
+  if (modelForm.provider === 'openai') {
+    modelForm.name = modelForm.id ? modelForm.name : 'OpenAI'
+    modelForm.baseUrl = 'https://api.openai.com/v1'
+    modelForm.protocol = 'openai-responses'
+    return
+  }
+  if (modelForm.provider === 'deepseek') {
+    modelForm.name = modelForm.id ? modelForm.name : 'DeepSeek'
+    modelForm.baseUrl = 'https://api.deepseek.com'
+    modelForm.protocol = 'openai-chat-completions'
+    modelForm.capabilities.vision = false
+    return
+  }
+  modelForm.protocol = 'auto'
 }
 
 async function saveModel() {
@@ -186,8 +207,11 @@ async function saveModel() {
   const saved = await agent.saveModel({
     ...(modelForm.id ? { id: modelForm.id } : {}),
     name: modelForm.name.trim(),
+    provider: modelForm.provider,
+    protocol: modelForm.protocol,
     baseUrl: modelForm.baseUrl.trim(),
     model: modelForm.model.trim(),
+    capabilities: { ...modelForm.capabilities },
     timeoutMs: Number(modelForm.timeoutMs),
     enabled: modelForm.enabled,
     ...(modelForm.apiKey.trim() ? { apiKey: modelForm.apiKey.trim() } : {})
@@ -214,7 +238,26 @@ async function testModel() {
   modelNotice.value = ''
   const result = await agent.testModel(modelForm.id)
   modelAction.value = ''
-  if (result) modelNotice.value = `连接成功 · ${result.latencyMs} ms`
+  if (result) {
+    const protocol = result.protocol === 'openai-responses' ? 'Responses' : 'Chat Completions'
+    modelNotice.value = `连接成功 · ${protocol} · ${result.latencyMs} ms`
+  }
+}
+
+async function testModelVision() {
+  if (!modelForm.id) return
+  modelAction.value = 'vision'
+  modelNotice.value = '正在发送一张极小的红色测试图片…'
+  const result = await agent.testModelVision(modelForm.id)
+  modelAction.value = ''
+  if (!result) return
+  if (result.supported) {
+    modelForm.capabilities.vision = true
+    modelNotice.value = `图片输入可用 · ${result.latencyMs} ms，已启用图片理解`
+  } else {
+    modelForm.capabilities.vision = false
+    modelNotice.value = `图片输入不可用 · ${result.detail}`
+  }
 }
 
 async function removeModel() {
@@ -423,27 +466,23 @@ function changePetScale(event: Event) {
 </script>
 
 <template>
-  <div ref="scrollRoot" class="settings-view page-scroll">
+  <div class="settings-view page-scroll">
     <section class="page-header settings-page-header">
       <div>
         <p class="eyebrow">应用设置</p>
         <h1>偏好与开发环境</h1>
-        <p>主题、光标、工具链与工作区都在这一页。下方目录用于快速跳转到对应模块。</p>
+        <p>按模块管理外观、桌宠、开发环境、Agent 与模型服务。</p>
       </div>
     </section>
 
-    <nav class="settings-jumpbar" aria-label="设置模块快速跳转">
-      <div class="settings-jumpbar-label">
-        <strong>本页目录</strong>
-        <span>点击跳转到模块</span>
-      </div>
-      <div class="settings-jumpbar-list">
+    <div class="settings-module-layout">
+      <nav class="settings-module-nav" aria-label="设置模块">
         <button
           v-for="item in sections"
           :key="item.id"
           type="button"
-          :class="['settings-jump-item', { active: activeSection === item.id }]"
-          :title="`跳转到${item.label}`"
+          :class="['settings-module-item', { active: activeSection === item.id }]"
+          :aria-current="activeSection === item.id ? 'page' : undefined"
           @click="jumpToSection(item.id)"
         >
           <component :is="item.icon" :size="15" />
@@ -452,11 +491,10 @@ function changePetScale(event: Event) {
             <small>{{ item.hint }}</small>
           </span>
         </button>
-      </div>
-    </nav>
+      </nav>
 
-    <div class="settings-content">
-      <section id="appearance" class="settings-section">
+      <div class="settings-content">
+      <section v-show="activeSection === 'appearance'" id="appearance" class="settings-section">
         <header>
           <Sun :size="18" />
           <div>
@@ -498,7 +536,7 @@ function changePetScale(event: Event) {
         </div>
       </section>
 
-      <section id="pet" class="settings-section">
+      <section v-show="activeSection === 'pet'" id="pet" class="settings-section">
         <header>
           <MousePointer2 :size="18" />
           <div>
@@ -627,7 +665,7 @@ function changePetScale(event: Event) {
         </div>
       </section>
 
-      <section id="toolchains" class="settings-section">
+      <section v-show="activeSection === 'toolchains'" id="toolchains" class="settings-section">
         <header>
           <Wrench :size="18" />
           <div>
@@ -686,7 +724,7 @@ function changePetScale(event: Event) {
         </template>
       </section>
 
-      <section id="workspace" class="settings-section">
+      <section v-show="activeSection === 'workspace'" id="workspace" class="settings-section">
         <header>
           <FolderRoot :size="18" />
           <div>
@@ -702,7 +740,7 @@ function changePetScale(event: Event) {
       </section>
 
 
-      <section id="agent" class="settings-section">
+      <section v-show="activeSection === 'agent'" id="agent" class="settings-section">
         <header>
           <Shield :size="18" />
           <div>
@@ -757,12 +795,12 @@ function changePetScale(event: Event) {
         </div>
         <p class="settings-footnote">默认「替我审批」。完全访问会跳过上下文发送与写操作确认。</p>
       </section>
-      <section id="models" class="settings-section model-settings-section">
+      <section v-show="activeSection === 'models'" id="models" class="settings-section model-settings-section">
         <header>
           <Bot :size="18" />
           <div>
             <h2>模型服务</h2>
-            <p>OpenAI Responses API BYOK；未配置可用模型时 Agent 会明确停止任务。</p>
+            <p>配置 OpenAI 或兼容服务，并明确声明协议与模型能力。</p>
           </div>
           <div class="section-actions model-profile-actions">
             <select v-model="selectedModelId" aria-label="模型配置" @change="selectModel(selectedModelId)">
@@ -774,14 +812,45 @@ function changePetScale(event: Event) {
         </header>
         <div :class="['model-mode-line', { offline: offlineMode }]">
           <component :is="offlineMode ? WifiOff : Wifi" :size="17" />
-          <div><strong>{{ offlineMode ? 'Agent 模型未配置' : 'OpenAI Responses 模型可用' }}</strong><span>{{ offlineMode ? '保存并启用模型配置与 API Key 后才能执行 Agent 任务。' : `${selectedModel?.name ?? '已启用配置'} · 密钥已保护` }}</span></div>
+          <div>
+            <strong>{{ offlineMode ? 'Agent 模型未配置' : `${modelProtocolLabel} 可用` }}</strong>
+            <span>{{ offlineMode ? '保存并启用模型配置与 API Key 后才能执行 Agent 任务。' : `${selectedModel?.name ?? '已启用配置'} · 密钥已保护` }}</span>
+          </div>
         </div>
         <div class="model-field-grid">
           <label><span>配置名称</span><input v-model="modelForm.name" maxlength="100" /></label>
           <label><span>模型名称</span><input v-model="modelForm.model" maxlength="200" placeholder="例如 gpt-4.1-mini" /></label>
+          <label>
+            <span>服务商</span>
+            <select v-model="modelForm.provider" @change="applyProviderPreset">
+              <option value="openai">OpenAI</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="custom">自定义兼容服务</option>
+            </select>
+          </label>
+          <label>
+            <span>接口协议</span>
+            <select v-model="modelForm.protocol">
+              <option value="auto">自动判断</option>
+              <option value="openai-responses">OpenAI Responses</option>
+              <option value="openai-chat-completions">Chat Completions</option>
+            </select>
+          </label>
           <label class="wide"><span>Base URL</span><input v-model="modelForm.baseUrl" type="url" maxlength="2048" /></label>
+          <div class="wide model-endpoint-preview">
+            <span>实际请求地址</span>
+            <code>{{ modelEndpointPreview }}</code>
+          </div>
           <label><span>超时</span><input v-model.number="modelForm.timeoutMs" type="number" min="1000" max="120000" step="1000" /><small>毫秒</small></label>
           <label class="model-toggle"><input v-model="modelForm.enabled" type="checkbox" /><span>启用此配置</span></label>
+          <fieldset class="wide model-capabilities">
+            <legend>模型能力</legend>
+            <label><input v-model="modelForm.capabilities.text" type="checkbox" disabled /><span>文本输入</span></label>
+            <label><input v-model="modelForm.capabilities.vision" type="checkbox" /><span>图片理解</span></label>
+            <label><input v-model="modelForm.capabilities.toolCalling" type="checkbox" /><span>工具调用</span></label>
+            <label><input v-model="modelForm.capabilities.structuredOutput" type="checkbox" /><span>结构化输出</span></label>
+            <small>“图片理解”用于 OJ 截图导入。请只在服务商和具体模型确实支持时开启。</small>
+          </fieldset>
           <label class="wide model-key-field"><span>API Key</span><div><KeyRound :size="15" /><input v-model="modelForm.apiKey" type="password" maxlength="10000" autocomplete="new-password" :placeholder="selectedModel?.apiKeyConfigured ? '已安全保存；留空保持不变' : '输入新密钥'" /></div></label>
         </div>
         <footer class="model-actions">
@@ -789,11 +858,12 @@ function changePetScale(event: Event) {
           <button v-if="modelForm.id" class="icon-command danger" title="删除模型配置" :disabled="Boolean(modelAction)" @click="removeModel"><Trash2 :size="15" /></button>
           <button class="secondary-command" :disabled="!modelForm.id || !selectedModel?.apiKeyConfigured || Boolean(modelAction)" @click="clearModelKey"><KeyRound :size="14" />清除密钥</button>
           <button class="secondary-command" :disabled="!modelForm.id || !selectedModel?.apiKeyConfigured || Boolean(modelAction)" @click="testModel"><Wifi :size="14" />{{ modelAction === 'test' ? '测试中' : '测试连接' }}</button>
+          <button class="secondary-command" :disabled="!modelForm.id || !selectedModel?.apiKeyConfigured || Boolean(modelAction)" @click="testModelVision"><ImagePlus :size="14" />{{ modelAction === 'vision' ? '识别中' : '测试图片输入' }}</button>
           <button class="primary-command" :disabled="!modelForm.name.trim() || !modelForm.model.trim() || !modelForm.baseUrl.trim() || Boolean(modelAction)" @click="saveModel"><Save :size="14" />{{ modelAction === 'save' ? '保存中' : '保存配置' }}</button>
         </footer>
       </section>
 
-      <section id="data" class="settings-section">
+      <section v-show="activeSection === 'data'" id="data" class="settings-section">
         <header>
           <Database :size="18" />
           <div>
@@ -807,6 +877,7 @@ function changePetScale(event: Event) {
           <small>迁移前自动备份，失败时进入只读恢复模式</small>
         </div>
       </section>
+      </div>
     </div>
   </div>
 </template>

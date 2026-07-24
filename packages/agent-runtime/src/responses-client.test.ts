@@ -5,12 +5,16 @@ import { OpenAiResponsesClient, OpenAiResponsesError } from './responses-client'
 
 const profile: ModelProfile = {
   id: crypto.randomUUID(), name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5',
+  provider: 'openai', protocol: 'openai-responses',
+  capabilities: { text: true, vision: true, toolCalling: true, structuredOutput: true },
   enabled: true, timeoutMs: 5_000, apiKeyConfigured: true,
   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
 }
 const deepSeekProfile: ModelProfile = {
   ...profile,
   name: 'DeepSeek',
+  provider: 'deepseek',
+  protocol: 'auto',
   baseUrl: 'http://api.deepseek.com',
   model: 'deepseek-v4-pro'
 }
@@ -222,6 +226,35 @@ describe('OpenAI Responses client', () => {
       id: 'chatcmpl_deepseek_1', status: 'completed',
       output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: finalJson }] }]
     })
+  })
+
+  it('honors an explicit Chat Completions protocol for custom compatible providers', async () => {
+    let url = ''
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      url = String(input)
+      return Response.json({
+        id: 'chatcmpl_custom_1',
+        choices: [{
+          finish_reason: 'stop',
+          message: { role: 'assistant', content: '{"protocol":"cpppilot.final.v1"}' }
+        }]
+      })
+    }) as typeof fetch
+    const customChatProfile: ModelProfile = {
+      ...profile,
+      provider: 'custom',
+      protocol: 'openai-chat-completions',
+      baseUrl: 'https://gateway.example/v1'
+    }
+
+    await new OpenAiResponsesClient({
+      profile: customChatProfile,
+      apiKey: 'gateway-key',
+      tools,
+      fetcher
+    }).respond([], new AbortController().signal)
+
+    expect(url).toBe('https://gateway.example/v1/chat/completions')
   })
 
   it('maps DeepSeek tool calls and converts Responses continuation history back to chat messages', async () => {

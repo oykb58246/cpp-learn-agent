@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { mergeWindowsPathEnvironment, parseClangTidyDiagnostics, parseCompilerDiagnostics, parseCompilerVersion, parseCtestSummary, runProcess, runtimeDiagnostics, ToolchainService, vscodeOpenArgs } from './index'
+import { mergeWindowsPathEnvironment, parseClangTidyDiagnostics, parseCompilerDiagnostics, parseCompilerVersion, parseCtestSummary, parseWindowsInstallRoots, runProcess, runtimeDiagnostics, ToolchainService, vscodeOpenArgs, windowsLlvmInstallRoots } from './index'
 
 describe('cpp-local-tools', () => {
   it('merges live Windows PATH values into a stale process environment', () => {
@@ -19,6 +19,28 @@ describe('cpp-local-tools', () => {
       'C:\\Users\\learner\\AppData\\Local\\Programs\\LLVM\\bin'
     ].join(';'))
     expect(environment.PATHEXT).toBe('.EXE')
+  })
+
+  it('parses custom Windows install roots reported by PowerShell', () => {
+    expect(parseWindowsInstallRoots('["F:\\\\LLVM","C:\\\\Tools\\\\LLVM","F:\\\\LLVM"]')).toEqual([
+      'F:\\LLVM',
+      'C:\\Tools\\LLVM'
+    ])
+    expect(parseWindowsInstallRoots('null')).toEqual([])
+    expect(parseWindowsInstallRoots('not-json')).toEqual([])
+  })
+
+  it('detects LLVM tools from a registered custom install root', async () => {
+    const roots = await windowsLlvmInstallRoots(process.env)
+    const expectedClangd = roots.map(root => join(root, 'bin', 'clangd.exe')).find(existsSync)
+    if (!expectedClangd) return
+
+    const detection = await new ToolchainService().detect()
+    expect(detection.tools).toContainEqual(expect.objectContaining({ kind: 'clangd', path: expectedClangd }))
+    expect(detection.candidates).toContainEqual(expect.objectContaining({
+      family: 'clang',
+      compilerPath: join(resolve(expectedClangd, '..'), 'clang++.exe')
+    }))
   })
 
   it('normalizes compiler versions', () => {

@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import {
   createElectronEnvironment,
+  findMainApplicationWindow,
+  setWorkspaceAgentOpen,
   startStreamingModelFixture,
   type StreamingModelFixture
 } from './electron-env'
@@ -98,7 +100,7 @@ async function openAgent(page: Page, projectId: string) {
   await page.reload()
   await expect(page.locator('.workspace-view')).toBeVisible()
   await page.getByText('main.cpp', { exact: true }).click()
-  await page.getByRole('button', { name: 'Agent', exact: true }).click()
+  await setWorkspaceAgentOpen(page, true)
   await expect(page.locator('.workspace-agent-panel')).toBeVisible()
 }
 
@@ -138,7 +140,7 @@ async function waitForRunStatus(page: Page, status: string) {
 test('fails locally without sending a request when no model is configured', async () => {
   const app = await launch()
   try {
-    const page = await app.firstWindow()
+    const page = await findMainApplicationWindow(app)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page, { configureModel: false })
     expect(prepared).toHaveProperty('projectId')
@@ -158,7 +160,7 @@ test('fails locally without sending a request when no model is configured', asyn
 test('surfaces a native OpenAI refusal as a failed run', async () => {
   const app = await launch()
   try {
-    const page = await app.firstWindow()
+    const page = await findMainApplicationWindow(app)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page)
     expect(prepared).toHaveProperty('projectId')
@@ -179,7 +181,7 @@ test('surfaces a native OpenAI refusal as a failed run', async () => {
 test('rejects a malformed final response after one structured repair turn', async () => {
   const app = await launch()
   try {
-    const page = await app.firstWindow()
+    const page = await findMainApplicationWindow(app)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page)
     expect(prepared).toHaveProperty('projectId')
@@ -191,7 +193,7 @@ test('rejects a malformed final response after one structured repair turn', asyn
     const run = await waitForRunStatus(page, 'failed')
     expect(run).toMatchObject({ status: 'failed', errorCode: 'MODEL_PROTOCOL_INVALID' })
     expect(modelFixture.requests).toHaveLength(2)
-    expect(JSON.stringify(modelFixture.requests[1]?.input)).toContain('previous final response was invalid')
+    expect(JSON.stringify(modelFixture.requests[1]?.input)).toMatch(/previous output was invalid/i)
   } finally {
     await app.close()
   }
@@ -200,7 +202,7 @@ test('rejects a malformed final response after one structured repair turn', asyn
 test('continues a clarification answer on the same run', async () => {
   const app = await launch()
   try {
-    const page = await app.firstWindow()
+    const page = await findMainApplicationWindow(app)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page)
     expect(prepared).toHaveProperty('projectId')
@@ -229,7 +231,7 @@ test('continues a clarification answer on the same run', async () => {
 test('returns a rejected tool approval to the model without changing the file', async () => {
   const app = await launch()
   try {
-    const page = await app.firstWindow()
+    const page = await findMainApplicationWindow(app)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page)
     expect(prepared).toHaveProperty('projectId')
@@ -261,7 +263,7 @@ test('recovers from a real compiler failure, edits the file, and validates again
   const fixedSource = '#include <iostream>\nint main() {\n  std::cout << "recover" << std::endl;\n  return 0;\n}\n'
   const app = await launch()
   try {
-    const page = await app.firstWindow()
+    const page = await findMainApplicationWindow(app)
     await page.waitForLoadState('domcontentloaded')
     const prepared = await prepare(page, { bindToolchain: true, source: brokenSource })
     expect(prepared).toHaveProperty('projectId')

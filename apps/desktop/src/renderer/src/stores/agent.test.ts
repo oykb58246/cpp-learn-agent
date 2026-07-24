@@ -229,6 +229,8 @@ describe('agent store', () => {
   it('clears a model key without removing the profile', async () => {
     const profile = {
       id: crypto.randomUUID(), name: 'Local gateway', baseUrl: 'https://models.example/v1', model: 'teacher',
+      provider: 'custom' as const, protocol: 'auto' as const,
+      capabilities: { text: true, vision: false, toolCalling: true, structuredOutput: true },
       enabled: true, timeoutMs: 30_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
     }
     Object.defineProperty(globalThis, 'window', { configurable: true, value: {
@@ -243,13 +245,47 @@ describe('agent store', () => {
     expect(store.models[0]?.apiKeyConfigured).toBe(false)
   })
 
+  it('synchronizes the declared vision capability with the real image test result', async () => {
+    const profile = {
+      id: crypto.randomUUID(), name: 'Vision candidate', baseUrl: 'https://models.example/v1', model: 'teacher',
+      provider: 'custom' as const, protocol: 'openai-responses' as const,
+      capabilities: { text: true, vision: true, toolCalling: true, structuredOutput: true },
+      enabled: true, timeoutMs: 30_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
+    }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      cppPet: {
+        model: {
+          testVision: async () => ({
+            ok: true,
+            data: {
+              supported: false,
+              latencyMs: 12,
+              detail: '服务拒绝了图片输入。',
+              protocol: 'openai-responses' as const
+            }
+          })
+        }
+      }
+    } })
+    const store = useAgentStore()
+    store.models = [profile]
+
+    await store.testModelVision(profile.id)
+
+    expect(store.models[0]?.capabilities.vision).toBe(false)
+  })
+
   it('keeps one enabled model in memory after switching profiles', async () => {
     const first = {
       id: crypto.randomUUID(), name: 'First', baseUrl: 'https://first.example/v1', model: 'model-a',
+      provider: 'custom' as const, protocol: 'auto' as const,
+      capabilities: { text: true, vision: false, toolCalling: true, structuredOutput: true },
       enabled: true, timeoutMs: 30_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
     }
     const second = {
       id: crypto.randomUUID(), name: 'Second', baseUrl: 'https://second.example/v1', model: 'model-b',
+      provider: 'custom' as const, protocol: 'auto' as const,
+      capabilities: { text: true, vision: false, toolCalling: true, structuredOutput: true },
       enabled: false, timeoutMs: 30_000, apiKeyConfigured: true, createdAt: now, updatedAt: now
     }
     Object.defineProperty(globalThis, 'window', { configurable: true, value: {

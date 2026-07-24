@@ -25,6 +25,10 @@ function baseSettings(): AppSettings {
       scale: 1,
       ignoreMouseEvents: false,
       bubbleEnabled: true,
+      frameEnabled: true,
+      progressBarEnabled: true,
+      edgeDockEnabled: true,
+      docked: false,
       focusModeEnabled: false,
       launchAtLogin: false,
       customAssets: [
@@ -61,6 +65,10 @@ describe('app store pet window state sync', () => {
         scale: 0.8,
         ignoreMouseEvents: false,
         bubbleEnabled: true,
+        frameEnabled: true,
+        progressBarEnabled: true,
+        edgeDockEnabled: true,
+        docked: false,
         focusModeEnabled: false,
         launchAtLogin: false,
         customAssets: []
@@ -68,7 +76,8 @@ describe('app store pet window state sync', () => {
       windowVisible: true,
       ignoreMouseEvents: false,
       growthStage: 1,
-      progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' }
+      progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' },
+      theme: 'system'
     } satisfies PetWindowState)
 
     expect(store.settings.pet.assetMode).toBe('cpppilot-logo')
@@ -92,7 +101,8 @@ describe('app store pet window state sync', () => {
       windowVisible: true,
       ignoreMouseEvents: false,
       growthStage: 1,
-      progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' }
+      progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' },
+      theme: 'system'
     } as PetWindowState)
 
     expect(store.settings.pet.assetMode).toBe('cpppilot-logo')
@@ -110,6 +120,7 @@ describe('app store pet window state sync', () => {
       ignoreMouseEvents: false,
       growthStage: 1,
       progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' },
+      theme: 'system',
       customAssetUrl: 'cpppilot-pet-asset://asset/pet-1.gif?v=2026-07-20T10%3A00%3A00.000Z'
     })
 
@@ -130,7 +141,8 @@ describe('app store pet window state sync', () => {
       windowVisible: true,
       ignoreMouseEvents: false,
       growthStage: 1,
-      progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' }
+      progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' },
+      theme: 'system'
     })
 
     expect(store.settings.pet.assetMode).toBe('cpppilot-logo')
@@ -160,7 +172,8 @@ describe('app store pet window state sync', () => {
       windowVisible: true,
       ignoreMouseEvents: false,
       growthStage: 1,
-      progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' }
+      progress: { stage: 1, totalStages: 4, percent: 25, label: 'Lv.1 · 1/4' },
+      theme: 'system'
     })
 
     expect(store.settings.pet.frameEnabled).toBe(false)

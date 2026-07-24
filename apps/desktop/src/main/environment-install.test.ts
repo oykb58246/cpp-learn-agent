@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ToolchainDetectionResult } from '@cpp-pet/contracts'
-import { installationVerificationFailure, visiblePowerShellTerminalArguments } from './environment-install'
+import { installationVerificationFailure, visiblePowerShellTerminalArguments, wingetInstallCommand } from './environment-install'
 
 const detection = (tools: ToolchainDetectionResult['tools']): ToolchainDetectionResult => ({
   candidates: [],
@@ -10,7 +10,10 @@ const detection = (tools: ToolchainDetectionResult['tools']): ToolchainDetection
 
 describe('installationVerificationFailure', () => {
   it('rejects an LLVM install when clangd is still missing', () => {
-    expect(installationVerificationFailure('llvm', detection([]))).toContain('clangd')
+    const failure = installationVerificationFailure('llvm', detection([]))
+    expect(failure).toContain('clangd')
+    expect(failure).toContain('C:\\Program Files\\LLVM\\bin\\clangd.exe')
+    expect(failure).toContain('PATH')
   })
 
   it('requires both CMake and CTest after a CMake install', () => {
@@ -26,5 +29,13 @@ describe('installationVerificationFailure', () => {
       '/d', '/c', 'start', 'CppPilot Install LLVM', '/wait', 'powershell.exe',
       '-NoLogo', '-NoProfile', '-Command', 'winget install LLVM.LLVM'
     ])
+  })
+
+  it('treats WinGet no-applicable-upgrade as an installed package that still needs verification', () => {
+    const command = wingetInstallCommand('LLVM', 'LLVM.LLVM')
+    expect(command).toContain('$exitCode -eq -1978335189')
+    expect(command).toContain('$exitCode -eq 2316632107')
+    expect(command).toContain('已安装现有版本，且没有可用升级')
+    expect(command).toContain('$exitCode = 0')
   })
 })
