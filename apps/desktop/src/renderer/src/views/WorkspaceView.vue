@@ -54,6 +54,7 @@ import type {
 } from '@cpp-pet/contracts'
 import DiffEditorHost from '../components/DiffEditorHost.vue'
 import EditorHost from '../components/EditorHost.vue'
+import EditorToolbarButton from '../components/EditorToolbarButton.vue'
 import FileTree from '../components/FileTree.vue'
 import ProjectDialog from '../components/ProjectDialog.vue'
 import ApprovalCard from '../components/ApprovalCard.vue'
@@ -70,6 +71,8 @@ import type { AgentEditorSelection } from '../utils/editor-selection'
 import { isAgentRunBusy } from '../utils/agent-run-state'
 import { diagnosticBadgeLabel } from '../utils/diagnostic-inbox'
 import { featureHelpTopic, type FeatureHelpId } from '../utils/feature-help'
+import { matchingWorkspaceShortcut, workspaceShortcutLabel } from '../utils/editor-shortcuts'
+import { requestWorkspaceTrust } from '../utils/workspace-trust'
 
 const app = useAppStore()
 const store = useWorkspaceStore()
@@ -112,10 +115,13 @@ const bottomPanelHeight = ref(190)
 const standard = ref<'c++17' | 'c++20' | 'c++23'>('c++17')
 const standardInput = ref('')
 const executing = ref<'build' | 'run' | 'cmake' | 'ctest' | 'analysis' | null>(null)
+const trustPromptPending = ref(false)
 const currentRunId = ref('')
 const buildResult = ref<BuildResult | null>(null)
 const runResult = ref<ProgramRunResult | null>(null)
+const runTargetLabel = ref('')
 const cmakeResult = ref<CmakeBuildResult | null>(null)
+const selectedCmakeTargetBuildId = ref('')
 const ctestResult = ref<CtestRunResult | null>(null)
 const analysisResult = ref<StaticAnalysisResult | null>(null)
 const diagnostics = ref<Diagnostic[]>([])
@@ -144,11 +150,14 @@ const entryDialog = reactive({
   source: '',
   value: ''
 })
-const canBuild = computed(() => Boolean(active.value && /\.(?:cpp|cc|cxx)$/i.test(active.value.relativePath) && !executing.value))
-const canAnalyze = computed(() => Boolean(active.value && /\.(?:cpp|cc|cxx|h|hpp)$/i.test(active.value.relativePath) && !executing.value))
-const canCmake = computed(() => Boolean(store.currentProject?.type === 'cmake' && !executing.value))
-const canTest = computed(() => Boolean(cmakeResult.value?.success && !executing.value))
-const canDebug = computed(() => Boolean(active.value && /\.(?:cpp|cc|cxx)$/i.test(active.value.relativePath) && !executing.value && !debuggerBusy.value && !active.value.conflicted))
+const canBuild = computed(() => Boolean(active.value && /\.(?:cpp|cc|cxx)$/i.test(active.value.relativePath) && !executing.value && !trustPromptPending.value))
+const canAnalyze = computed(() => Boolean(active.value && /\.(?:cpp|cc|cxx|h|hpp)$/i.test(active.value.relativePath) && !executing.value && !trustPromptPending.value))
+const canCmake = computed(() => Boolean(store.currentProject?.type === 'cmake' && !executing.value && !trustPromptPending.value))
+const canTest = computed(() => Boolean(cmakeResult.value?.success && !executing.value && !trustPromptPending.value))
+const cmakeExecutableTargets = computed(() => cmakeResult.value?.executableTargets ?? [])
+const selectedCmakeTarget = computed(() => cmakeExecutableTargets.value.find(item => item.buildId === selectedCmakeTargetBuildId.value))
+const canRunCmakeTarget = computed(() => Boolean(selectedCmakeTarget.value && !executing.value && !trustPromptPending.value))
+const canDebug = computed(() => Boolean(active.value && /\.(?:cpp|cc|cxx)$/i.test(active.value.relativePath) && !executing.value && !debuggerBusy.value && !trustPromptPending.value && !active.value.conflicted))
 const canControlDebug = computed(() => debugState.value?.status === 'stopped' && !debuggerBusy.value)
 const currentBreakpoints = computed(() => active.value ? breakpoints.value[active.value.relativePath] ?? [] : [])
 const currentDebugLine = computed(() => {
@@ -181,7 +190,7 @@ const outputText = computed(() => {
   }
   if (runResult.value) {
     const item = runResult.value
-    chunks.push(`[运行] ${item.success ? '成功' : item.process.cancelled ? '已停止' : item.process.timedOut ? '超时' : '异常退出'} · ${item.process.durationMs} ms · 退出码 ${item.process.exitCode ?? '无'}`)
+    chunks.push(`[运行${runTargetLabel.value ? ` · ${runTargetLabel.value}` : ''}] ${item.success ? '成功' : item.process.cancelled ? '已停止' : item.process.timedOut ? '超时' : '异常退出'} · ${item.process.durationMs} ms · 退出码 ${item.process.exitCode ?? '无'}`)
     if (item.process.stdout) chunks.push(item.process.stdout.trimEnd())
     if (item.process.stderr.trim()) chunks.push(item.process.stderr.trimEnd())
     if (item.process.outputTruncated) chunks.push('[输出已达到 512 KiB 上限，后续内容被截断]')
@@ -196,6 +205,7 @@ const outputText = computed(() => {
       if (item.build.stdout.trim()) chunks.push(item.build.stdout.trimEnd())
       if (item.build.stderr.trim()) chunks.push(item.build.stderr.trimEnd())
     }
+    if (item.success) chunks.push(`[可运行目标] ${item.executableTargets.length ? item.executableTargets.map(target => target.name).join('、') : '未发现可执行 target'}`)
   }
   if (ctestResult.value) {
     const item = ctestResult.value
@@ -212,10 +222,42 @@ const outputText = computed(() => {
   return chunks.join('\n\n') || '尚未执行编译、运行、测试或静态分析。'
 })
 
+function handleWorkspaceShortcut(event: KeyboardEvent) {
+  if (event.repeat || dialog.value || entryDialog.visible || helpDialogOpen.value || document.querySelector('.el-message-box')) return
+  const command = matchingWorkspaceShortcut(event)
+  if (!command) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  switch (command) {
+    case 'save': void saveActive(); break
+    case 'compile': void build(false); break
+    case 'run': void build(true); break
+    case 'cmake-build': void buildCmake(); break
+    case 'cmake-run': void runCmakeTarget(); break
+    case 'ctest': void runTests(); break
+    case 'analysis': void analyze(); break
+    case 'ask-ai': void askSelectedCode(); break
+    case 'vscode': void openVsCode(); break
+    case 'debug':
+      if (!debugState.value || ['exited', 'error'].includes(debugState.value.status)) void startDebug()
+      else if (debugState.value.status === 'stopped') void debugCommand('continue')
+      break
+    case 'debug-next': void debugCommand('next'); break
+    case 'debug-step-in': void debugCommand('step-in'); break
+    case 'debug-step-out': void debugCommand('step-out'); break
+    case 'stop':
+      if (debugState.value && !['exited', 'error'].includes(debugState.value.status)) void debugCommand('stop')
+      else void stop()
+      break
+  }
+}
+
 onMounted(async () => {
   agent.subscribe()
   agentOpen.value = true
   window.addEventListener('resize', fitLayoutToViewport)
+  window.addEventListener('keydown', handleWorkspaceShortcut, true)
   stopLanguageDiagnostics = window.cppPet.language.onDiagnostics(event => {
     if (event.projectId !== store.currentProject?.id) return
     languageDiagnostics.value = {
@@ -245,6 +287,7 @@ onBeforeUnmount(() => {
   clearTimeout(autoSaveTimer)
   stopResize()
   window.removeEventListener('resize', fitLayoutToViewport)
+  window.removeEventListener('keydown', handleWorkspaceShortcut, true)
   stopLanguageDiagnostics?.()
   agent.dispose()
   if (debugState.value && !['exited', 'error'].includes(debugState.value.status)) {
@@ -384,7 +427,9 @@ async function switchProject(id: string) {
   await store.openProject(id)
   buildResult.value = null
   runResult.value = null
+  runTargetLabel.value = ''
   cmakeResult.value = null
+  selectedCmakeTargetBuildId.value = ''
   ctestResult.value = null
   analysisResult.value = null
   diagnostics.value = []
@@ -626,10 +671,41 @@ async function saveActive() {
   clearTimeout(autoSaveTimer)
   await store.save()
 }
+async function ensureCurrentWorkspaceTrusted(actionLabel: string) {
+  let workspace = currentWorkspace.value
+  if (!workspace && store.currentProject) {
+    await app.refreshWorkspaces()
+    workspace = app.workspaces.find(item => item.id === store.currentProject?.workspaceId)
+  }
+  if (!workspace) {
+    store.error = {
+      code: 'WORKSPACE_NOT_FOUND',
+      message: '当前项目对应的工作区不存在。',
+      retryable: true,
+      userAction: '重新导入项目或在设置中添加工作区。'
+    }
+    return false
+  }
+  if (workspace.trustState === 'trusted') return true
+  if (trustPromptPending.value) return false
+
+  trustPromptPending.value = true
+  try {
+    const trusted = await requestWorkspaceTrust(workspace, actionLabel, {
+      confirm: (message, title, options) => ElMessageBox.confirm(message, title, options),
+      trust: workspaceId => app.trustWorkspace(workspaceId)
+    })
+    if (trusted) ElMessage.success(`已信任工作区“${workspace.name}”，正在继续${actionLabel}。`)
+    return trusted
+  } finally {
+    trustPromptPending.value = false
+  }
+}
 async function build(runAfter = false) {
   const tab = active.value
   const project = store.currentProject
   if (!tab || !project || !canBuild.value) return
+  if (!await ensureCurrentWorkspaceTrusted(runAfter ? '编译并运行程序' : '编译当前文件')) return
   if (tab.conflicted) {
     store.error = { code: 'FILE_REVISION_CONFLICT', message: '当前文件存在外部修改冲突。', retryable: true, userAction: '先在差异视图中选择磁盘版本或当前版本。' }
     return
@@ -659,9 +735,11 @@ async function build(runAfter = false) {
     panelTab.value = result.data.diagnostics.length ? 'problems' : 'output'
     return
   }
-  if (runAfter) await runProgram(result.data.buildId)
+  if (runAfter) await runProgram(result.data.buildId, result.data.artifactName)
 }
-async function runProgram(buildId: string) {
+async function runProgram(buildId: string, targetLabel = '') {
+  if (!await ensureCurrentWorkspaceTrusted('运行程序')) return
+  runTargetLabel.value = targetLabel
   executing.value = 'run'
   currentRunId.value = crypto.randomUUID()
   const result = await window.cppPet.program.run({
@@ -680,9 +758,14 @@ async function runProgram(buildId: string) {
 async function buildCmake() {
   const project = store.currentProject
   if (!project || !canCmake.value) return
+  if (!await ensureCurrentWorkspaceTrusted('构建 CMake 工程')) return
   await saveActive()
   if (active.value?.dirty || active.value?.conflicted) return
+  buildResult.value = null
+  runResult.value = null
+  runTargetLabel.value = ''
   cmakeResult.value = null
+  selectedCmakeTargetBuildId.value = ''
   ctestResult.value = null
   diagnostics.value = []
   panelOpen.value = true
@@ -699,11 +782,24 @@ async function buildCmake() {
   currentRunId.value = ''
   if (!result.ok) { store.error = result.error; return }
   cmakeResult.value = result.data
+  const preferredTarget = result.data.executableTargets.find(target => !/(?:test|tests|benchmark)/i.test(target.name))
+    ?? result.data.executableTargets[0]
+  selectedCmakeTargetBuildId.value = preferredTarget?.buildId ?? ''
   diagnostics.value = result.data.diagnostics
   if (!result.data.success && result.data.diagnostics.length) panelTab.value = 'problems'
 }
+async function runCmakeTarget() {
+  const target = selectedCmakeTarget.value
+  if (!target || !canRunCmakeTarget.value) return
+  buildResult.value = null
+  runResult.value = null
+  panelOpen.value = true
+  panelTab.value = 'output'
+  await runProgram(target.buildId, target.name)
+}
 async function runTests() {
   if (!cmakeResult.value?.success || !canTest.value) return
+  if (!await ensureCurrentWorkspaceTrusted('运行项目测试')) return
   ctestResult.value = null
   panelOpen.value = true
   panelTab.value = 'output'
@@ -725,6 +821,7 @@ async function analyze() {
   const tab = active.value
   const project = store.currentProject
   if (!tab || !project || !canAnalyze.value) return
+  if (!await ensureCurrentWorkspaceTrusted('执行静态分析')) return
   await saveActive()
   if (tab.dirty || tab.conflicted) return
   analysisResult.value = null
@@ -765,6 +862,7 @@ async function startDebug() {
   const tab = active.value
   const project = store.currentProject
   if (!tab || !project || !canDebug.value) return
+  if (!await ensureCurrentWorkspaceTrusted('启动调试')) return
   await saveActive()
   if (tab.dirty || tab.conflicted) return
   const activeLines = breakpoints.value[tab.relativePath] ?? []
@@ -912,7 +1010,12 @@ async function overwriteDisk() {
           <i v-if="tab.dirty" />{{ tab.relativePath.split(/[\\/]/).at(-1) }}<X :size="13" @click.stop="store.closeTab(tab.relativePath)" />
         </button>
         <span class="tabs-spacer" />
-        <button class="save-command" :disabled="!active?.dirty || store.saving || active?.conflicted" title="保存" @click="saveActive"><Save :size="15" />{{ store.saving ? '保存中' : '保存' }}</button>
+        <EditorToolbarButton
+          :label="store.saving ? '保存中' : '保存'"
+          :shortcut="workspaceShortcutLabel('save')"
+          :disabled="!active?.dirty || store.saving || active?.conflicted"
+          @click="saveActive"
+        ><Save :size="15" /></EditorToolbarButton>
         <button
           data-tour="workspace-agent-toggle"
           :class="['icon-command agent-toggle', { active: agentOpen }]"
@@ -955,23 +1058,35 @@ async function overwriteDisk() {
       />
 
       <div class="editor-toolbar">
-        <button class="tool-command" :disabled="!canBuild" title="编译当前 C++ 文件；右键查看帮助" @click="build(false)" @contextmenu.prevent="openHelpMenu($event, 'compile')"><Hammer :size="15" />编译</button>
-        <button class="tool-command run" :disabled="!canBuild" title="编译并运行当前 C++ 文件；右键查看帮助" @click="build(true)" @contextmenu.prevent="openHelpMenu($event, 'run')"><Play :size="15" />运行</button>
-        <button class="tool-command stop" :disabled="!executing" title="停止当前任务" @click="stop"><Square :size="14" />停止</button>
+        <EditorToolbarButton label="编译" :shortcut="workspaceShortcutLabel('compile')" :disabled="!canBuild" help @click="build(false)" @contextmenu="openHelpMenu($event, 'compile')"><Hammer :size="15" /></EditorToolbarButton>
+        <EditorToolbarButton label="运行" :shortcut="workspaceShortcutLabel('run')" :disabled="!canBuild" tone="run" help @click="build(true)" @contextmenu="openHelpMenu($event, 'run')"><Play :size="15" /></EditorToolbarButton>
+        <EditorToolbarButton label="停止当前任务" :shortcut="workspaceShortcutLabel('stop')" :disabled="!executing" tone="stop" @click="stop"><Square :size="14" /></EditorToolbarButton>
         <span class="toolbar-separator" />
-        <button class="tool-command" :disabled="!canCmake" title="配置并构建 CMake 项目；右键查看帮助" @click="buildCmake" @contextmenu.prevent="openHelpMenu($event, 'cmake')"><Boxes :size="15" />工程构建</button>
-        <button class="tool-command" :disabled="!canTest" title="运行最近一次 CMake 构建中的 CTest；右键查看帮助" @click="runTests" @contextmenu.prevent="openHelpMenu($event, 'ctest')"><CheckCheck :size="15" />测试</button>
-        <button class="tool-command" :disabled="!canAnalyze" title="使用 clang-tidy 分析当前文件；右键查看帮助" @click="analyze" @contextmenu.prevent="openHelpMenu($event, 'analysis')"><ScanSearch :size="15" />分析</button>
-        <button v-if="agentSelection" class="tool-command" title="选中代码问 AI" @click="askSelectedCode"><Bot :size="15" />问 AI</button>
-        <button class="icon-command external-editor-command" :disabled="!store.currentProject" title="在新的 VS Code 窗口中打开；右键查看帮助" @click="openVsCode" @contextmenu.prevent="openHelpMenu($event, 'vscode')"><ExternalLink :size="15" /></button>
+        <EditorToolbarButton label="工程构建" :shortcut="workspaceShortcutLabel('cmake-build')" :disabled="!canCmake" help @click="buildCmake" @contextmenu="openHelpMenu($event, 'cmake')"><Boxes :size="15" /></EditorToolbarButton>
+        <el-select
+          v-if="cmakeExecutableTargets.length"
+          v-model="selectedCmakeTargetBuildId"
+          class="cmake-target-select"
+          size="small"
+          :disabled="Boolean(executing)"
+          title="选择要运行的 CMake 可执行 target"
+          aria-label="CMake 运行目标"
+        >
+          <el-option v-for="target in cmakeExecutableTargets" :key="target.buildId" :label="target.name" :value="target.buildId" />
+        </el-select>
+        <EditorToolbarButton v-if="cmakeExecutableTargets.length" label="运行工程" :shortcut="workspaceShortcutLabel('cmake-run')" :disabled="!canRunCmakeTarget" tone="run" @click="runCmakeTarget"><Play :size="15" /></EditorToolbarButton>
+        <EditorToolbarButton label="测试" :shortcut="workspaceShortcutLabel('ctest')" :disabled="!canTest" help @click="runTests" @contextmenu="openHelpMenu($event, 'ctest')"><CheckCheck :size="15" /></EditorToolbarButton>
+        <EditorToolbarButton label="分析" :shortcut="workspaceShortcutLabel('analysis')" :disabled="!canAnalyze" help @click="analyze" @contextmenu="openHelpMenu($event, 'analysis')"><ScanSearch :size="15" /></EditorToolbarButton>
+        <EditorToolbarButton v-if="agentSelection" label="选中代码问 AI" :shortcut="workspaceShortcutLabel('ask-ai')" @click="askSelectedCode"><Bot :size="15" /></EditorToolbarButton>
+        <EditorToolbarButton label="在新的 VS Code 窗口中打开" :shortcut="workspaceShortcutLabel('vscode')" :disabled="!store.currentProject" help @click="openVsCode" @contextmenu="openHelpMenu($event, 'vscode')"><ExternalLink :size="15" /></EditorToolbarButton>
         <span class="toolbar-separator" />
-        <button v-if="!debugState || ['exited', 'error'].includes(debugState.status)" class="tool-command debug" :disabled="!canDebug" title="使用 GDB 调试当前 C++ 文件；右键查看帮助" @click="startDebug" @contextmenu.prevent="openHelpMenu($event, 'debug')"><Bug :size="15" />调试</button>
+        <EditorToolbarButton v-if="!debugState || ['exited', 'error'].includes(debugState.status)" label="调试" :shortcut="workspaceShortcutLabel('debug')" :disabled="!canDebug" tone="debug" help @click="startDebug" @contextmenu="openHelpMenu($event, 'debug')"><Bug :size="15" /></EditorToolbarButton>
         <template v-else>
-          <button class="tool-command debug" :disabled="!canControlDebug" title="继续运行到下一个断点" @click="debugCommand('continue')"><Play :size="14" />继续</button>
-          <button class="tool-command" :disabled="!canControlDebug" title="单步跨过" @click="debugCommand('next')"><StepForward :size="14" />跨过</button>
-          <button class="tool-command" :disabled="!canControlDebug" title="单步进入函数" @click="debugCommand('step-in')"><ArrowDownToLine :size="14" />进入</button>
-          <button class="tool-command" :disabled="!canControlDebug" title="跳出当前函数" @click="debugCommand('step-out')"><ArrowUpFromLine :size="14" />跳出</button>
-          <button class="tool-command stop" :disabled="debuggerBusy" title="停止调试" @click="debugCommand('stop')"><Square :size="14" />停止调试</button>
+          <EditorToolbarButton label="继续" :shortcut="workspaceShortcutLabel('debug')" :disabled="!canControlDebug" tone="debug" @click="debugCommand('continue')"><Play :size="14" /></EditorToolbarButton>
+          <EditorToolbarButton label="跨过" :shortcut="workspaceShortcutLabel('debug-next')" :disabled="!canControlDebug" @click="debugCommand('next')"><StepForward :size="14" /></EditorToolbarButton>
+          <EditorToolbarButton label="进入" :shortcut="workspaceShortcutLabel('debug-step-in')" :disabled="!canControlDebug" @click="debugCommand('step-in')"><ArrowDownToLine :size="14" /></EditorToolbarButton>
+          <EditorToolbarButton label="跳出" :shortcut="workspaceShortcutLabel('debug-step-out')" :disabled="!canControlDebug" @click="debugCommand('step-out')"><ArrowUpFromLine :size="14" /></EditorToolbarButton>
+          <EditorToolbarButton label="停止调试" :shortcut="workspaceShortcutLabel('stop')" :disabled="debuggerBusy" tone="stop" @click="debugCommand('stop')"><Square :size="14" /></EditorToolbarButton>
         </template>
         <el-select v-model="standard" class="standard-picker" size="small" title="C++ 标准">
           <el-option label="C++17" value="c++17" />
@@ -985,8 +1100,8 @@ async function overwriteDisk() {
           <button class="icon-command" type="button" title="放大" :disabled="!active || editorFontSize >= 28" @click="editorHost?.zoomIn()"><ZoomIn :size="15" /></button>
         </div>
         <span class="toolbar-status" :title="languageStatusText">{{ debuggerBusy ? '调试器正在执行…' : debugState?.status === 'stopped' ? `调试暂停：${debugState.reason ?? '断点'}` : executing === 'build' ? '正在编译…' : executing === 'run' ? '程序正在运行…' : executing === 'cmake' ? '正在构建工程…' : executing === 'ctest' ? '正在运行测试…' : executing === 'analysis' ? '正在静态分析…' : active?.dirty ? '等待自动保存' : active ? `${languageAvailable ? 'clangd 已连接' : '基础编辑模式'} · 已保存` : '' }}</span>
-        <button class="icon-command feature-help-command" title="功能帮助" aria-label="功能帮助" @click="openFeatureHelp('workspace-files')"><CircleHelp :size="15" /></button>
-        <button class="panel-toggle" @click="panelOpen = !panelOpen"><Terminal :size="15" />{{ panelOpen ? '隐藏面板' : '显示面板' }}</button>
+        <EditorToolbarButton label="功能帮助" @click="openFeatureHelp('workspace-files')"><CircleHelp :size="15" /></EditorToolbarButton>
+        <EditorToolbarButton :label="panelOpen ? '隐藏底部面板' : '显示底部面板'" :active="panelOpen" @click="panelOpen = !panelOpen"><Terminal :size="15" /></EditorToolbarButton>
       </div>
 
       <DiagnosticInboxPopover

@@ -56,11 +56,11 @@ onMounted(async () => {
     if (state.value.settings.docked) {
       void window.cppPet.pet.undock().then(result => {
         if (result.ok) applyPetState(result.data)
-        quickChat()
+        showQuickChat()
       })
       return
     }
-    quickChat()
+    showQuickChat()
   })
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     applyPetTheme(state.value.theme ?? 'system')
@@ -96,7 +96,15 @@ function openContextMenu() {
   void window.cppPet.pet.showContextMenu()
 }
 
-function quickChat() {
+async function activatePet() {
+  const result = await window.cppPet.pet.activate()
+  if (!result.ok) {
+    chatNotice.value = result.error.message
+    event.value = { eventId: crypto.randomUUID(), state: 'warning', message: result.error.message }
+  }
+}
+
+function showQuickChat() {
   chatOpen.value = true
   chatNotice.value = ''
 }
@@ -134,7 +142,7 @@ async function submitChat(message: string) {
       @drag-end="dragEnd"
       @undock="undock"
       @open-main="openMain"
-      @quick-chat="quickChat"
+      @quick-chat="activatePet"
       @close-chat="closeChat"
       @chat-submit="submitChat"
       @context-menu="openContextMenu"

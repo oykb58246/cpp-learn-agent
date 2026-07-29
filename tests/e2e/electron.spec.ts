@@ -10,6 +10,19 @@ let temp = ''
 test.beforeEach(() => { temp = mkdtempSync(join(tmpdir(), 'cpppet-e2e-')); mkdirSync(join(temp, 'workspace')); mkdirSync(join(repo, 'test-results', 'visual'), { recursive: true }) })
 test.afterEach(() => rmSync(temp, { recursive: true, force: true }))
 
+async function findPetApplicationWindow(electronApp: ElectronApplication): Promise<Page> {
+  await expect.poll(async () => {
+    for (const candidate of electronApp.windows()) {
+      if (await candidate.locator('.pet-app').count()) return true
+    }
+    return false
+  }).toBe(true)
+  for (const candidate of electronApp.windows()) {
+    if (await candidate.locator('.pet-app').count()) return candidate
+  }
+  throw new Error('CppPilot pet window was not found.')
+}
+
 async function captureWindow(electronApp: ElectronApplication, page: Page, path: string) {
   const browserWindow = await electronApp.browserWindow(page)
   const png = await browserWindow.evaluate(async win => (await win.capturePage()).toPNG().toString('base64'))
@@ -61,6 +74,58 @@ test('explains how to resume after skipping first-run setup', async () => {
     const tasks = await page.evaluate(() => window.cppPet.environment.installTasks())
     expect(tasks.ok && tasks.data[0]?.status).toBe('succeeded')
   } finally { await electronApp.close() }
+})
+
+test('minimizes the main window to the pet and restores it with one pet click', async () => {
+  const electronApp = await electron.launch({
+    executablePath: electronPath as unknown as string,
+    args: ['--in-process-gpu', '--no-sandbox', join(repo, 'apps/desktop')],
+    env: createElectronEnvironment({
+      CPP_PET_USER_DATA: join(temp, 'close-behavior-user-data'),
+      CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace'),
+      CPP_PET_E2E_CLOSE_ACTION: 'minimize'
+    })
+  })
+  try {
+    const page = await findMainApplicationWindow(electronApp)
+    const main = await electronApp.browserWindow(page)
+    const petPage = await findPetApplicationWindow(electronApp)
+
+    await main.evaluate(window => window.close())
+    await expect.poll(() => main.evaluate(window => window.isVisible())).toBe(false)
+    await expect(petPage.locator('.desktop-pet-button')).toBeVisible()
+
+    await petPage.locator('.desktop-pet-button').click()
+    await expect.poll(() => main.evaluate(window => window.isVisible())).toBe(true)
+    await expect.poll(() => main.evaluate(window => window.isFocused())).toBe(true)
+  } finally {
+    await electronApp.close()
+  }
+})
+
+test('quits the application when direct close is selected', async () => {
+  const electronApp = await electron.launch({
+    executablePath: electronPath as unknown as string,
+    args: ['--in-process-gpu', '--no-sandbox', join(repo, 'apps/desktop')],
+    env: createElectronEnvironment({
+      CPP_PET_USER_DATA: join(temp, 'direct-close-user-data'),
+      CPP_PET_E2E_SEED_ROOT: join(temp, 'workspace'),
+      CPP_PET_E2E_CLOSE_ACTION: 'quit'
+    })
+  })
+  let exited = false
+  try {
+    const page = await findMainApplicationWindow(electronApp)
+    const main = await electronApp.browserWindow(page)
+    const process = electronApp.process()
+    const exit = new Promise<void>(resolve => process.once('exit', () => resolve()))
+
+    await main.evaluate(window => window.close())
+    await exit
+    exited = true
+  } finally {
+    if (!exited) await electronApp.close()
+  }
 })
 
 test('launches securely and renders the real project workflow', async () => {
@@ -187,7 +252,7 @@ test('launches securely and renders the real project workflow', async () => {
       await page.keyboard.press('ArrowDown')
       await page.keyboard.press('ArrowDown')
       await page.keyboard.press('ArrowDown')
-      await page.getByTitle('使用 GDB 调试当前 C++ 文件').click()
+      await page.locator('.editor-toolbar').getByRole('button', { name: '调试', exact: true }).click()
       await expect(page.locator('.debug-summary')).toContainText('已暂停', { timeout: 30_000 })
       await expect(page.locator('.debug-table')).toContainText('value')
       await expect(page.locator('.debug-table')).toContainText('41')
@@ -224,7 +289,11 @@ test('launches securely and renders the real project workflow', async () => {
     await expect(page.locator('.project-picker')).toContainText('CMake E2E')
     const engineeringTools = await page.evaluate(() => window.cppPet.toolchains.detect())
     const toolKinds = engineeringTools.ok ? engineeringTools.data.tools.map(item => item.kind) : []
-    await page.getByRole('button', { name: '工程构建', exact: true }).click()
+    const cmakeBuildButton = page.getByRole('button', { name: '工程构建', exact: true })
+    await expect(cmakeBuildButton).toHaveText('')
+    await cmakeBuildButton.hover()
+    await expect(page.getByRole('tooltip').filter({ hasText: '工程构建 · Ctrl+Alt+B' })).toBeVisible()
+    await page.keyboard.press('Control+Alt+B')
     if (toolKinds.includes('cmake') && toolKinds.includes('ctest')) {
       await expect.poll(async () => {
         const output = await page.locator('.process-output').textContent() ?? ''
@@ -233,6 +302,11 @@ test('launches securely and renders the real project workflow', async () => {
         return error ? `error:${error}` : 'pending'
       }, { timeout: 60_000 }).toBe('success')
       await expect(page.locator('.process-output')).toContainText('compile_commands.json 已生成')
+      await expect(page.locator('.process-output')).toContainText('[可运行目标] cpp_pet')
+      await expect(page.locator('.cmake-target-select')).toContainText('cpp_pet')
+      await page.keyboard.press('Control+Alt+F5')
+      await expect(page.locator('.process-output')).toContainText('[运行 · cpp_pet] 成功', { timeout: 30_000 })
+      await expect(page.locator('.process-output')).toContainText('Hello, C++Pilot!')
       await page.getByRole('button', { name: '测试', exact: true }).click()
       await expect(page.locator('.process-output')).toContainText('[CTest] 通过 · 1/1 通过', { timeout: 30_000 })
     } else {

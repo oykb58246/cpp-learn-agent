@@ -56,6 +56,7 @@ describe('H3 agent contracts', () => {
     expect(ipc.petMove).toBe('pet:move')
     expect(ipc.petDrag).toBe('pet:drag')
     expect(ipc.petSetIgnoreMouseEvents).toBe('pet:set-ignore-mouse-events')
+    expect(ipc.petActivate).toBe('pet:activate')
     expect(ipc.petOpenMain).toBe('pet:open-main')
     expect(ipc.petWindowChanged).toBe('pet:window-changed')
     expect(ipc.screenshotCapture).toBe('screenshot:capture')

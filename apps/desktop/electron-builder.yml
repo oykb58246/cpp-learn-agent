@@ -1,5 +1,6 @@
 appId: com.cpppilot.agent
 productName: CppPilot
+electronDist: node_modules/electron/dist
 directories:
   output: ../../release
   buildResources: build
@@ -23,6 +24,12 @@ win:
 nsis:
   oneClick: true
   perMachine: false
+  artifactName: "${productName} Setup ${version}.${ext}"
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: CppPilot
+  runAfterFinish: true
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
+  uninstallDisplayName: "CppPilot ${version}"
   packElevateHelper: false

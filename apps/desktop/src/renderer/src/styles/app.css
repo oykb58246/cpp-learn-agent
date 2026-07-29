@@ -490,8 +490,30 @@ body.workspace-resizing-y, body.workspace-resizing-y * { cursor: row-resize !imp
 .editor-tabs { display: flex; align-items: stretch; min-width: 0; border-bottom: 1px solid var(--border); background: var(--panel); overflow: hidden; }.editor-tabs > button:not(.save-command):not(.icon-command) { display: flex; align-items: center; gap: 7px; max-width: 190px; padding: 0 9px; border: 0; border-right: 1px solid var(--border); background: transparent; color: var(--text-secondary); white-space: nowrap; }.editor-tabs > button.active { background: var(--canvas) !important; color: var(--text-primary) !important; }.editor-tabs > button i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }.tabs-spacer { flex: 1; }
 .editor-tabs { flex: 0 0 36px; }
 .editor-toolbar { display: flex; align-items: center; gap: 3px; flex: 0 0 36px; padding: 3px 7px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.toolbar-tooltip-trigger { display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.editor-tool-button {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.editor-tool-button:hover:not(:disabled), .editor-tool-button.active { border-color: var(--border); background: var(--panel-subtle); color: var(--text-primary); }
+.editor-tool-button.run { color: var(--success); }
+.editor-tool-button.debug { color: var(--accent); }
+.editor-tool-button.stop { color: var(--danger); }
+.editor-tool-button:disabled { opacity: .4; cursor: default; }
+.editor-tabs > .toolbar-tooltip-trigger { align-self: center; margin: 0 2px; }
 .tool-command, .panel-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 9px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); cursor: pointer; }
 .tool-command:hover, .panel-toggle:hover { background: var(--panel-subtle); color: var(--text-primary); }.tool-command.run { color: var(--success); }.tool-command.debug { color: var(--accent); }.tool-command.stop { color: var(--danger); }.tool-command:disabled { opacity: .4; cursor: default; }
+.cmake-target-select { width: clamp(112px, 13vw, 170px); flex: none; }
+.cmake-target-select .el-select__wrapper { min-height: 26px; padding: 0 8px; }
+.cmake-target-select .el-select__selected-item { font: 11px var(--font-code); }
 .toolbar-separator { width: 1px; height: 20px; margin: 0 3px; background: var(--border); }
 .external-editor-command { width: 28px; height: 28px; border: 0; }
 .external-editor-command:disabled { opacity: .4; cursor: default; }
@@ -671,8 +693,10 @@ body.workspace-resizing-y, body.workspace-resizing-y * { cursor: row-resize !imp
   min-height: 54px;
   border-top: 1px solid var(--border);
 }
-.workspace-setting div { display: grid; gap: 3px; min-width: 0; }
-.workspace-setting div span { color: var(--text-secondary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-setting-copy { display: grid; gap: 3px; min-width: 0; }
+.workspace-setting-copy span { color: var(--text-secondary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-setting-actions { display: flex; align-items: center; gap: 9px; flex: none; margin-left: 16px; }
+.workspace-setting-actions button { min-width: 74px; }
 .workspace-setting b { font-size: 11px; }
 .workspace-setting b.trusted { color: var(--success); }
 .workspace-setting b.inspection { color: var(--warning); }

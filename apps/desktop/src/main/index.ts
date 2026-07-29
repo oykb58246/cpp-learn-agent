@@ -96,6 +96,7 @@ import { ConversationService } from './conversation-service'
 import { testModelVisionCapability } from './model-capability-test'
 import { configureSingleInstance } from './single-instance'
 import { codeEditLearningEvent } from './learning-growth'
+import { createMainWindowCloseDialogOptions, mainWindowCloseAction } from './main-window-close'
 import {
   DatabaseRuntimeStore,
   DesktopMcpAdapter,
@@ -121,6 +122,7 @@ let conversationService: ConversationService | null = null
 let agentTransport: 'starting' | 'stdio' | 'in-memory-fallback' | 'failed' = 'starting'
 let agentStartupError: string | null = null
 let shutdownStarted = false
+let mainWindowClosePromptOpen = false
 let lastLearnerLevel = 1
 let petHiddenTimer: ReturnType<typeof setTimeout> | null = null
 const toolchainService = new ToolchainService()
@@ -134,9 +136,7 @@ const openAiToolRegistry = createOpenAiToolRegistry(localToolDefinitions)
 let stopWatching: (() => void) | null = null
 if (process.env.CPP_PET_USER_DATA) app.setPath('userData', process.env.CPP_PET_USER_DATA)
 const ownsSingleInstance = configureSingleInstance(app, () => {
-  if (!mainWindow) return
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  mainWindow.focus()
+  if (app.isReady()) focusMainWindow()
 })
 
 const requiredServices = () => {
@@ -429,8 +429,12 @@ function startScreenshotCapture(input: Partial<ScreenshotCaptureRequest> = {}): 
 }
 
 function sendAppNavigation(path: string, query?: Record<string, string>): void {
-  focusMainWindow()
-  mainWindow?.webContents.send(ipc.appNavigate, { path, ...(query ? { query } : {}) })
+  const window = focusMainWindow()
+  const navigate = () => {
+    if (!window.isDestroyed()) window.webContents.send(ipc.appNavigate, { path, ...(query ? { query } : {}) })
+  }
+  if (window.webContents.isLoadingMainFrame()) window.webContents.once('did-finish-load', navigate)
+  else navigate()
 }
 
 function openSettingsWindow(): void {
@@ -519,6 +523,15 @@ function openPetQuickChat(): void {
   window.webContents.send(ipc.petQuickChat)
 }
 
+function activatePet(): void {
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+  if (!window || !window.isVisible() || window.isMinimized()) {
+    focusMainWindow()
+    return
+  }
+  openPetQuickChat()
+}
+
 function hidePetForOneHour(): PetWindowState {
   const hiddenUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString()
   const settings = savePetSettings({ visible: false, hiddenUntil })
@@ -565,11 +578,12 @@ function registerShortcuts(): void {
     petWindow?.webContents.send(ipc.petChanged, event)
   }
 }
-function focusMainWindow(): void {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  mainWindow.show()
-  mainWindow.focus()
+function focusMainWindow(): BrowserWindow {
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow()
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  return window
 }
 
 function normalizePetGrowthStage(value: number): PetGrowthStage {
@@ -1249,6 +1263,7 @@ function registerIpc(): void {
   handlePet(ipc.petDragEnd, empty, () => finalizePetDockFromBounds())
   handlePet(ipc.petUndock, empty, () => undockPetCompanion())
   handlePet(ipc.petSetIgnoreMouseEvents, z.object({ ignoreMouseEvents: z.boolean() }).strict(), input => { const settings = savePetSettings({ ignoreMouseEvents: input.ignoreMouseEvents }); applyPetSettings(settings); return emitPetWindowState() })
+  handlePet(ipc.petActivate, empty, () => { activatePet() })
   handlePet(ipc.petOpenMain, empty, () => {
     const projectId = resolveProjectId()
     if (projectId) sendAppNavigation(`/workspace/${projectId}`, { agent: '1' })
@@ -1458,6 +1473,20 @@ function registerIpc(): void {
         configuration: input.configuration,
         signal: controller.signal
       })
+      const executableTargets = result.success
+        ? result.executableTargets.map(target => {
+            const targetBuildId = randomUUID()
+            buildArtifacts.set(targetBuildId, {
+              path: target.path,
+              projectId: input.projectId,
+              projectRoot: root,
+              artifactName: basename(target.path),
+              relativePath: 'CMakeLists.txt',
+              standard: input.standard
+            })
+            return { name: target.name, buildId: targetBuildId }
+          })
+        : []
       if (result.success) cmakeBuilds.set(buildId, { directory: buildDirectory, sourceDirectory: result.sourceDirectory, projectId: input.projectId, configuration: input.configuration })
       database.addEvent({
         eventId: randomUUID(),
@@ -1466,7 +1495,7 @@ function registerIpc(): void {
         occurredAt: new Date().toISOString(),
         actor: 'tool',
         projectId: input.projectId,
-        payload: { runId: input.runId, buildId, profileId: profile.id, configuration: input.configuration, diagnostics: result.diagnostics.length }
+        payload: { runId: input.runId, buildId, profileId: profile.id, configuration: input.configuration, diagnostics: result.diagnostics.length, executableTargets: executableTargets.map(target => target.name) }
       })
       return {
         runId: input.runId,
@@ -1479,6 +1508,7 @@ function registerIpc(): void {
         ...(result.build ? { build: result.build } : {}),
         diagnostics: result.diagnostics,
         compileCommandsGenerated: result.compileCommandsGenerated,
+        executableTargets,
         builtAt: new Date().toISOString()
       }
     } finally {
@@ -2099,11 +2129,27 @@ function applyWindowChrome(theme: AppSettings['theme'] = database?.getSettings()
   mainWindow.setBackgroundColor(chrome.backgroundColor)
 }
 
-function createWindow(): void {
+function minimizeMainWindowToPet(window: BrowserWindow): void {
+  window.hide()
+  const settings = savePetSettings({
+    visible: true,
+    hiddenUntil: undefined,
+    ignoreMouseEvents: false
+  })
+  applyPetSettings(settings)
+  const event = {
+    eventId: randomUUID(),
+    state: 'listen' as const,
+    message: 'CppPilot 已最小化，单击我可以重新打开主窗口。'
+  }
+  petWindow?.webContents.send(ipc.petChanged, event)
+}
+
+function createWindow(): BrowserWindow {
   const theme = database?.getSettings().theme ?? 'system'
   const chrome = windowChrome(theme)
   const iconPath = resolveWindowIconPath({ dirname: __dirname, resourcesPath: process.resourcesPath, packaged: app.isPackaged, exists: existsSync })
-  mainWindow = new BrowserWindow(createWindowOptions({
+  const window = new BrowserWindow(createWindowOptions({
     iconPath: iconPath ?? '',
     iconExists: Boolean(iconPath),
     titleBarColor: chrome.titleBarOverlay.color,
@@ -2111,14 +2157,36 @@ function createWindow(): void {
     backgroundColor: chrome.backgroundColor,
     preloadPath: join(__dirname, '../preload/index.cjs')
   }))
-  mainWindow.once('ready-to-show', () => {
+  mainWindow = window
+  window.once('ready-to-show', () => {
     applyWindowChrome(theme)
-    mainWindow?.show()
+    window.show()
   })
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => { if (/^https:\/\//.test(url)) void shell.openExternal(url); return { action: 'deny' } })
-  mainWindow.webContents.on('will-navigate', event => event.preventDefault())
-  if (process.env.ELECTRON_RENDERER_URL) void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
-  else void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  window.webContents.setWindowOpenHandler(({ url }) => { if (/^https:\/\//.test(url)) void shell.openExternal(url); return { action: 'deny' } })
+  window.webContents.on('will-navigate', event => event.preventDefault())
+  window.on('close', event => {
+    if (shutdownStarted) return
+    event.preventDefault()
+    if (mainWindowClosePromptOpen) return
+    mainWindowClosePromptOpen = true
+    const e2eChoice = process.env.CPP_PET_E2E_CLOSE_ACTION
+    const response = e2eChoice === 'minimize' ? Promise.resolve({ response: 0 })
+      : e2eChoice === 'quit' ? Promise.resolve({ response: 1 })
+        : dialog.showMessageBox(window, createMainWindowCloseDialogOptions())
+    void response.then(result => {
+      const action = mainWindowCloseAction(result.response)
+      if (action === 'minimize-to-pet') minimizeMainWindowToPet(window)
+      else if (action === 'quit') app.quit()
+    }).finally(() => {
+      mainWindowClosePromptOpen = false
+    })
+  })
+  window.once('closed', () => {
+    if (mainWindow === window) mainWindow = null
+  })
+  if (process.env.ELECTRON_RENDERER_URL) void window.loadURL(process.env.ELECTRON_RENDERER_URL)
+  else void window.loadFile(join(__dirname, '../renderer/index.html'))
+  return window
 }
 
 app.whenReady().then(async () => {

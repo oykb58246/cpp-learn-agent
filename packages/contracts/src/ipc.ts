@@ -37,7 +37,7 @@ export const ipc = {
   petGetState: 'pet:get-state', petUpdateSettings: 'pet:update-settings',
   petShow: 'pet:show', petHide: 'pet:hide', petToggle: 'pet:toggle',
   petMove: 'pet:move', petDrag: 'pet:drag', petDragEnd: 'pet:drag-end', petUndock: 'pet:undock',
-  petSetIgnoreMouseEvents: 'pet:set-ignore-mouse-events', petOpenMain: 'pet:open-main',
+  petSetIgnoreMouseEvents: 'pet:set-ignore-mouse-events', petActivate: 'pet:activate', petOpenMain: 'pet:open-main',
   petShowContextMenu: 'pet:show-context-menu', petSelectCustomAsset: 'pet:select-custom-asset', petResetCustomAsset: 'pet:reset-custom-asset',
   petRenameCustomAsset: 'pet:rename-custom-asset', petDeleteCustomAsset: 'pet:delete-custom-asset', petActivateCustomAsset: 'pet:activate-custom-asset',
   petHideForOneHour: 'pet:hide-for-one-hour', petCancelHidden: 'pet:cancel-hidden', petToggleFocusMode: 'pet:toggle-focus-mode',

@@ -395,6 +395,7 @@ export interface CppPetApi {
     dragEnd(): Promise<ApiResult<PetWindowState>>
     undock(): Promise<ApiResult<PetWindowState>>
     setIgnoreMouseEvents(input: { ignoreMouseEvents: boolean }): Promise<ApiResult<PetWindowState>>
+    activate(): Promise<ApiResult<void>>
     openMain(): Promise<ApiResult<void>>
     showContextMenu(): Promise<ApiResult<void>>
     selectCustomAsset(input: PetCustomAssetCreateInput): Promise<ApiResult<PetWindowState>>

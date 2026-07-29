@@ -28,6 +28,7 @@ const detecting = ref(false)
 const activeAction = ref('')
 const modelAction = ref('')
 const modelNotice = ref('')
+const workspaceAction = ref('')
 const newCustomPetAssetName = ref('')
 const activeSection = ref('appearance')
 
@@ -116,6 +117,12 @@ onMounted(async () => {
   const target = resolveTargetSection()
   if (target) activeSection.value = target
 })
+
+async function setWorkspaceTrust(workspaceId: string, trusted: boolean) {
+  workspaceAction.value = workspaceId
+  await app.setWorkspaceTrust(workspaceId, trusted)
+  workspaceAction.value = ''
+}
 
 onBeforeUnmount(() => {
   stopPetState?.()
@@ -733,8 +740,26 @@ function changePetScale(event: Event) {
           </div>
         </header>
         <div v-for="item in app.workspaces" :key="item.id" class="workspace-setting">
-          <div><strong>{{ item.name }}</strong><span>{{ item.rootPath }}</span></div>
-          <b :class="item.trustState">{{ item.trustState === 'trusted' ? '已信任' : item.trustState === 'inspection' ? '只读检查' : '已撤销' }}</b>
+          <div class="workspace-setting-copy"><strong>{{ item.name }}</strong><span>{{ item.rootPath }}</span></div>
+          <div class="workspace-setting-actions">
+            <b :class="item.trustState">{{ item.trustState === 'trusted' ? '已信任' : item.trustState === 'inspection' ? '只读检查' : '已撤销' }}</b>
+            <button
+              v-if="item.trustState !== 'trusted'"
+              class="primary-command"
+              :disabled="workspaceAction === item.id"
+              @click="setWorkspaceTrust(item.id, true)"
+            >
+              <CheckCircle2 :size="14" />{{ workspaceAction === item.id ? '授权中' : '信任' }}
+            </button>
+            <button
+              v-else
+              class="secondary-command"
+              :disabled="workspaceAction === item.id"
+              @click="setWorkspaceTrust(item.id, false)"
+            >
+              <Shield :size="14" />{{ workspaceAction === item.id ? '处理中' : '撤销' }}
+            </button>
+          </div>
         </div>
         <button class="secondary-command" @click="app.selectWorkspace">添加工作区</button>
       </section>

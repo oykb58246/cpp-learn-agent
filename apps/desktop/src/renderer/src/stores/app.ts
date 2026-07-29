@@ -79,7 +79,8 @@ export const useAppStore = defineStore('app', {
     async refreshProjects() { const result = await window.cppPet.project.list(); if (result.ok && this.bootstrap) this.bootstrap.recentProjects = result.data; else if (!result.ok) this.error = result.error },
     async refreshWorkspaces() { const result = await window.cppPet.workspace.list(); if (result.ok && this.bootstrap) this.bootstrap.workspaces = result.data; else if (!result.ok) this.error = result.error },
     async selectWorkspace(): Promise<Workspace | null> { const result = await window.cppPet.workspace.selectRoot(); if (!result.ok) { this.error = result.error; return null } await this.refreshWorkspaces(); return result.data },
-    async trustWorkspace(id: string): Promise<Workspace | null> { const result = await window.cppPet.workspace.setTrust({ workspaceId: id, trusted: true }); if (!result.ok) { this.error = result.error; return null } await this.refreshWorkspaces(); return result.data },
+    async setWorkspaceTrust(id: string, trusted: boolean): Promise<Workspace | null> { const result = await window.cppPet.workspace.setTrust({ workspaceId: id, trusted }); if (!result.ok) { this.error = result.error; return null } await this.refreshWorkspaces(); return result.data },
+    async trustWorkspace(id: string): Promise<Workspace | null> { return this.setWorkspaceTrust(id, true) },
     applyPetWindowState(next: PetWindowState) {
       if (!this.bootstrap) return
       const previous = this.bootstrap.settings.pet

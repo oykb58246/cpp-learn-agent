@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, extname, isAbsolute, join, normalize, relative } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import type {
   CmakeConfiguration,
@@ -68,8 +68,14 @@ export interface CmakeBuildOutput {
   build?: ProcessResult
   diagnostics: Diagnostic[]
   compileCommandsGenerated: boolean
+  executableTargets: CmakeExecutableArtifact[]
   sourceDirectory: string
   success: boolean
+}
+
+export interface CmakeExecutableArtifact {
+  name: string
+  path: string
 }
 
 export interface CtestOptions {
@@ -374,6 +380,76 @@ function remapStagedPaths(output: string, stagedRoot: string, projectRoot: strin
     [stagedRoot.replaceAll('\\', '/'), projectRoot.replaceAll('\\', '/')]
   ] as const
   return mappings.reduce((value, [from, to]) => value.replaceAll(from, to), output)
+}
+
+export function discoverCmakeExecutableTargets(buildDirectory: string, configuration: CmakeConfiguration): CmakeExecutableArtifact[] {
+  const replyDirectory = join(buildDirectory, '.cmake', 'api', 'v1', 'reply')
+  try {
+    const indexFile = readdirSync(replyDirectory)
+      .filter(name => /^index-.*\.json$/i.test(name))
+      .sort()
+      .at(-1)
+    if (indexFile) {
+      const index = JSON.parse(readFileSync(join(replyDirectory, indexFile), 'utf8')) as {
+        objects?: Array<{ kind?: string; jsonFile?: string }>
+      }
+      const codemodelRef = index.objects?.find(item => item.kind === 'codemodel' && item.jsonFile)
+      if (codemodelRef?.jsonFile) {
+        const codemodel = JSON.parse(readFileSync(join(replyDirectory, codemodelRef.jsonFile), 'utf8')) as {
+          configurations?: Array<{
+            name?: string
+            targets?: Array<{ name?: string; jsonFile?: string }>
+          }>
+        }
+        const configurations = codemodel.configurations ?? []
+        const selected = configurations.find(item => item.name === configuration) ?? configurations[0]
+        const targets = (selected?.targets ?? []).flatMap(targetRef => {
+          if (!targetRef.jsonFile) return []
+          const target = JSON.parse(readFileSync(join(replyDirectory, targetRef.jsonFile), 'utf8')) as {
+            name?: string
+            type?: string
+            artifacts?: Array<{ path?: string }>
+          }
+          if (target.type !== 'EXECUTABLE') return []
+          return (target.artifacts ?? []).flatMap(artifact => {
+            if (!artifact.path) return []
+            const path = resolve(buildDirectory, artifact.path)
+            return existsSync(path) ? [{ name: target.name ?? targetRef.name ?? basename(path, extname(path)), path }] : []
+          })
+        })
+        if (targets.length) return uniqueCmakeExecutableTargets(targets)
+      }
+    }
+  } catch {
+    // Some generators do not expose File API replies; scan the build tree as a compatibility fallback.
+  }
+
+  const discovered: CmakeExecutableArtifact[] = []
+  const visit = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (['CMakeFiles', '_deps', 'Testing'].includes(entry.name)) continue
+        visit(join(directory, entry.name))
+        continue
+      }
+      const path = join(directory, entry.name)
+      const executable = process.platform === 'win32'
+        ? extname(entry.name).toLowerCase() === '.exe'
+        : extname(entry.name) === '' && (statSync(path).mode & 0o111) !== 0
+      if (executable) discovered.push({ name: basename(entry.name, extname(entry.name)), path })
+    }
+  }
+  visit(buildDirectory)
+  return uniqueCmakeExecutableTargets(discovered)
+}
+
+function uniqueCmakeExecutableTargets(targets: CmakeExecutableArtifact[]): CmakeExecutableArtifact[] {
+  const unique = new Map<string, CmakeExecutableArtifact>()
+  for (const target of targets) {
+    const key = normalize(target.path).toLowerCase()
+    if (!unique.has(key)) unique.set(key, target)
+  }
+  return [...unique.values()].sort((left, right) => left.name.localeCompare(right.name, 'en', { numeric: true }))
 }
 
 function remapCompileCommands(filePath: string, stagedRoot: string, projectRoot: string): void {
@@ -775,6 +851,9 @@ export class ToolchainService {
     const sourceDirectory = join(dirname(options.buildDirectory), 'source')
     stageProjectSource(options.projectRoot, sourceDirectory)
     mkdirSync(options.buildDirectory, { recursive: true })
+    const fileApiQueryDirectory = join(options.buildDirectory, '.cmake', 'api', 'v1', 'query')
+    mkdirSync(fileApiQueryDirectory, { recursive: true })
+    writeFileSync(join(fileApiQueryDirectory, 'codemodel-v2'), '', 'utf8')
     const configureArgs = [
       '-S', sourceDirectory,
       '-B', options.buildDirectory,
@@ -810,6 +889,7 @@ export class ToolchainService {
         configure: configureResult,
         diagnostics: configureDiagnostics,
         compileCommandsGenerated: existsSync(join(options.buildDirectory, 'compile_commands.json')),
+        executableTargets: [],
         sourceDirectory,
         success: false
       }
@@ -837,13 +917,15 @@ export class ToolchainService {
       options.profile.family,
       options.projectRoot
     )
+    const success = build.exitCode === 0 && !build.timedOut && !build.cancelled
     return {
       configure: configureResult,
       build: buildResult,
       diagnostics: [...configureDiagnostics, ...buildDiagnostics],
       compileCommandsGenerated: existsSync(join(options.buildDirectory, 'compile_commands.json')),
+      executableTargets: success ? discoverCmakeExecutableTargets(options.buildDirectory, configuration) : [],
       sourceDirectory,
-      success: build.exitCode === 0 && !build.timedOut && !build.cancelled
+      success
     }
   }
 

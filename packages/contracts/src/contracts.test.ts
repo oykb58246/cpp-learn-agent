@@ -3,6 +3,7 @@ import {
   agentRequestSchema,
   buildRequestSchema,
   cmakeBuildRequestSchema,
+  cmakeExecutableTargetSchema,
   ctestRunRequestSchema,
   debugCommandRequestSchema,
   debugStartRequestSchema,
@@ -68,6 +69,8 @@ describe('contracts', () => {
     const runId = crypto.randomUUID()
     const projectId = crypto.randomUUID()
     expect(cmakeBuildRequestSchema.parse({ runId, projectId })).toMatchObject({ standard: 'c++17', configuration: 'Debug' })
+    expect(cmakeExecutableTargetSchema.safeParse({ name: 'cpppilot_demo', buildId: crypto.randomUUID() }).success).toBe(true)
+    expect(cmakeExecutableTargetSchema.safeParse({ name: '', buildId: 'invalid' }).success).toBe(false)
     expect(ctestRunRequestSchema.parse({ runId, buildId: crypto.randomUUID() }).timeoutMs).toBe(30_000)
     expect(staticAnalysisRequestSchema.safeParse({ runId, projectId, relativePath: '../main.cpp' }).success).toBe(true)
     expect(vscodeOpenRequestSchema.safeParse({ projectId, relativePath: 'main.cpp', line: 4, column: 2 }).success).toBe(true)

@@ -102,6 +102,8 @@ describe('preload pet API', () => {
     expect(mock.invoke).toHaveBeenLastCalledWith(ipc.petDrag, drag)
     await mock.exposedApi.pet.setIgnoreMouseEvents({ ignoreMouseEvents: true })
     expect(mock.invoke).toHaveBeenLastCalledWith(ipc.petSetIgnoreMouseEvents, { ignoreMouseEvents: true })
+    await mock.exposedApi.pet.activate()
+    expect(mock.invoke).toHaveBeenLastCalledWith(ipc.petActivate, undefined)
     await mock.exposedApi.pet.openMain()
     expect(mock.invoke).toHaveBeenLastCalledWith(ipc.petOpenMain, undefined)
     await mock.exposedApi.pet.showContextMenu()

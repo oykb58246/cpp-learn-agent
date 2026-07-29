@@ -158,6 +158,7 @@ const api: CppPetApi = {
     dragEnd: () => invoke(ipc.petDragEnd),
     undock: () => invoke(ipc.petUndock),
     setIgnoreMouseEvents: input => invoke(ipc.petSetIgnoreMouseEvents, input),
+    activate: () => invoke(ipc.petActivate),
     openMain: () => invoke(ipc.petOpenMain),
     showContextMenu: () => invoke(ipc.petShowContextMenu),
     selectCustomAsset: input => invoke(ipc.petSelectCustomAsset, input),

@@ -59,8 +59,8 @@ export const featureHelpTopics: FeatureHelpTopic[] = [
     category: '构建',
     summary: '配置并构建包含 CMakeLists.txt 的多文件 C++ 工程。',
     principle: '先执行 CMake configure 生成构建系统，再执行 build；成功时同时生成 compile_commands.json，供 clangd 和静态分析理解整个工程。',
-    steps: ['打开类型为 CMake 的项目。', '确认 CMakeLists.txt 中定义了目标。', '点击“工程构建”，依次查看配置与构建输出。'],
-    notes: ['按钮只在 CMake 项目中启用。', '修改 CMakeLists.txt 后需要重新执行工程构建。']
+    steps: ['打开类型为 CMake 的项目。', '确认 CMakeLists.txt 中定义了可执行目标。', '点击“工程构建”，依次查看配置与构建输出。', '从目标菜单选择程序，点击“运行工程”查看标准输出和退出码。'],
+    notes: ['按钮只在 CMake 项目中启用。', '测试 target 也会显示在目标菜单中。', '修改源文件或 CMakeLists.txt 后需要重新执行工程构建。']
   },
   {
     id: 'ctest',

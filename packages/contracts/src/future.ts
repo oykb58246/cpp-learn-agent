@@ -152,6 +152,12 @@ export const cmakeBuildRequestSchema = z.object({
 })
 export type CmakeBuildRequest = z.input<typeof cmakeBuildRequestSchema>
 
+export const cmakeExecutableTargetSchema = z.object({
+  name: z.string().min(1).max(256),
+  buildId: z.string().uuid()
+})
+export type CmakeExecutableTarget = z.infer<typeof cmakeExecutableTargetSchema>
+
 export const cmakeBuildResultSchema = z.object({
   runId: z.string().uuid(),
   buildId: z.string().uuid(),
@@ -163,6 +169,7 @@ export const cmakeBuildResultSchema = z.object({
   build: processResultSchema.optional(),
   diagnostics: z.array(diagnosticSchema),
   compileCommandsGenerated: z.boolean(),
+  executableTargets: z.array(cmakeExecutableTargetSchema),
   builtAt: z.string()
 })
 export type CmakeBuildResult = z.infer<typeof cmakeBuildResultSchema>

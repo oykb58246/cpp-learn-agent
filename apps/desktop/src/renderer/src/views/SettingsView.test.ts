@@ -53,7 +53,16 @@ describe('SettingsView pet settings', () => {
       recoveryMode: false,
       settings,
       recentProjects: [],
-      workspaces: [],
+      workspaces: [
+        {
+          id: 'c789f364-06e4-4e5f-91a5-c318cf9021f0',
+          name: 'CppPilotBuildTest',
+          rootPath: 'F:/大二下/企业实训/CppPilotBuildTest',
+          trustState: 'inspection',
+          createdAt: '2026-07-29T10:00:00.000Z',
+          lastOpenedAt: '2026-07-29T10:00:00.000Z'
+        }
+      ],
       recentEvents: []
     }
     const app = createSSRApp({ render: () => h(SettingsView) })
@@ -84,6 +93,9 @@ describe('SettingsView pet settings', () => {
     expect(html).toContain('OpenAI Responses')
     expect(html).toContain('图片理解')
     expect(html).toContain('测试图片输入')
+    expect(html).toContain('CppPilotBuildTest')
+    expect(html).toContain('只读检查')
+    expect(html).toContain('信任')
   })
 })
 

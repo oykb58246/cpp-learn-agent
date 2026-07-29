@@ -142,6 +142,12 @@ describe('cpp-local-tools', () => {
         build.build?.stderr ?? ''
       ].filter(Boolean).join('\n')).toBe(true)
       expect(build.compileCommandsGenerated).toBe(true)
+      expect(build.executableTargets.map(target => target.name)).toEqual(expect.arrayContaining(['cpppet_fixture', 'cpppet_sum_test']))
+      const executable = build.executableTargets.find(target => target.name === 'cpppet_fixture')
+      expect(executable).toBeDefined()
+      const run = await runProcess(executable!.path, [], { cwd: buildDirectory, timeoutMs: 5_000 })
+      expect(run.exitCode, `${run.stdout}\n${run.stderr}`).toBe(0)
+      expect(run.stdout.trim()).toBe('42')
       const compileCommands = readFileSync(join(buildDirectory, 'compile_commands.json'), 'utf8')
       expect(compileCommands).toContain(projectRoot.replaceAll('\\', '/'))
       expect(compileCommands).not.toContain(build.sourceDirectory.replaceAll('\\', '/'))
